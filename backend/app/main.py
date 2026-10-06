@@ -29,7 +29,20 @@ from backend.app.api.system_health import router as system_health_router
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Initialize DB schema and core production configuration
-    await init_db(seed_demo=settings.SEED_DEMO_DATA)
+    try:
+        await init_db(seed_demo=settings.SEED_DEMO_DATA)
+    except Exception as e:
+        print(f"[STARTUP DB NOTICE]: {e}. Scheduling background retry loop.", flush=True)
+        async def retry_db_init():
+            for i in range(1, 30):
+                await asyncio.sleep(2)
+                try:
+                    await init_db(seed_demo=settings.SEED_DEMO_DATA)
+                    print("[STARTUP DB SUCCESS]: Database initialized successfully.", flush=True)
+                    break
+                except Exception as retry_err:
+                    print(f"[STARTUP DB RETRY {i}/30]: Still waiting for database readiness: {retry_err}", flush=True)
+        asyncio.create_task(retry_db_init())
     
     # Launch background monitoring worker loop
     monitoring_task = asyncio.create_task(monitoring_worker_loop())

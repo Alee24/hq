@@ -35,7 +35,7 @@ async def purge_dummy_data():
         await db.execute(delete(User).where(User.username != settings.ADMIN_USERNAME))
         
         # Ensure Super Admin exists
-        res = await db.execute(select(User).where(User.username == settings.ADMIN_USERNAME))
+        res = await db.execute(select(User).where((User.username == settings.ADMIN_USERNAME) | (User.email == settings.ADMIN_EMAIL)))
         admin_user = res.scalar_one_or_none()
         if not admin_user:
             admin_user = User(
@@ -142,7 +142,7 @@ async def init_db(seed_demo: bool = False):
 
     async with AsyncSessionLocal() as db:
         # Check if root admin exists
-        res = await db.execute(select(User).where(User.username == settings.ADMIN_USERNAME))
+        res = await db.execute(select(User).where((User.username == settings.ADMIN_USERNAME) | (User.email == settings.ADMIN_EMAIL)))
         existing_admin = res.scalar_one_or_none()
         if not existing_admin:
             u = User(
@@ -154,6 +154,10 @@ async def init_db(seed_demo: bool = False):
                 is_active=True
             )
             db.add(u)
+            await db.flush()
+        else:
+            existing_admin.is_active = True
+            existing_admin.role = "SUPER_ADMIN"
             await db.flush()
 
         # Ensure standard Alert Rules exist
