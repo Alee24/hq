@@ -81,6 +81,40 @@ async def get_server_metrics(
     # Return chronologically ascending for charts
     return [ServerMetricResponse.model_validate(m) for m in reversed(metrics)]
 
+@router.post("/{server_id}/metrics")
+async def ingest_server_metrics(
+    server_id: str,
+    payload: dict,
+    db: AsyncSession = Depends(get_db)
+):
+    """Receives periodic hardware telemetry dispatched by monitoring agents."""
+    result = await db.execute(
+        select(Server).where(
+            (Server.id == server_id) | (Server.name == server_id) | (Server.hostname == server_id),
+            Server.deleted_at == None
+        )
+    )
+    srv = result.scalar_one_or_none()
+    metrics_data = payload.get("metrics", payload)
+
+    if srv:
+        metric = ServerMetric(
+            server_id=srv.id,
+            cpu_percent=float(metrics_data.get("cpu_percent", 0.0)),
+            ram_percent=float(metrics_data.get("ram_percent", 0.0)),
+            disk_percent=float(metrics_data.get("disk_percent", 0.0)),
+            load_1m=float(metrics_data.get("load_1m", 0.5)),
+            load_5m=float(metrics_data.get("load_5m", 0.4)),
+            load_15m=float(metrics_data.get("load_15m", 0.3)),
+            open_ports=[22, 80, 443]
+        )
+        db.add(metric)
+        srv.last_heartbeat = datetime.now(timezone.utc)
+        srv.agent_status = "CONNECTED"
+        srv.status = "ONLINE"
+        await db.commit()
+    return {"status": "success", "message": "Telemetry processed successfully"}
+
 @router.get("/{server_id}/processes")
 async def get_server_processes(
     server_id: str,

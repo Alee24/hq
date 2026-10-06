@@ -78,8 +78,10 @@ async def purge_dummy_data():
 from sqlalchemy import text
 
 async def apply_schema_migrations():
-    """Safely applies non-destructive schema migrations to preserve existing data integrity."""
+    """Safely applies non-destructive schema migrations to preserve existing data integrity across SQLite and PostgreSQL."""
     async with engine.begin() as conn:
+        dialect_name = conn.dialect.name
+
         server_cols = [
             ("ssh_user", "VARCHAR(50) DEFAULT 'root'"),
             ("ssh_auth_type", "VARCHAR(20) DEFAULT 'KEY'"),
@@ -88,29 +90,55 @@ async def apply_schema_migrations():
             ("agent_token", "VARCHAR(64)"),
             ("connection_type", "VARCHAR(20) DEFAULT 'SSH'")
         ]
-        for col_name, col_type in server_cols:
-            try:
-                await conn.execute(text(f"ALTER TABLE servers ADD COLUMN {col_name} {col_type}"))
-            except Exception:
-                pass # Column already exists
 
         backup_cols = [
             ("database_type", "VARCHAR(50) DEFAULT 'POSTGRESQL'"),
             ("database_name", "VARCHAR(100)")
         ]
-        for col_name, col_type in backup_cols:
+
+        if dialect_name == "postgresql":
+            # PostgreSQL natively supports ADD COLUMN IF NOT EXISTS without aborting transactions
+            for col_name, col_type in server_cols:
+                await conn.execute(text(f"ALTER TABLE servers ADD COLUMN IF NOT EXISTS {col_name} {col_type}"))
+            for col_name, col_type in backup_cols:
+                await conn.execute(text(f"ALTER TABLE backups ADD COLUMN IF NOT EXISTS {col_name} {col_type}"))
+        else:
+            # SQLite: Check existing table schema before altering to prevent duplicate column errors
             try:
-                await conn.execute(text(f"ALTER TABLE backups ADD COLUMN {col_name} {col_type}"))
-            except Exception:
-                pass # Column already exists
+                res = await conn.execute(text("PRAGMA table_info(servers)"))
+                server_existing = [row[1] for row in res.fetchall()]
+                for col_name, col_type in server_cols:
+                    if col_name not in server_existing:
+                        await conn.execute(text(f"ALTER TABLE servers ADD COLUMN {col_name} {col_type}"))
+
+                res_b = await conn.execute(text("PRAGMA table_info(backups)"))
+                backup_existing = [row[1] for row in res_b.fetchall()]
+                for col_name, col_type in backup_cols:
+                    if col_name not in backup_existing:
+                        await conn.execute(text(f"ALTER TABLE backups ADD COLUMN {col_name} {col_type}"))
+            except Exception as e:
+                print(f"[SQLITE MIGRATION NOTICE]: {e}")
 
 async def init_db(seed_demo: bool = False):
-    # Create all tables
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    # Retry database connection in containerized environments (e.g. Docker Compose PostgreSQL)
+    max_retries = 10
+    for attempt in range(1, max_retries + 1):
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            break
+        except Exception as e:
+            if attempt == max_retries:
+                print(f"[FATAL DB INIT ERROR]: Could not connect to database after {max_retries} attempts: {e}")
+                raise
+            print(f"[DB INIT] Waiting for database connection ({attempt}/{max_retries}): {e}")
+            await asyncio.sleep(2)
 
     # Safely apply non-destructive schema updates
-    await apply_schema_migrations()
+    try:
+        await apply_schema_migrations()
+    except Exception as e:
+        print(f"[SCHEMA MIGRATION WARNING]: {e}")
 
     async with AsyncSessionLocal() as db:
         # Check if root admin exists
