@@ -49,10 +49,11 @@ class MfaVerifyRequest(BaseModel):
 # ==========================================
 
 class ServerCreate(BaseModel):
-    name: str
-    hostname: str
-    provider: str = "Custom VPS"
     public_ip: str
+    ssh_password: Optional[str] = None
+    name: Optional[str] = None
+    hostname: Optional[str] = None
+    provider: str = "Custom VPS"
     private_ip: Optional[str] = None
     os: str = "Ubuntu Linux"
     os_version: str = "24.04 LTS"
@@ -61,6 +62,9 @@ class ServerCreate(BaseModel):
     ram_total_mb: int = 8192
     disk_total_gb: int = 160
     ssh_port: int = 22
+    ssh_user: str = "root"
+    ssh_auth_type: str = "PASSWORD"
+    ssh_key: Optional[str] = None
 
 class ServerUpdate(BaseModel):
     name: Optional[str] = None

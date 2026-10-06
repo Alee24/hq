@@ -141,26 +141,36 @@ async def create_server(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_roles(["SUPER_ADMIN", "INFRASTRUCTURE_ADMIN"]))
 ):
+    ip_clean = payload.public_ip.strip()
+    server_name = payload.name.strip() if payload.name and payload.name.strip() else f"VPS-{ip_clean}"
+    server_hostname = payload.hostname.strip() if payload.hostname and payload.hostname.strip() else ip_clean
+    auth_type = "PASSWORD" if payload.ssh_password and payload.ssh_password.strip() else (payload.ssh_auth_type or "PASSWORD")
+
     srv = Server(
-        name=payload.name,
-        hostname=payload.hostname,
-        provider=payload.provider,
-        public_ip=payload.public_ip,
+        name=server_name,
+        hostname=server_hostname,
+        provider=payload.provider or "Custom VPS",
+        public_ip=ip_clean,
         private_ip=payload.private_ip,
-        os=payload.os,
-        os_version=payload.os_version,
-        kernel=payload.kernel,
-        cpu_cores=payload.cpu_cores,
-        ram_total_mb=payload.ram_total_mb,
-        disk_total_gb=payload.disk_total_gb,
-        ssh_port=payload.ssh_port,
+        os=payload.os or "Ubuntu Linux",
+        os_version=payload.os_version or "24.04 LTS",
+        kernel=payload.kernel or "6.8.0-generic",
+        cpu_cores=payload.cpu_cores or 4,
+        ram_total_mb=payload.ram_total_mb or 8192,
+        disk_total_gb=payload.disk_total_gb or 160,
+        ssh_port=payload.ssh_port or 22,
+        ssh_user=payload.ssh_user or "root",
+        ssh_auth_type=auth_type,
+        ssh_password=payload.ssh_password.strip() if payload.ssh_password else None,
+        ssh_key=payload.ssh_key.strip() if payload.ssh_key else None,
+        connection_type="SSH",
         status="ONLINE",
         agent_status="CONNECTED"
     )
     db.add(srv)
     await db.flush()
 
-    # Initial metric
+    # Initial metric so telemetry gauges display immediately
     init_metric = ServerMetric(
         server_id=srv.id,
         cpu_percent=18.4,
@@ -191,7 +201,7 @@ async def create_server(
 
     await db.commit()
     await db.refresh(srv)
-    return ServerResponse.model_validate(srv)
+    return serialize_server(srv, init_metric)
 
 @router.post("/{server_id}/command")
 async def execute_server_command(

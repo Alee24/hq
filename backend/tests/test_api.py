@@ -10,8 +10,8 @@ from backend.app.core.init_db import purge_dummy_data
 @pytest_asyncio.fixture(autouse=True, scope="module")
 async def clean_database_after_tests():
     yield
-    # Purge test residues to preserve a pristine production database state
-    await purge_dummy_data()
+    # Preserve user data and operational integrity across test runs
+    pass
 
 @pytest.mark.asyncio
 async def test_auth_login_and_me():
