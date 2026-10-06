@@ -80,7 +80,7 @@ export const ServerConnectionModal: React.FC<ServerConnectionModalProps> = ({
     }
   };
 
-  const hostUrl = window.location.origin.replace('3000', '8000');
+  const hostUrl = window.location.origin;
   const enrollCommand = `curl -sSL "${hostUrl}/api/servers/${server.id}/agent/install-script" | sudo bash`;
 
   const copyEnrollCommand = () => {
