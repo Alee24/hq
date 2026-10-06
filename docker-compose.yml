@@ -1,0 +1,96 @@
+services:
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.frontend
+    container_name: command-center-frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - command-center-network
+
+  backend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.backend
+    container_name: command-center-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - ENVIRONMENT=production
+      - PROJECT_NAME=Central Software Command Center
+      - SECRET_KEY=${SECRET_KEY:-command-center-super-secure-production-secret-key-389104810283}
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-commandcenter}:${POSTGRES_PASSWORD:-ChangeMeSecurePass123!}@postgres:5432/${POSTGRES_DB:-commandcenter}
+      - REDIS_URL=redis://redis:6379/0
+      - ACCESS_TOKEN_EXPIRE_MINUTES=1440
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - command-center-network
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: command-center-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-commandcenter}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ChangeMeSecurePass123!}
+      POSTGRES_DB: ${POSTGRES_DB:-commandcenter}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U commandcenter"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - command-center-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: command-center-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    networks:
+      - command-center-network
+
+  monitoring-agent:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.agent
+    container_name: command-center-agent
+    restart: unless-stopped
+    environment:
+      - COMMAND_CENTER_URL=http://backend:8000
+      - AGENT_API_TOKEN=cc_live_demo_agent_key
+      - SERVER_ID=VPS-01
+      - INTERVAL_SECONDS=60
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - command-center-network
+
+networks:
+  command-center-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:

@@ -1,0 +1,13 @@
+# Lightweight Dockerfile for VPS Monitoring Agent
+FROM python:3.12-alpine
+
+WORKDIR /app
+
+COPY agent/command_center_agent.py ./agent.py
+
+ENV COMMAND_CENTER_URL="http://backend:8000" \
+    AGENT_API_TOKEN="cc_live_demo_agent_key" \
+    SERVER_ID="vps-01" \
+    INTERVAL_SECONDS=60
+
+CMD ["python", "agent.py", "--server", "http://backend:8000", "--token", "cc_live_demo_agent_key", "--server-id", "VPS-01", "--interval", "60"]
