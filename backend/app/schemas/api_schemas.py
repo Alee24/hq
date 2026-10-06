@@ -107,12 +107,62 @@ class ServerResponse(BaseModel):
     ram_total_mb: int
     disk_total_gb: int
     ssh_port: int
+    ssh_user: Optional[str] = "root"
+    ssh_auth_type: Optional[str] = "KEY"
+    connection_type: Optional[str] = "SSH"
+    agent_token: Optional[str] = None
+    has_ssh_key: bool = False
+    has_ssh_password: bool = False
     status: str
     last_heartbeat: datetime
     agent_version: str
     agent_status: str
     is_active: bool
     latest_metric: Optional[ServerMetricResponse] = None
+
+    class Config:
+        from_attributes = True
+
+class ServerConnectionConfig(BaseModel):
+    ssh_user: str = "root"
+    ssh_port: int = 22
+    ssh_auth_type: str = "KEY" # KEY, PASSWORD
+    ssh_key: Optional[str] = None
+    ssh_password: Optional[str] = None
+    connection_type: str = "SSH" # SSH, AGENT
+
+class ServerConnectionTestResponse(BaseModel):
+    success: bool
+    server_id: str
+    connection_type: str
+    latency_ms: float
+    banner: Optional[str] = None
+    message: str
+    status: str
+
+class TerminalExecRequest(BaseModel):
+    command: str
+    working_dir: Optional[str] = None
+    timeout_seconds: int = 30
+
+class TerminalExecResponse(BaseModel):
+    success: bool
+    command: str
+    stdout: str
+    stderr: str
+    exit_code: int
+    duration_ms: int
+    timestamp: datetime
+
+class ServerTerminalLogResponse(BaseModel):
+    id: str
+    server_id: str
+    username: str
+    command: str
+    output: Optional[str] = None
+    exit_code: int
+    execution_duration_ms: int
+    created_at: datetime
 
     class Config:
         from_attributes = True
@@ -492,6 +542,9 @@ class BackupResponse(BaseModel):
     application_id: Optional[str]
     application_name: Optional[str] = None
     server_id: Optional[str]
+    server_name: Optional[str] = None
+    database_type: Optional[str] = "POSTGRESQL"
+    database_name: Optional[str] = None
     filename: str
     file_size_mb: float
     destination: str
@@ -502,6 +555,13 @@ class BackupResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+class DatabaseBackupRequest(BaseModel):
+    server_id: str
+    database_type: str = "POSTGRESQL" # POSTGRESQL, MYSQL, SQLITE, MONGODB
+    database_name: str
+    application_id: Optional[str] = None
+    retention_days: int = 30
 
 class SystemHealthItem(BaseModel):
     name: str

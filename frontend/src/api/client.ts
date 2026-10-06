@@ -164,6 +164,55 @@ class ApiClient {
     });
   }
 
+  async testServerConnection(id: string) {
+    return this.request<{
+      success: boolean;
+      server_id: string;
+      connection_type: string;
+      latency_ms: number;
+      banner?: string;
+      message: string;
+      status: string;
+    }>(`/servers/${id}/connect/test`, { method: 'POST' });
+  }
+
+  async configureServerConnection(id: string, data: {
+    ssh_user: string;
+    ssh_port: number;
+    ssh_auth_type: string;
+    ssh_key?: string;
+    ssh_password?: string;
+    connection_type: string;
+  }) {
+    return this.request<any>(`/servers/${id}/connect/configure`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async executeTerminalCommand(id: string, command: string, workingDir?: string) {
+    return this.request<{
+      success: boolean;
+      command: string;
+      stdout: string;
+      stderr: string;
+      exit_code: number;
+      duration_ms: number;
+      timestamp: string;
+    }>(`/servers/${id}/terminal/exec`, {
+      method: 'POST',
+      body: JSON.stringify({ command, working_dir: workingDir }),
+    });
+  }
+
+  async getTerminalHistory(id: string) {
+    return this.request<any[]>(`/servers/${id}/terminal/history`);
+  }
+
+  async getAgentInstallScript(id: string) {
+    return this.request<string>(`/servers/${id}/agent/install-script`);
+  }
+
   // ==========================================
   // Monitoring
   // ==========================================
@@ -283,8 +332,26 @@ class ApiClient {
   // ==========================================
   // Backups, Alerts, Admin, Topology, Search, Health
   // ==========================================
-  async listBackups() {
-    return this.request<any[]>('/backups');
+  async listBackups(serverId?: string) {
+    const q = serverId ? `?server_id=${serverId}` : '';
+    return this.request<any[]>(`/backups${q}`);
+  }
+
+  async createDatabaseBackup(data: {
+    server_id: string;
+    database_type: string;
+    database_name: string;
+    application_id?: string;
+    retention_days?: number;
+  }) {
+    return this.request<any>('/backups/database', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async deleteBackup(id: string) {
+    return this.request<any>(`/backups/${id}`, { method: 'DELETE' });
   }
 
   async triggerBackup(appId?: string, serverId?: string) {

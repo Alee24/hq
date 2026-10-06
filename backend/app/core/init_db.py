@@ -75,10 +75,42 @@ async def purge_dummy_data():
 
         await db.commit()
 
+from sqlalchemy import text
+
+async def apply_schema_migrations():
+    """Safely applies non-destructive schema migrations to preserve existing data integrity."""
+    async with engine.begin() as conn:
+        server_cols = [
+            ("ssh_user", "VARCHAR(50) DEFAULT 'root'"),
+            ("ssh_auth_type", "VARCHAR(20) DEFAULT 'KEY'"),
+            ("ssh_key", "TEXT"),
+            ("ssh_password", "VARCHAR(255)"),
+            ("agent_token", "VARCHAR(64)"),
+            ("connection_type", "VARCHAR(20) DEFAULT 'SSH'")
+        ]
+        for col_name, col_type in server_cols:
+            try:
+                await conn.execute(text(f"ALTER TABLE servers ADD COLUMN {col_name} {col_type}"))
+            except Exception:
+                pass # Column already exists
+
+        backup_cols = [
+            ("database_type", "VARCHAR(50) DEFAULT 'POSTGRESQL'"),
+            ("database_name", "VARCHAR(100)")
+        ]
+        for col_name, col_type in backup_cols:
+            try:
+                await conn.execute(text(f"ALTER TABLE backups ADD COLUMN {col_name} {col_type}"))
+            except Exception:
+                pass # Column already exists
+
 async def init_db(seed_demo: bool = False):
     # Create all tables
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+    # Safely apply non-destructive schema updates
+    await apply_schema_migrations()
 
     async with AsyncSessionLocal() as db:
         # Check if root admin exists

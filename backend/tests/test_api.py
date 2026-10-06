@@ -228,3 +228,109 @@ async def test_deployment_pipeline_flow():
         assert dep_data["status"] == "SUCCESS"
         assert "Step 1/13:" in dep_data["logs"]
         assert "Step 13/13:" in dep_data["logs"]
+
+@pytest.mark.asyncio
+async def test_server_connection_and_terminal_execution():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        login_res = await ac.post("/api/auth/login", json={
+            "username_or_email": "admin",
+            "password": "Password123!"
+        })
+        token = login_res.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # 1. Create a server
+        srv_res = await ac.post("/api/servers", json={
+            "name": "vps-test-terminal",
+            "hostname": "terminal.test.local",
+            "provider": "Custom VPS",
+            "public_ip": "127.0.0.1",
+            "ssh_port": 22
+        }, headers=headers)
+        assert srv_res.status_code == 200
+        server_id = srv_res.json()["id"]
+
+        # 2. Configure SSH credentials
+        cfg_res = await ac.post(f"/api/servers/{server_id}/connect/configure", json={
+            "ssh_user": "root",
+            "ssh_port": 22,
+            "ssh_auth_type": "KEY",
+            "connection_type": "SSH"
+        }, headers=headers)
+        assert cfg_res.status_code == 200
+        assert cfg_res.json()["ssh_user"] == "root"
+
+        # 3. Test connection
+        test_res = await ac.post(f"/api/servers/{server_id}/connect/test", headers=headers)
+        assert test_res.status_code == 200
+        assert "latency_ms" in test_res.json()
+
+        # 4. Execute terminal command
+        term_res = await ac.post(f"/api/servers/{server_id}/terminal/exec", json={
+            "command": "df -h"
+        }, headers=headers)
+        assert term_res.status_code == 200
+        term_data = term_res.json()
+        assert term_data["success"] is True
+        assert len(term_data["stdout"]) > 0
+
+        # 5. Get terminal history
+        hist_res = await ac.get(f"/api/servers/{server_id}/terminal/history", headers=headers)
+        assert hist_res.status_code == 200
+        assert len(hist_res.json()) >= 1
+
+        # 6. Get agent install script
+        script_res = await ac.get(f"/api/servers/{server_id}/agent/install-script", headers=headers)
+        assert script_res.status_code == 200
+        assert "#!/usr/bin/env bash" in script_res.text
+
+@pytest.mark.asyncio
+async def test_database_backup_flow():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        login_res = await ac.post("/api/auth/login", json={
+            "username_or_email": "admin",
+            "password": "Password123!"
+        })
+        token = login_res.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # 1. Create server for database backup
+        srv_res = await ac.post("/api/servers", json={
+            "name": "vps-test-db-backup",
+            "hostname": "db.test.local",
+            "public_ip": "10.0.0.88"
+        }, headers=headers)
+        assert srv_res.status_code == 200
+        server_id = srv_res.json()["id"]
+
+        # 2. Trigger Database Backup
+        bk_res = await ac.post("/api/backups/database", json={
+            "server_id": server_id,
+            "database_type": "POSTGRESQL",
+            "database_name": "production_analytics",
+            "retention_days": 30
+        }, headers=headers)
+        assert bk_res.status_code == 200
+        bk_data = bk_res.json()
+        assert bk_data["database_type"] == "POSTGRESQL"
+        assert bk_data["database_name"] == "production_analytics"
+        assert bk_data["verified"] is True
+        backup_id = bk_data["id"]
+
+        # 3. List backups filtered by server
+        list_res = await ac.get(f"/api/backups?server_id={server_id}", headers=headers)
+        assert list_res.status_code == 200
+        assert len(list_res.json()) >= 1
+
+        # 4. Download backup archive
+        dl_res = await ac.get(f"/api/backups/{backup_id}/download", headers=headers)
+        assert dl_res.status_code == 200
+        assert len(dl_res.content) > 0
+
+        # 5. Delete backup
+        del_res = await ac.delete(f"/api/backups/{backup_id}", headers=headers)
+        assert del_res.status_code == 200
+        assert del_res.json()["success"] is True
+

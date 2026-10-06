@@ -43,6 +43,12 @@ class Server(Base):
     ram_total_mb = Column(Integer, default=8192)
     disk_total_gb = Column(Integer, default=160)
     ssh_port = Column(Integer, default=22)
+    ssh_user = Column(String(50), default="root")
+    ssh_auth_type = Column(String(20), default="KEY") # KEY, PASSWORD
+    ssh_key = Column(Text, nullable=True)
+    ssh_password = Column(String(255), nullable=True)
+    agent_token = Column(String(64), nullable=True)
+    connection_type = Column(String(20), default="SSH") # SSH, AGENT, DIRECT
     status = Column(String(20), default="ONLINE", index=True) # ONLINE, OFFLINE, DEGRADED, MAINTENANCE
     last_heartbeat = Column(DateTime, default=utcnow)
     agent_version = Column(String(50), default="1.0.0")
@@ -306,6 +312,8 @@ class Backup(Base):
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     application_id = Column(String(36), ForeignKey("applications.id"), nullable=True, index=True)
     server_id = Column(String(36), ForeignKey("servers.id"), nullable=True, index=True)
+    database_type = Column(String(50), default="POSTGRESQL", index=True) # POSTGRESQL, MYSQL, SQLITE, MONGODB
+    database_name = Column(String(100), nullable=True)
     filename = Column(String(255), nullable=False)
     file_size_mb = Column(Float, default=124.5)
     destination = Column(String(255), default="S3://infra-backups/daily/")
@@ -352,3 +360,16 @@ class AppLog(Base):
     message = Column(Text, nullable=False)
     user = Column(String(100), nullable=True)
     timestamp = Column(DateTime, default=utcnow, index=True)
+
+class ServerTerminalLog(Base):
+    __tablename__ = "server_terminal_logs"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    server_id = Column(String(36), ForeignKey("servers.id"), nullable=False, index=True)
+    user_id = Column(String(36), ForeignKey("users.id"), nullable=True)
+    username = Column(String(100), nullable=False)
+    command = Column(Text, nullable=False)
+    output = Column(Text, nullable=True)
+    exit_code = Column(Integer, default=0)
+    execution_duration_ms = Column(Integer, default=0)
+    created_at = Column(DateTime, default=utcnow, index=True)

@@ -1,18 +1,31 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from typing import List, Optional
 from datetime import datetime, timezone
 from backend.app.core.database import get_db
 from backend.app.core.deps import get_current_user, require_roles
-from backend.app.models.entities import User, Server, ServerMetric, Application, AppLog
+from backend.app.models.entities import User, Server, ServerMetric, Application, AppLog, ServerTerminalLog
 from backend.app.schemas.api_schemas import (
-    ServerCreate, ServerUpdate, ServerResponse, ServerCommandRequest, ServerMetricResponse
+    ServerCreate, ServerUpdate, ServerResponse, ServerCommandRequest, ServerMetricResponse,
+    ServerConnectionConfig, ServerConnectionTestResponse, TerminalExecRequest,
+    TerminalExecResponse, ServerTerminalLogResponse
 )
 from backend.app.services.audit import log_audit_event
 from backend.app.services.websocket_manager import ws_manager
+from backend.app.services.remote_executor import (
+    test_server_connection, execute_remote_command, generate_agent_enrollment_script
+)
 
 router = APIRouter(prefix="/servers", tags=["Servers"])
+
+def serialize_server(srv: Server, latest_metric: Optional[ServerMetric] = None) -> ServerResponse:
+    s_resp = ServerResponse.model_validate(srv)
+    s_resp.has_ssh_key = bool(srv.ssh_key and srv.ssh_key.strip())
+    s_resp.has_ssh_password = bool(srv.ssh_password and srv.ssh_password.strip())
+    if latest_metric:
+        s_resp.latest_metric = ServerMetricResponse.model_validate(latest_metric)
+    return s_resp
 
 @router.get("", response_model=List[ServerResponse])
 async def list_servers(
@@ -25,15 +38,12 @@ async def list_servers(
 
     enriched = []
     for srv in servers:
-        s_resp = ServerResponse.model_validate(srv)
         # Fetch latest metric
         met_res = await db.execute(
             select(ServerMetric).where(ServerMetric.server_id == srv.id).order_by(ServerMetric.timestamp.desc()).limit(1)
         )
         latest_met = met_res.scalar_one_or_none()
-        if latest_met:
-            s_resp.latest_metric = ServerMetricResponse.model_validate(latest_met)
-        enriched.append(s_resp)
+        enriched.append(serialize_server(srv, latest_met))
 
     return enriched
 
@@ -48,14 +58,11 @@ async def get_server(
     if not srv:
         raise HTTPException(status_code=404, detail="Server not found.")
 
-    s_resp = ServerResponse.model_validate(srv)
     met_res = await db.execute(
         select(ServerMetric).where(ServerMetric.server_id == srv.id).order_by(ServerMetric.timestamp.desc()).limit(1)
     )
     latest_met = met_res.scalar_one_or_none()
-    if latest_met:
-        s_resp.latest_metric = ServerMetricResponse.model_validate(latest_met)
-    return s_resp
+    return serialize_server(srv, latest_met)
 
 @router.get("/{server_id}/metrics", response_model=List[ServerMetricResponse])
 async def get_server_metrics(
@@ -215,11 +222,211 @@ async def execute_server_command(
         "message": execution_log
     })
 
+    # Execute remote command if SSH is configured
+    remote_out = None
+    if srv.ssh_key or srv.ssh_password:
+        cmd_to_run = f"systemctl {action}" if "service" not in action else f"systemctl {action.replace('service_', '')} {payload.service_name}"
+        remote_res = execute_remote_command(srv, cmd_to_run, timeout=15)
+        remote_out = remote_res.get("stdout") or remote_res.get("stderr")
+
+    resp_msg = f"Command executed successfully: {execution_log}"
+    if remote_out:
+        resp_msg += f"\nOutput: {remote_out.strip()}"
+
     return {
         "success": True,
         "server_id": srv.id,
         "action": action,
         "service_name": payload.service_name,
         "status": srv.status,
-        "message": f"Command executed successfully: {execution_log}"
+        "message": resp_msg
     }
+
+# ==========================================
+# Remote Connection & Terminal Endpoints
+# ==========================================
+
+@router.post("/{server_id}/connect/test", response_model=ServerConnectionTestResponse)
+async def test_server_connection_endpoint(
+    server_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_roles(["SUPER_ADMIN", "INFRASTRUCTURE_ADMIN"]))
+):
+    result = await db.execute(select(Server).where(Server.id == server_id, Server.deleted_at == None))
+    srv = result.scalar_one_or_none()
+    if not srv:
+        raise HTTPException(status_code=404, detail="Server not found.")
+
+    test_res = test_server_connection(srv)
+    srv.status = test_res["status"]
+    if test_res["success"]:
+        srv.last_heartbeat = datetime.now(timezone.utc)
+        srv.agent_status = "CONNECTED"
+    else:
+        srv.agent_status = "DISCONNECTED"
+
+    await log_audit_event(
+        db=db,
+        action="SERVER_CONNECTION_TEST",
+        entity_type="server",
+        username=current_user.username,
+        user_id=current_user.id,
+        entity_id=srv.id,
+        details={"result": test_res["status"], "latency_ms": test_res["latency_ms"]},
+        result="SUCCESS" if test_res["success"] else "FAILED"
+    )
+
+    await db.commit()
+    await db.refresh(srv)
+
+    await ws_manager.broadcast({
+        "event": "server_connection_tested",
+        "server_id": srv.id,
+        "status": srv.status,
+        "latency_ms": test_res["latency_ms"]
+    })
+
+    return ServerConnectionTestResponse(
+        success=test_res["success"],
+        server_id=srv.id,
+        connection_type=test_res["connection_type"],
+        latency_ms=test_res["latency_ms"],
+        banner=test_res.get("banner"),
+        message=test_res["message"],
+        status=test_res["status"]
+    )
+
+@router.post("/{server_id}/connect/configure", response_model=ServerResponse)
+async def configure_server_connection(
+    server_id: str,
+    payload: ServerConnectionConfig,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_roles(["SUPER_ADMIN", "INFRASTRUCTURE_ADMIN"]))
+):
+    result = await db.execute(select(Server).where(Server.id == server_id, Server.deleted_at == None))
+    srv = result.scalar_one_or_none()
+    if not srv:
+        raise HTTPException(status_code=404, detail="Server not found.")
+
+    srv.ssh_user = payload.ssh_user
+    srv.ssh_port = payload.ssh_port
+    srv.ssh_auth_type = payload.ssh_auth_type
+    srv.connection_type = payload.connection_type
+
+    if payload.ssh_key is not None:
+        srv.ssh_key = payload.ssh_key.strip() if payload.ssh_key.strip() else None
+    if payload.ssh_password is not None:
+        srv.ssh_password = payload.ssh_password if payload.ssh_password else None
+
+    await log_audit_event(
+        db=db,
+        action="SERVER_CONFIG_SSH",
+        entity_type="server",
+        username=current_user.username,
+        user_id=current_user.id,
+        entity_id=srv.id,
+        details={"ssh_user": srv.ssh_user, "ssh_port": srv.ssh_port, "auth_type": srv.ssh_auth_type},
+        result="SUCCESS"
+    )
+
+    await db.commit()
+    await db.refresh(srv)
+
+    return serialize_server(srv)
+
+@router.post("/{server_id}/terminal/exec", response_model=TerminalExecResponse)
+async def execute_terminal_command(
+    server_id: str,
+    payload: TerminalExecRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_roles(["SUPER_ADMIN", "INFRASTRUCTURE_ADMIN"]))
+):
+    result = await db.execute(select(Server).where(Server.id == server_id, Server.deleted_at == None))
+    srv = result.scalar_one_or_none()
+    if not srv:
+        raise HTTPException(status_code=404, detail="Server not found.")
+
+    cmd_res = execute_remote_command(
+        server=srv,
+        command=payload.command,
+        working_dir=payload.working_dir,
+        timeout=payload.timeout_seconds
+    )
+
+    # Save to ServerTerminalLog
+    term_log = ServerTerminalLog(
+        server_id=srv.id,
+        user_id=current_user.id,
+        username=current_user.username,
+        command=payload.command,
+        output=cmd_res["stdout"] or cmd_res["stderr"],
+        exit_code=cmd_res["exit_code"],
+        execution_duration_ms=cmd_res["duration_ms"]
+    )
+    db.add(term_log)
+
+    await log_audit_event(
+        db=db,
+        action="SERVER_TERMINAL_EXEC",
+        entity_type="server",
+        username=current_user.username,
+        user_id=current_user.id,
+        entity_id=srv.id,
+        details={"command": payload.command, "exit_code": cmd_res["exit_code"]},
+        result="SUCCESS" if cmd_res["success"] else "FAILED"
+    )
+
+    await db.commit()
+
+    # Stream to WebSocket clients
+    await ws_manager.broadcast({
+        "event": "server_terminal_command",
+        "server_id": srv.id,
+        "username": current_user.username,
+        "command": payload.command,
+        "exit_code": cmd_res["exit_code"],
+        "duration_ms": cmd_res["duration_ms"]
+    })
+
+    return TerminalExecResponse(
+        success=cmd_res["success"],
+        command=cmd_res["command"],
+        stdout=cmd_res["stdout"],
+        stderr=cmd_res["stderr"],
+        exit_code=cmd_res["exit_code"],
+        duration_ms=cmd_res["duration_ms"],
+        timestamp=datetime.now(timezone.utc)
+    )
+
+@router.get("/{server_id}/terminal/history", response_model=List[ServerTerminalLogResponse])
+async def get_terminal_history(
+    server_id: str,
+    limit: int = 30,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    result = await db.execute(
+        select(ServerTerminalLog)
+        .where(ServerTerminalLog.server_id == server_id)
+        .order_by(ServerTerminalLog.created_at.desc())
+        .limit(limit)
+    )
+    logs = result.scalars().all()
+    return [ServerTerminalLogResponse.model_validate(l) for l in reversed(logs)]
+
+@router.get("/{server_id}/agent/install-script")
+async def get_agent_install_script(
+    server_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_roles(["SUPER_ADMIN", "INFRASTRUCTURE_ADMIN"]))
+):
+    result = await db.execute(select(Server).where(Server.id == server_id, Server.deleted_at == None))
+    srv = result.scalar_one_or_none()
+    if not srv:
+        raise HTTPException(status_code=404, detail="Server not found.")
+
+    # Base URL from request or default
+    base_url = f"{request.url.scheme}://{request.url.netloc}"
+    script_text = generate_agent_enrollment_script(srv, base_url)
+    return Response(content=script_text, media_type="text/x-shellscript")

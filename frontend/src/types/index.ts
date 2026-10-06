@@ -50,6 +50,12 @@ export interface Server {
   ram_total_mb: number;
   disk_total_gb: number;
   ssh_port: number;
+  ssh_user?: string;
+  ssh_auth_type?: 'KEY' | 'PASSWORD';
+  connection_type?: 'SSH' | 'AGENT' | 'LOCAL_LOOPBACK';
+  agent_token?: string;
+  has_ssh_key?: boolean;
+  has_ssh_password?: boolean;
   status: 'ONLINE' | 'OFFLINE' | 'DEGRADED' | 'MAINTENANCE';
   last_heartbeat: string;
   agent_version: string;
@@ -188,12 +194,26 @@ export interface BackupItem {
   application_id?: string;
   application_name?: string;
   server_id?: string;
+  server_name?: string;
+  database_type?: 'POSTGRESQL' | 'MYSQL' | 'SQLITE' | 'MONGODB';
+  database_name?: string;
   filename: string;
   file_size_mb: number;
   destination: string;
   status: string;
   verified: boolean;
   retention_days: number;
+  created_at: string;
+}
+
+export interface TerminalLog {
+  id: string;
+  server_id: string;
+  username: string;
+  command: string;
+  output?: string;
+  exit_code: number;
+  execution_duration_ms: number;
   created_at: string;
 }
 
