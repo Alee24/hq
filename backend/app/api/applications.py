@@ -96,11 +96,13 @@ async def create_application(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_roles(["SUPER_ADMIN", "APPLICATION_ADMIN"]))
 ):
-    # Verify server exists
-    srv_res = await db.execute(select(Server).where(Server.id == payload.server_id, Server.deleted_at == None))
-    srv = srv_res.scalar_one_or_none()
-    if not srv:
-        raise HTTPException(status_code=400, detail="Specified server does not exist.")
+    # Verify server exists if provided
+    srv = None
+    if payload.server_id:
+        srv_res = await db.execute(select(Server).where(Server.id == payload.server_id, Server.deleted_at == None))
+        srv = srv_res.scalar_one_or_none()
+        if not srv:
+            raise HTTPException(status_code=400, detail="Specified server does not exist.")
 
     app = Application(
         name=payload.name,
@@ -141,8 +143,9 @@ async def create_application(
     await db.refresh(app)
     
     app_resp = ApplicationResponse.model_validate(app)
-    app_resp.server_name = srv.name
-    app_resp.server_ip = srv.public_ip
+    if srv:
+        app_resp.server_name = srv.name
+        app_resp.server_ip = srv.public_ip
     return app_resp
 
 @router.put("/{app_id}", response_model=ApplicationResponse)

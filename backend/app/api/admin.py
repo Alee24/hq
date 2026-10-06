@@ -32,6 +32,42 @@ async def list_users(
     users = result.scalars().all()
     return [UserResponse.model_validate(u) for u in users]
 
+@router.post("/users", response_model=UserResponse)
+async def create_user_by_admin(
+    payload: UserRegister,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_roles(["SUPER_ADMIN"]))
+):
+    stmt = select(User).where((User.username == payload.username) | (User.email == payload.email))
+    result = await db.execute(stmt)
+    if result.scalar_one_or_none():
+        raise HTTPException(status_code=400, detail="User with this username or email already exists.")
+
+    new_user = User(
+        username=payload.username,
+        email=payload.email,
+        hashed_password=hash_password(payload.password),
+        full_name=payload.full_name,
+        role=payload.role,
+        is_active=True
+    )
+    db.add(new_user)
+    await db.commit()
+    await db.refresh(new_user)
+
+    await log_audit_event(
+        db=db,
+        action="CREATE_USER",
+        entity_type="user",
+        username=current_user.username,
+        user_id=current_user.id,
+        entity_id=new_user.id,
+        details={"username": new_user.username, "role": new_user.role},
+        result="SUCCESS"
+    )
+
+    return UserResponse.model_validate(new_user)
+
 @router.put("/users/{user_id}/role")
 async def update_user_role(
     user_id: str,

@@ -22,43 +22,41 @@ async def get_app_git_status(
 
     is_update_available = app.current_commit != app.latest_repo_commit
 
-    current_commit = GitCommitInfo(
-        commit_hash=f"{app.current_commit}fa829141bca9082",
-        short_hash=app.current_commit[:7],
-        author="Alexander Wright",
-        message="feat(core): harden session validation and improve query indices",
-        date="2026-10-04 14:22:10 UTC"
+    # Inspect recent deployments for this application
+    from backend.app.models.entities import Deployment
+    dep_res = await db.execute(
+        select(Deployment)
+        .where(Deployment.application_id == application_id)
+        .order_by(Deployment.created_at.desc())
+        .limit(10)
     )
+    deployments = dep_res.scalars().all()
 
-    latest_commit = GitCommitInfo(
-        commit_hash=f"{app.latest_repo_commit}bb9191024afcd71",
-        short_hash=app.latest_repo_commit[:7],
-        author="Elena Rostova",
-        message="fix(security): patch CSRF token rotation and update cryptographic dependencies",
-        date="2026-10-06 09:15:40 UTC"
-    )
-
-    recent_commits = [
-        latest_commit,
-        current_commit,
-        GitCommitInfo(
-            commit_hash="7c19ad48301fa917281bc89108392183",
-            short_hash="7c19ad4",
-            author="David Kim",
-            message="refactor(api): modularize application process controllers",
-            date="2026-10-02 11:05:32 UTC"
-        ),
-        GitCommitInfo(
-            commit_hash="5e310029bafc89129038472918237910",
-            short_hash="5e31002",
-            author="Sarah Jenkins",
-            message="chore(deps): bump enterprise base image to Ubuntu 24.04 LTS",
-            date="2026-09-28 16:40:15 UTC"
+    recent_commits = []
+    if deployments:
+        for d in deployments:
+            recent_commits.append(GitCommitInfo(
+                commit_hash=d.commit_hash,
+                short_hash=d.commit_hash[:7] if d.commit_hash else "HEAD",
+                author=d.deployed_by or "System",
+                message=d.commit_message or "Release deployment",
+                date=d.created_at.strftime("%Y-%m-%d %H:%M:%S UTC")
+            ))
+        current_commit = recent_commits[0]
+        latest_commit = recent_commits[0]
+    else:
+        current_commit = GitCommitInfo(
+            commit_hash=app.current_commit or "HEAD",
+            short_hash=(app.current_commit or "HEAD")[:7],
+            author="System",
+            message=f"Current release {app.current_version or 'v1.0.0'}",
+            date=app.created_at.strftime("%Y-%m-%d %H:%M:%S UTC") if app.created_at else "2026-10-06 00:00:00 UTC"
         )
-    ]
+        latest_commit = current_commit
+        recent_commits = [current_commit]
 
     return GitRepoStatusResponse(
-        repo_url=app.repo_url or f"https://github.com/organization/{app.name.lower().replace(' ', '-')}",
+        repo_url=app.repo_url or "",
         branch=app.git_branch or "main",
         current_server_commit=current_commit,
         latest_remote_commit=latest_commit,

@@ -1,11 +1,19 @@
 import React, { useEffect, useState } from 'react';
-import { Users as UsersIcon, Shield, RefreshCw } from 'lucide-react';
+import { Users as UsersIcon, Shield, RefreshCw, Plus } from 'lucide-react';
 import { api } from '../api/client';
 import { User, UserRole } from '../types';
 
 export const UsersView: React.FC = () => {
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
+
+  // Create User Modal
+  const [createModalOpen, setCreateModalOpen] = useState(false);
+  const [newUsername, setNewUsername] = useState('');
+  const [newEmail, setNewEmail] = useState('');
+  const [newFullName, setNewFullName] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [newRole, setNewRole] = useState<UserRole>('APPLICATION_ADMIN');
 
   const loadUsers = async () => {
     try {
@@ -28,6 +36,27 @@ export const UsersView: React.FC = () => {
       loadUsers();
     } catch (err: any) {
       alert(err.message || 'Failed to update user role');
+    }
+  };
+
+  const handleCreateUser = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      await api.createUser({
+        username: newUsername,
+        email: newEmail,
+        full_name: newFullName,
+        password: newPassword,
+        role: newRole,
+      });
+      setCreateModalOpen(false);
+      setNewUsername('');
+      setNewEmail('');
+      setNewFullName('');
+      setNewPassword('');
+      loadUsers();
+    } catch (err: any) {
+      alert(err.message || 'Failed to create user');
     }
   };
 
@@ -54,12 +83,22 @@ export const UsersView: React.FC = () => {
           </p>
         </div>
 
-        <button
-          onClick={() => loadUsers()}
-          className="p-2 bg-slate-900 hover:bg-slate-800 border border-slate-800 rounded-lg text-slate-300 hover:text-white transition-colors"
-        >
-          <RefreshCw size={14} />
-        </button>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => loadUsers()}
+            className="p-2 bg-slate-900 hover:bg-slate-800 border border-slate-800 rounded-lg text-slate-300 hover:text-white transition-colors"
+          >
+            <RefreshCw size={14} />
+          </button>
+
+          <button
+            onClick={() => setCreateModalOpen(true)}
+            className="flex items-center gap-1.5 px-3.5 py-1.5 bg-brand-600 hover:bg-brand-500 text-white rounded-lg text-xs font-semibold shadow-sm transition-colors"
+          >
+            <Plus size={14} />
+            <span>Create User Account</span>
+          </button>
+        </div>
       </div>
 
       {/* Users Table */}
@@ -129,6 +168,95 @@ export const UsersView: React.FC = () => {
           </table>
         </div>
       </div>
+
+      {/* Create User Modal */}
+      {createModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm">
+          <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-xl p-6 space-y-4">
+            <h3 className="text-base font-semibold text-white">Create Enterprise User Account</h3>
+            <form onSubmit={handleCreateUser} className="space-y-3 text-xs">
+              <div>
+                <label className="block text-slate-300 font-semibold mb-1">Username</label>
+                <input
+                  type="text"
+                  required
+                  value={newUsername}
+                  onChange={(e) => setNewUsername(e.target.value)}
+                  placeholder="e.g. dev_lead"
+                  className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-slate-100"
+                />
+              </div>
+
+              <div>
+                <label className="block text-slate-300 font-semibold mb-1">Email Address</label>
+                <input
+                  type="email"
+                  required
+                  value={newEmail}
+                  onChange={(e) => setNewEmail(e.target.value)}
+                  placeholder="e.g. dev@enterprise.net"
+                  className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-slate-100"
+                />
+              </div>
+
+              <div>
+                <label className="block text-slate-300 font-semibold mb-1">Full Name</label>
+                <input
+                  type="text"
+                  required
+                  value={newFullName}
+                  onChange={(e) => setNewFullName(e.target.value)}
+                  placeholder="e.g. Jane Doe"
+                  className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-slate-100"
+                />
+              </div>
+
+              <div>
+                <label className="block text-slate-300 font-semibold mb-1">Initial Password</label>
+                <input
+                  type="password"
+                  required
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  placeholder="••••••••••••"
+                  className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-slate-100"
+                />
+              </div>
+
+              <div>
+                <label className="block text-slate-300 font-semibold mb-1">Assigned RBAC Role</label>
+                <select
+                  value={newRole}
+                  onChange={(e) => setNewRole(e.target.value as UserRole)}
+                  className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-slate-100 font-mono"
+                >
+                  {roles.map((r) => (
+                    <option key={r} value={r}>
+                      {r}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="flex justify-end gap-3 pt-3 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setCreateModalOpen(false)}
+                  className="px-4 py-2 bg-slate-800 text-slate-300 rounded-lg"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 bg-brand-600 text-white rounded-lg font-semibold"
+                >
+                  Create User
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

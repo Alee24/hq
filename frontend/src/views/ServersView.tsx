@@ -143,103 +143,122 @@ export const ServersView: React.FC = () => {
       </div>
 
       {/* Servers Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {servers.map((srv) => {
-          const isSelected = selectedServer?.id === srv.id;
-          const metric = srv.latest_metric;
-          const cpu = metric?.cpu_percent || 24;
-          const ram = metric?.ram_percent || 48;
-          const disk = metric?.disk_percent || 55;
+      {servers.length === 0 ? (
+        <div className="p-12 text-center bg-slate-900 border border-slate-800 rounded-xl space-y-3">
+          <div className="p-3 bg-slate-950 border border-slate-800 w-12 h-12 rounded-xl mx-auto flex items-center justify-center text-slate-400">
+            <ServerIcon size={24} />
+          </div>
+          <h3 className="text-sm font-semibold text-white">No VPS Hosts Connected</h3>
+          <p className="text-xs text-slate-400 max-w-sm mx-auto">
+            Connect your first VPS server or bare-metal host using the lightweight agent or register a node manually.
+          </p>
+          <button
+            onClick={() => setCreateModalOpen(true)}
+            className="inline-flex items-center gap-1.5 px-4 py-2 bg-brand-600 hover:bg-brand-500 text-white rounded-lg text-xs font-semibold transition-colors mt-2"
+          >
+            <Plus size={14} />
+            <span>Add VPS Host</span>
+          </button>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {servers.map((srv) => {
+            const isSelected = selectedServer?.id === srv.id;
+            const metric = srv.latest_metric;
+            const cpu = metric?.cpu_percent || 0;
+            const ram = metric?.ram_percent || 0;
+            const disk = metric?.disk_percent || 0;
 
-          return (
-            <div
-              key={srv.id}
-              onClick={() => handleServerSelect(srv)}
-              className={`p-5 rounded-xl border cursor-pointer transition-all space-y-4 ${
-                isSelected
-                  ? 'bg-slate-900 border-brand-500 shadow-md ring-1 ring-brand-500/20'
-                  : 'bg-slate-900/70 border-slate-800 hover:border-slate-700'
-              }`}
-            >
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2.5">
-                  <div className="p-2 bg-slate-950 border border-slate-800 rounded-lg text-emerald-400">
-                    <ServerIcon size={18} />
+            return (
+              <div
+                key={srv.id}
+                onClick={() => handleServerSelect(srv)}
+                className={`p-5 rounded-xl border cursor-pointer transition-all space-y-4 ${
+                  isSelected
+                    ? 'bg-slate-900 border-brand-500 shadow-md ring-1 ring-brand-500/20'
+                    : 'bg-slate-900/70 border-slate-800 hover:border-slate-700'
+                }`}
+              >
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2.5">
+                    <div className="p-2 bg-slate-950 border border-slate-800 rounded-lg text-emerald-400">
+                      <ServerIcon size={18} />
+                    </div>
+                    <div>
+                      <h3 className="font-semibold text-sm text-white">{srv.name}</h3>
+                      <div className="text-[11px] text-slate-400 mono">{srv.public_ip}</div>
+                    </div>
                   </div>
+                  <StatusBadge status={srv.status} size="sm" />
+                </div>
+
+                {/* Hardware utilization meters */}
+                <div className="space-y-2 text-xs">
                   <div>
-                    <h3 className="font-semibold text-sm text-white">{srv.name}</h3>
-                    <div className="text-[11px] text-slate-400 mono">{srv.public_ip}</div>
+                    <div className="flex justify-between text-slate-400 text-[11px] mb-1">
+                      <span>CPU Load ({srv.cpu_cores} Cores)</span>
+                      <span className="mono font-semibold text-slate-200">{cpu}%</span>
+                    </div>
+                    <div className="w-full bg-slate-950 rounded-full h-1.5 overflow-hidden">
+                      <div
+                        className={`h-1.5 rounded-full ${cpu > 90 ? 'bg-rose-500' : cpu > 80 ? 'bg-amber-500' : 'bg-emerald-500'}`}
+                        style={{ width: `${cpu}%` }}
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="flex justify-between text-slate-400 text-[11px] mb-1">
+                      <span>RAM ({srv.ram_total_mb} MB)</span>
+                      <span className="mono font-semibold text-slate-200">{ram}%</span>
+                    </div>
+                    <div className="w-full bg-slate-950 rounded-full h-1.5 overflow-hidden">
+                      <div
+                        className={`h-1.5 rounded-full ${ram > 90 ? 'bg-rose-500' : 'bg-blue-500'}`}
+                        style={{ width: `${ram}%` }}
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="flex justify-between text-slate-400 text-[11px] mb-1">
+                      <span>Disk Capacity ({srv.disk_total_gb} GB NVMe)</span>
+                      <span className="mono font-semibold text-slate-200">{disk}%</span>
+                    </div>
+                    <div className="w-full bg-slate-950 rounded-full h-1.5 overflow-hidden">
+                      <div
+                        className="h-1.5 rounded-full bg-purple-500"
+                        style={{ width: `${disk}%` }}
+                      />
+                    </div>
                   </div>
                 </div>
-                <StatusBadge status={srv.status} size="sm" />
-              </div>
 
-              {/* Hardware utilization meters */}
-              <div className="space-y-2 text-xs">
-                <div>
-                  <div className="flex justify-between text-slate-400 text-[11px] mb-1">
-                    <span>CPU Load ({srv.cpu_cores} Cores)</span>
-                    <span className="mono font-semibold text-slate-200">{cpu}%</span>
+                {/* Node Details & Safeguard Actions */}
+                <div className="pt-3 border-t border-slate-800 flex items-center justify-between text-[11px] text-slate-400">
+                  <span>Agent: <strong className="text-slate-300 font-mono">v{srv.agent_version}</strong></span>
+                  <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+                    <button
+                      onClick={() => triggerSafeCommand(srv, 'reboot')}
+                      className="p-1.5 text-slate-400 hover:text-amber-400 hover:bg-slate-800 rounded transition-colors"
+                      title="Reboot VPS Node"
+                    >
+                      <RotateCw size={13} />
+                    </button>
+                    <button
+                      onClick={() => triggerSafeCommand(srv, 'restart')}
+                      className="p-1.5 text-slate-400 hover:text-rose-400 hover:bg-slate-800 rounded transition-colors"
+                      title="Restart Server"
+                    >
+                      <Power size={13} />
+                    </button>
                   </div>
-                  <div className="w-full bg-slate-950 rounded-full h-1.5 overflow-hidden">
-                    <div
-                      className={`h-1.5 rounded-full ${cpu > 90 ? 'bg-rose-500' : cpu > 80 ? 'bg-amber-500' : 'bg-emerald-500'}`}
-                      style={{ width: `${cpu}%` }}
-                    />
-                  </div>
-                </div>
-
-                <div>
-                  <div className="flex justify-between text-slate-400 text-[11px] mb-1">
-                    <span>RAM ({srv.ram_total_mb} MB)</span>
-                    <span className="mono font-semibold text-slate-200">{ram}%</span>
-                  </div>
-                  <div className="w-full bg-slate-950 rounded-full h-1.5 overflow-hidden">
-                    <div
-                      className={`h-1.5 rounded-full ${ram > 90 ? 'bg-rose-500' : 'bg-blue-500'}`}
-                      style={{ width: `${ram}%` }}
-                    />
-                  </div>
-                </div>
-
-                <div>
-                  <div className="flex justify-between text-slate-400 text-[11px] mb-1">
-                    <span>Disk Capacity ({srv.disk_total_gb} GB NVMe)</span>
-                    <span className="mono font-semibold text-slate-200">{disk}%</span>
-                  </div>
-                  <div className="w-full bg-slate-950 rounded-full h-1.5 overflow-hidden">
-                    <div
-                      className="h-1.5 rounded-full bg-purple-500"
-                      style={{ width: `${disk}%` }}
-                    />
-                  </div>
-                </div>
-              </div>
-
-              {/* Node Details & Safeguard Actions */}
-              <div className="pt-3 border-t border-slate-800 flex items-center justify-between text-[11px] text-slate-400">
-                <span>Agent: <strong className="text-slate-300 font-mono">v{srv.agent_version}</strong></span>
-                <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
-                  <button
-                    onClick={() => triggerSafeCommand(srv, 'reboot')}
-                    className="p-1.5 text-slate-400 hover:text-amber-400 hover:bg-slate-800 rounded transition-colors"
-                    title="Reboot VPS Node"
-                  >
-                    <RotateCw size={13} />
-                  </button>
-                  <button
-                    onClick={() => triggerSafeCommand(srv, 'restart')}
-                    className="p-1.5 text-slate-400 hover:text-rose-400 hover:bg-slate-800 rounded transition-colors"
-                    title="Restart Server"
-                  >
-                    <Power size={13} />
-                  </button>
                 </div>
               </div>
-            </div>
-          );
-        })}
-      </div>
+            );
+          })}
+        </div>
+      )}
 
       {/* Selected Server Deep Dive */}
       {selectedServer && (

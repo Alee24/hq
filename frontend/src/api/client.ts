@@ -330,6 +330,13 @@ class ApiClient {
     return this.request<any[]>('/admin/users');
   }
 
+  async createUser(data: any) {
+    return this.request<any>('/admin/users', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
   async updateUserRole(userId: string, role: string) {
     return this.request<any>(`/admin/users/${userId}/role?role=${role}`, { method: 'PUT' });
   }

@@ -1,55 +1,128 @@
 import asyncio
 import time
 from datetime import datetime, timezone, timedelta
-from sqlalchemy import select
+from sqlalchemy import select, delete
 from backend.app.core.database import engine, AsyncSessionLocal, Base
+from backend.app.core.config import settings
 from backend.app.core.security import hash_password, sign_license_payload
 from backend.app.models.entities import (
     User, Server, Application, Domain, ServerMetric, MonitoringResult,
     Deployment, License, LicenseActivation, Alert, AlertRule, Backup, AppLog, AuditLog, Incident
 )
 
-async def init_db(seed_demo: bool = True):
+async def purge_dummy_data():
+    """Purges all dummy data (servers, applications, domains, mock licenses,
+    mock deployments, mock incidents, mock alerts, mock logs, and demo users)
+    leaving a clean, production-ready system with only the authoritative Super Admin
+    and default monitoring alert rules."""
+    async with AsyncSessionLocal() as db:
+        # Delete dependent child tables first
+        await db.execute(delete(ServerMetric))
+        await db.execute(delete(MonitoringResult))
+        await db.execute(delete(AppLog))
+        await db.execute(delete(Incident))
+        await db.execute(delete(Backup))
+        await db.execute(delete(Alert))
+        await db.execute(delete(Deployment))
+        await db.execute(delete(Domain))
+        await db.execute(delete(Application))
+        await db.execute(delete(Server))
+        await db.execute(delete(LicenseActivation))
+        await db.execute(delete(License))
+        await db.execute(delete(AuditLog))
+        
+        # Remove all non-admin demo / test users
+        await db.execute(delete(User).where(User.username != settings.ADMIN_USERNAME))
+        
+        # Ensure Super Admin exists
+        res = await db.execute(select(User).where(User.username == settings.ADMIN_USERNAME))
+        admin_user = res.scalar_one_or_none()
+        if not admin_user:
+            admin_user = User(
+                username=settings.ADMIN_USERNAME,
+                email=settings.ADMIN_EMAIL,
+                hashed_password=hash_password(settings.ADMIN_PASSWORD),
+                full_name="Enterprise Super Administrator",
+                role="SUPER_ADMIN",
+                is_active=True
+            )
+            db.add(admin_user)
+            await db.flush()
+        else:
+            admin_user.is_active = True
+            admin_user.role = "SUPER_ADMIN"
+            
+        # Ensure standard Alert Rules exist
+        rule_check = await db.execute(select(AlertRule).limit(1))
+        if not rule_check.scalar_one_or_none():
+            rules_data = [
+                ("High CPU Utilization Warning", "cpu", "GREATER_THAN", 80.0, "WARNING", "ALL"),
+                ("Critical CPU Utilization", "cpu", "GREATER_THAN", 95.0, "CRITICAL", "ALL"),
+                ("High Memory Critical", "ram", "GREATER_THAN", 90.0, "CRITICAL", "ALL"),
+                ("Disk Capacity Critical", "disk", "GREATER_THAN", 90.0, "CRITICAL", "ALL"),
+                ("SSL Certificate Expiration Warning", "ssl_days", "LESS_THAN", 30.0, "WARNING", "ALL"),
+                ("License Expiration Warning", "license_days", "LESS_THAN", 30.0, "WARNING", "ALL")
+            ]
+            for r_name, m_name, cond, thresh, r_sev, chan in rules_data:
+                db.add(AlertRule(
+                    name=r_name,
+                    metric_name=m_name,
+                    condition=cond,
+                    threshold=thresh,
+                    severity=r_sev,
+                    channel=chan
+                ))
+
+        await db.commit()
+
+async def init_db(seed_demo: bool = False):
     # Create all tables
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
     async with AsyncSessionLocal() as db:
-        # Check if users already exist
-        res = await db.execute(select(User).limit(1))
-        existing_user = res.scalar_one_or_none()
-        if existing_user:
-            return # Database already initialized
-
-        now = datetime.now(timezone.utc)
-
-        # 1. Seed Users with various RBAC roles
-        users_data = [
-            ("admin", "admin@command-center.local", "Password123!", "Enterprise Super Admin", "SUPER_ADMIN"),
-            ("infra_admin", "infra@command-center.local", "Password123!", "Infrastructure Lead", "INFRASTRUCTURE_ADMIN"),
-            ("deploy_admin", "deploy@command-center.local", "Password123!", "Release Engineer", "DEPLOYMENT_ADMIN"),
-            ("app_admin", "app@command-center.local", "Password123!", "Application Manager", "APPLICATION_ADMIN"),
-            ("license_admin", "license@command-center.local", "Password123!", "License Compliance Officer", "LICENSE_ADMIN"),
-            ("viewer", "viewer@command-center.local", "Password123!", "ICT Audit Inspector", "READ_ONLY")
-        ]
-        created_users = {}
-        for username, email, pwd, name, role in users_data:
+        # Check if root admin exists
+        res = await db.execute(select(User).where(User.username == settings.ADMIN_USERNAME))
+        existing_admin = res.scalar_one_or_none()
+        if not existing_admin:
             u = User(
-                username=username,
-                email=email,
-                hashed_password=hash_password(pwd),
-                full_name=name,
-                role=role,
+                username=settings.ADMIN_USERNAME,
+                email=settings.ADMIN_EMAIL,
+                hashed_password=hash_password(settings.ADMIN_PASSWORD),
+                full_name="Enterprise Super Administrator",
+                role="SUPER_ADMIN",
                 is_active=True
             )
             db.add(u)
-            created_users[username] = u
+            await db.flush()
 
-        await db.flush()
+        # Ensure standard Alert Rules exist
+        rule_res = await db.execute(select(AlertRule).limit(1))
+        if not rule_res.scalar_one_or_none():
+            rules_data = [
+                ("High CPU Utilization Warning", "cpu", "GREATER_THAN", 80.0, "WARNING", "ALL"),
+                ("Critical CPU Utilization", "cpu", "GREATER_THAN", 95.0, "CRITICAL", "ALL"),
+                ("High Memory Critical", "ram", "GREATER_THAN", 90.0, "CRITICAL", "ALL"),
+                ("Disk Capacity Critical", "disk", "GREATER_THAN", 90.0, "CRITICAL", "ALL"),
+                ("SSL Certificate Expiration Warning", "ssl_days", "LESS_THAN", 30.0, "WARNING", "ALL"),
+                ("License Expiration Warning", "license_days", "LESS_THAN", 30.0, "WARNING", "ALL")
+            ]
+            for r_name, m_name, cond, thresh, r_sev, chan in rules_data:
+                db.add(AlertRule(
+                    name=r_name,
+                    metric_name=m_name,
+                    condition=cond,
+                    threshold=thresh,
+                    severity=r_sev,
+                    channel=chan
+                ))
+            await db.flush()
 
         if not seed_demo:
             await db.commit()
             return
+
+        now = datetime.now(timezone.utc)
 
         # 2. Seed 3 VPS Servers
         servers_data = [

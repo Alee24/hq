@@ -92,29 +92,29 @@ export const MonitoringView: React.FC = () => {
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <div className="p-4 rounded-xl bg-slate-900 border border-slate-800 space-y-1">
           <span className="text-xs text-slate-500">Average Response Time</span>
-          <div className="text-2xl font-bold text-white mono">{data?.average_response_time_ms || 42.5} ms</div>
+          <div className="text-2xl font-bold text-white mono">{data?.average_response_time_ms || 0} ms</div>
           <div className="text-[11px] text-emerald-400 flex items-center gap-1">
-            <TrendingDown size={12} /> Within optimal 100ms budget
+            <TrendingDown size={12} /> Real-time active SLA budget
           </div>
         </div>
 
         <div className="p-4 rounded-xl bg-slate-900 border border-slate-800 space-y-1">
           <span className="text-xs text-slate-500">Fastest Probe (Min)</span>
-          <div className="text-2xl font-bold text-emerald-400 mono">{data?.min_response_time_ms || 18.2} ms</div>
+          <div className="text-2xl font-bold text-emerald-400 mono">{data?.min_response_time_ms || 0} ms</div>
           <div className="text-[11px] text-slate-400">DNS & TTFB latency</div>
         </div>
 
         <div className="p-4 rounded-xl bg-slate-900 border border-slate-800 space-y-1">
           <span className="text-xs text-slate-500">Slowest Probe (Max)</span>
-          <div className="text-2xl font-bold text-amber-400 mono">{data?.max_response_time_ms || 148.0} ms</div>
-          <div className="text-[11px] text-slate-400">Database rollup query</div>
+          <div className="text-2xl font-bold text-amber-400 mono">{data?.max_response_time_ms || 0} ms</div>
+          <div className="text-[11px] text-slate-400">Longest endpoint probe</div>
         </div>
 
         <div className="p-4 rounded-xl bg-slate-900 border border-slate-800 space-y-1">
           <span className="text-xs text-slate-500">Global Cluster SLA</span>
-          <div className="text-2xl font-bold text-emerald-400 mono">{data?.uptime_percent || 99.98}%</div>
+          <div className="text-2xl font-bold text-emerald-400 mono">{data?.uptime_percent !== undefined ? data.uptime_percent : 100.0}%</div>
           <div className="text-[11px] text-emerald-400 flex items-center gap-1">
-            <CheckCircle2 size={12} /> Exceeds 99.9% target
+            <CheckCircle2 size={12} /> Target 99.9% uptime SLA
           </div>
         </div>
       </div>
@@ -174,15 +174,23 @@ export const MonitoringView: React.FC = () => {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800/60 text-slate-300">
-              {data?.incidents?.map((inc: any) => (
-                <tr key={inc.id} className="hover:bg-slate-800/40">
-                  <td className="py-3 px-3 font-semibold text-white">{inc.title}</td>
-                  <td className="py-3 px-3"><StatusBadge status={inc.severity} size="sm" /></td>
-                  <td className="py-3 px-3"><StatusBadge status={inc.status} size="sm" /></td>
-                  <td className="py-3 px-3 mono text-slate-400">{new Date(inc.started_at).toLocaleString()}</td>
-                  <td className="py-3 px-3 mono text-emerald-400 font-semibold">{Math.round(inc.duration_seconds / 60)} mins</td>
+              {(!data?.incidents || data.incidents.length === 0) ? (
+                <tr>
+                  <td colSpan={5} className="py-8 text-center text-slate-500">
+                    No downtime incidents or outages recorded. All services operating normally within SLA.
+                  </td>
                 </tr>
-              ))}
+              ) : (
+                data.incidents.map((inc: any) => (
+                  <tr key={inc.id} className="hover:bg-slate-800/40">
+                    <td className="py-3 px-3 font-semibold text-white">{inc.title}</td>
+                    <td className="py-3 px-3"><StatusBadge status={inc.severity} size="sm" /></td>
+                    <td className="py-3 px-3"><StatusBadge status={inc.status} size="sm" /></td>
+                    <td className="py-3 px-3 mono text-slate-400">{new Date(inc.started_at).toLocaleString()}</td>
+                    <td className="py-3 px-3 mono text-emerald-400 font-semibold">{Math.round(inc.duration_seconds / 60)} mins</td>
+                  </tr>
+                ))
+              )}
             </tbody>
           </table>
         </div>

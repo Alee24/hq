@@ -80,7 +80,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
 
   const apps = data?.applications || { total: 0, online: 0, degraded: 0, offline: 0, maintenance: 0 };
   const srvs = data?.servers || { total: 0, online: 0, offline: 0 };
-  const uptime = data?.uptime?.average_uptime || 99.98;
+  const uptime = data?.uptime?.average_uptime !== undefined ? data.uptime.average_uptime : 100.0;
   const lics = data?.licenses || { total: 0, valid: 0, expiring_soon: 0, expired: 0 };
   const deps = data?.deployments || { today: 0, failed: 0, recent: [] };
   const alerts = data?.active_alerts || [];
@@ -230,7 +230,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
         <div className="p-3.5 rounded-lg bg-slate-900/60 border border-slate-800 flex items-center justify-between">
           <div>
             <div className="text-xs text-slate-400">SSL Expiring &lt;30d</div>
-            <div className="text-lg font-bold text-amber-400 mono">{data?.ssl?.expiring_soon || 2}</div>
+            <div className="text-lg font-bold text-amber-400 mono">{data?.ssl?.expiring_soon || 0}</div>
           </div>
           <ShieldAlert size={18} className="text-amber-400" />
         </div>
@@ -238,7 +238,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
         <div className="p-3.5 rounded-lg bg-slate-900/60 border border-slate-800 flex items-center justify-between">
           <div>
             <div className="text-xs text-slate-400">Git Updates Available</div>
-            <div className="text-lg font-bold text-brand-400 mono">{data?.pending_updates || 1}</div>
+            <div className="text-lg font-bold text-brand-400 mono">{data?.pending_updates || 0}</div>
           </div>
           <GitPullRequest size={18} className="text-brand-400" />
         </div>
@@ -358,7 +358,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
           <div>
             <div className="text-xs font-semibold text-slate-200">Incident Management & Downtime Log</div>
             <div className="text-[11px] text-slate-400">
-              {incidents.length} recorded incidents across the past 30 days. All resolved within 45m SLA.
+              {incidents.length === 0 ? '0 recorded incidents. All services operating normally within SLA.' : `${incidents.length} recorded incidents across the past 30 days.`}
             </div>
           </div>
         </div>

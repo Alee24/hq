@@ -27,7 +27,7 @@ export const DeploymentsView: React.FC = () => {
   const [selectedAppId, setSelectedAppId] = useState('');
   const [env, setEnv] = useState('production');
   const [branch, setBranch] = useState('main');
-  const [commitHash, setCommitHash] = useState('91bd721');
+  const [commitHash, setCommitHash] = useState('');
   const [runTests, setRunTests] = useState(true);
   const [createBackup, setCreateBackup] = useState(true);
   const [deploying, setDeploying] = useState(false);
@@ -55,6 +55,7 @@ export const DeploymentsView: React.FC = () => {
       setApps(appList);
       if (appList.length > 0 && !selectedAppId) {
         setSelectedAppId(appList[0].id);
+        setCommitHash(appList[0].current_commit || 'HEAD');
       }
     } catch (e) {
       console.error(e);
@@ -199,8 +200,23 @@ export const DeploymentsView: React.FC = () => {
                 </tr>
               ) : deployments.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="py-12 text-center text-slate-500">
-                    No deployment history found.
+                  <td colSpan={9} className="py-16 text-center text-slate-400">
+                    <div className="space-y-3 max-w-sm mx-auto">
+                      <div className="p-3 bg-slate-950 border border-slate-800 w-12 h-12 rounded-xl mx-auto flex items-center justify-center text-slate-400">
+                        <Rocket size={24} />
+                      </div>
+                      <div className="font-semibold text-white text-sm">No Deployments Executed</div>
+                      <p className="text-xs text-slate-500">
+                        Execute controlled 13-step zero-downtime releases with automated rollbacks and pre-deployment backups.
+                      </p>
+                      <button
+                        onClick={() => setTriggerModalOpen(true)}
+                        className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-brand-600 hover:bg-brand-500 text-white rounded-lg text-xs font-semibold shadow-sm transition-colors"
+                      >
+                        <Plus size={14} />
+                        <span>Launch First Deployment</span>
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ) : (

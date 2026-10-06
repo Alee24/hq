@@ -80,18 +80,19 @@ async def get_server_processes(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """Returns top running processes on the server."""
-    return [
-        {"pid": 1, "name": "systemd", "user": "root", "cpu_percent": 0.1, "ram_mb": 24.5, "status": "running"},
-        {"pid": 894, "name": "dockerd", "user": "root", "cpu_percent": 2.4, "ram_mb": 142.0, "status": "running"},
-        {"pid": 1042, "name": "nginx: master", "user": "root", "cpu_percent": 0.4, "ram_mb": 42.1, "status": "running"},
-        {"pid": 1043, "name": "nginx: worker", "user": "www-data", "cpu_percent": 1.2, "ram_mb": 68.3, "status": "running"},
-        {"pid": 1420, "name": "postgres: main", "user": "postgres", "cpu_percent": 3.8, "ram_mb": 512.4, "status": "running"},
-        {"pid": 1821, "name": "redis-server", "user": "redis", "cpu_percent": 0.8, "ram_mb": 94.0, "status": "running"},
-        {"pid": 2340, "name": "node /app/server", "user": "node", "cpu_percent": 4.1, "ram_mb": 284.6, "status": "running"},
-        {"pid": 2891, "name": "python uvicorn", "user": "fastapi", "cpu_percent": 3.2, "ram_mb": 210.8, "status": "running"},
-        {"pid": 3411, "name": "monitoring-agent", "user": "agent", "cpu_percent": 0.2, "ram_mb": 18.2, "status": "running"}
-    ]
+    """Returns top running processes reported by the server monitoring agent."""
+    result = await db.execute(select(Server).where(Server.id == server_id, Server.deleted_at == None))
+    srv = result.scalar_one_or_none()
+    if not srv:
+        raise HTTPException(status_code=404, detail="Server not found.")
+        
+    met_res = await db.execute(
+        select(ServerMetric).where(ServerMetric.server_id == server_id).order_by(ServerMetric.timestamp.desc()).limit(1)
+    )
+    latest_met = met_res.scalar_one_or_none()
+    if latest_met and hasattr(latest_met, "process_list") and latest_met.process_list:
+        return latest_met.process_list
+    return []
 
 @router.post("", response_model=ServerResponse)
 async def create_server(

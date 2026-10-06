@@ -93,34 +93,40 @@ export const TopologyView: React.FC = () => {
           <div className="text-center text-[11px] font-semibold uppercase text-slate-500 tracking-wider mb-4">
             Physical & VPS Host Cluster (Click a host to filter applications)
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {serverNodes.map((srv: any) => {
-              const isSelected = selectedServerId === srv.id;
-              return (
-                <div
-                  key={srv.id}
-                  onClick={() => setSelectedServerId(isSelected ? null : srv.id)}
-                  className={`p-4 rounded-xl border cursor-pointer transition-all space-y-3 ${
-                    isSelected
-                      ? 'bg-slate-900 border-brand-500 ring-2 ring-brand-500/30'
-                      : 'bg-slate-900/60 border-slate-800 hover:border-slate-700'
-                  }`}
-                >
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <Server size={18} className="text-emerald-400" />
-                      <span className="font-semibold text-xs text-white">{srv.label}</span>
+          {serverNodes.length === 0 ? (
+            <div className="py-8 text-center text-slate-500 text-xs bg-slate-900/40 rounded-xl border border-slate-800">
+              No VPS host nodes connected. Register a server to establish cluster ingress topology.
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              {serverNodes.map((srv: any) => {
+                const isSelected = selectedServerId === srv.id;
+                return (
+                  <div
+                    key={srv.id}
+                    onClick={() => setSelectedServerId(isSelected ? null : srv.id)}
+                    className={`p-4 rounded-xl border cursor-pointer transition-all space-y-3 ${
+                      isSelected
+                        ? 'bg-slate-900 border-brand-500 ring-2 ring-brand-500/30'
+                        : 'bg-slate-900/60 border-slate-800 hover:border-slate-700'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <Server size={18} className="text-emerald-400" />
+                        <span className="font-semibold text-xs text-white">{srv.label}</span>
+                      </div>
+                      <StatusBadge status={srv.status} size="sm" />
                     </div>
-                    <StatusBadge status={srv.status} size="sm" />
+                    <div className="space-y-1 text-[11px] text-slate-400 mono">
+                      <div>Public IP: <span className="text-slate-200">{srv.metadata.ip}</span></div>
+                      <div>Hardware: <span className="text-slate-300">{srv.metadata.cores} Cores / {srv.metadata.ram_mb} MB</span></div>
+                    </div>
                   </div>
-                  <div className="space-y-1 text-[11px] text-slate-400 mono">
-                    <div>Public IP: <span className="text-slate-200">{srv.metadata.ip}</span></div>
-                    <div>Hardware: <span className="text-slate-300">{srv.metadata.cores} Cores / {srv.metadata.ram_mb} MB</span></div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+                );
+              })}
+            </div>
+          )}
         </div>
 
         <div className="flex justify-center">
@@ -132,36 +138,42 @@ export const TopologyView: React.FC = () => {
           <div className="text-center text-[11px] font-semibold uppercase text-slate-500 tracking-wider mb-4">
             Containerized Microservices & Web Applications
           </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
-            {appNodes
-              .filter((app: any) => {
-                if (!selectedServerId) return true;
-                // Match edges
-                return topology.edges.some(
-                  (e: any) => e.from === selectedServerId && e.to === app.id
-                );
-              })
-              .map((app: any) => (
-                <div
-                  key={app.id}
-                  className="p-3.5 rounded-lg bg-slate-900 border border-slate-800/80 hover:border-slate-700 transition-colors space-y-2"
-                >
-                  <div className="flex items-center justify-between">
-                    <span className="font-semibold text-xs text-white truncate max-w-[140px]">
-                      {app.label}
-                    </span>
-                    <StatusBadge status={app.status} size="sm" />
+          {appNodes.length === 0 ? (
+            <div className="py-8 text-center text-slate-500 text-xs bg-slate-900/40 rounded-xl border border-slate-800">
+              No applications registered. Register an application to map container endpoints.
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
+              {appNodes
+                .filter((app: any) => {
+                  if (!selectedServerId) return true;
+                  // Match edges
+                  return topology.edges.some(
+                    (e: any) => e.from === selectedServerId && e.to === app.id
+                  );
+                })
+                .map((app: any) => (
+                  <div
+                    key={app.id}
+                    className="p-3.5 rounded-lg bg-slate-900 border border-slate-800/80 hover:border-slate-700 transition-colors space-y-2"
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="font-semibold text-xs text-white truncate max-w-[140px]">
+                        {app.label}
+                      </span>
+                      <StatusBadge status={app.status} size="sm" />
+                    </div>
+                    <div className="text-[11px] font-mono text-slate-400 truncate">
+                      {app.metadata.domain}
+                    </div>
+                    <div className="flex items-center justify-between text-[10px] text-slate-500 pt-1 border-t border-slate-800">
+                      <span className="uppercase">{app.metadata.manager}</span>
+                      <span className="mono text-brand-400">{app.metadata.version}</span>
+                    </div>
                   </div>
-                  <div className="text-[11px] font-mono text-slate-400 truncate">
-                    {app.metadata.domain}
-                  </div>
-                  <div className="flex items-center justify-between text-[10px] text-slate-500 pt-1 border-t border-slate-800">
-                    <span className="uppercase">{app.metadata.manager}</span>
-                    <span className="mono text-brand-400">{app.metadata.version}</span>
-                  </div>
-                </div>
-              ))}
-          </div>
+                ))}
+            </div>
+          )}
         </div>
       </div>
     </div>

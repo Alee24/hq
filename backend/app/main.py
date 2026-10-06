@@ -28,8 +28,8 @@ from backend.app.api.system_health import router as system_health_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Initialize DB schema and seed data
-    await init_db(seed_demo=True)
+    # Initialize DB schema and core production configuration
+    await init_db(seed_demo=settings.SEED_DEMO_DATA)
     
     # Launch background monitoring worker loop
     monitoring_task = asyncio.create_task(monitoring_worker_loop())

@@ -96,14 +96,20 @@ async def get_system_health(
     # 8. Multi-Server Agent Network
     srv_res = await db.execute(select(Server).where(Server.is_active == True))
     servers = srv_res.scalars().all()
-    active_srv = sum(1 for s in servers if s.agent_status == "CONNECTED")
-    agent_status = "Healthy" if active_srv == len(servers) else ("Degraded" if active_srv > 0 else "Unavailable")
+    if servers:
+        active_srv = sum(1 for s in servers if s.agent_status == "CONNECTED")
+        agent_status = "Healthy" if active_srv == len(servers) else ("Degraded" if active_srv > 0 else "Unavailable")
+        agent_details = f"{active_srv}/{len(servers)} remote server agents reporting periodic telemetry."
+    else:
+        agent_status = "Healthy"
+        agent_details = "Telemetry receiver ready. 0 remote VPS nodes registered yet."
+
     items.append(SystemHealthItem(
         name="VPS Monitoring Agent Mesh",
         category="Infrastructure",
         status=agent_status,
-        latency_ms=14.2,
-        details=f"{active_srv}/{len(servers)} remote server agents reporting periodic telemetry."
+        latency_ms=0.5,
+        details=agent_details
     ))
 
     # 9. Git Integrations

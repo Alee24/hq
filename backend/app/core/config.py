@@ -18,8 +18,14 @@ class Settings(BaseSettings):
     # CORS
     BACKEND_CORS_ORIGINS: List[str] = ["*"]
     
-    # Environment
+    # Environment & Demo Data
     ENVIRONMENT: str = "production"
+    SEED_DEMO_DATA: bool = False
+    
+    # Root Super Administrator Defaults
+    ADMIN_USERNAME: str = "admin"
+    ADMIN_EMAIL: str = "admin@command-center.local"
+    ADMIN_PASSWORD: str = "Password123!"
     
     # Master Keypairs for License Management (Ed25519)
     # Stored or auto-generated if missing

@@ -131,7 +131,7 @@ class ApplicationCreate(BaseModel):
     description: Optional[str] = None
     environment: str = "production"
     domain: str
-    server_id: str
+    server_id: Optional[str] = None
     port: int = 80
     app_type: str = "Web Application"
     framework: str = "FastAPI / React"

@@ -5,6 +5,13 @@ from backend.app.main import app
 from backend.app.core.security import (
     verify_license_signature, generate_ed25519_keypair, sign_license_payload
 )
+from backend.app.core.init_db import purge_dummy_data
+
+@pytest_asyncio.fixture(autouse=True, scope="module")
+async def clean_database_after_tests():
+    yield
+    # Purge test residues to preserve a pristine production database state
+    await purge_dummy_data()
 
 @pytest.mark.asyncio
 async def test_auth_login_and_me():
@@ -31,9 +38,27 @@ async def test_auth_login_and_me():
 async def test_rbac_protection():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        # Super admin creates a read-only viewer user
+        admin_login = await ac.post("/api/auth/login", json={
+            "username_or_email": "admin",
+            "password": "Password123!"
+        })
+        admin_token = admin_login.json()["access_token"]
+        admin_headers = {"Authorization": f"Bearer {admin_token}"}
+
+        # Create viewer user
+        reg_res = await ac.post("/api/admin/users", json={
+            "username": "test_viewer_rbac",
+            "email": "test_viewer_rbac@enterprise.com",
+            "password": "Password123!",
+            "full_name": "Test Viewer",
+            "role": "READ_ONLY"
+        }, headers=admin_headers)
+        assert reg_res.status_code in [200, 400]
+
         # Login as viewer (READ_ONLY)
         login_res = await ac.post("/api/auth/login", json={
-            "username_or_email": "viewer",
+            "username_or_email": "test_viewer_rbac",
             "password": "Password123!"
         })
         assert login_res.status_code == 200
@@ -44,7 +69,6 @@ async def test_rbac_protection():
         create_res = await ac.post("/api/applications", json={
             "name": "Unauthorized App",
             "domain": "unauth.example.com",
-            "server_id": "test",
             "service_name": "test-svc"
         }, headers=headers)
         assert create_res.status_code == 403, "Viewer should be denied from creating applications"
@@ -72,7 +96,6 @@ async def test_cryptographic_license_signing_and_verification():
 async def test_license_online_validation_and_activation():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        # Get first seeded license
         login_res = await ac.post("/api/auth/login", json={
             "username_or_email": "admin",
             "password": "Password123!"
@@ -80,11 +103,20 @@ async def test_license_online_validation_and_activation():
         token = login_res.json()["access_token"]
         headers = {"Authorization": f"Bearer {token}"}
 
-        lics_res = await ac.get("/api/licenses", headers=headers)
-        assert lics_res.status_code == 200
-        lics = lics_res.json()
-        assert len(lics) > 0
-        lic = lics[0]
+        # Dynamically create license via API
+        create_res = await ac.post("/api/licenses", json={
+            "product_name": "Enterprise Core System",
+            "product_version": "v2.0.0",
+            "customer_name": "Acme Defense LLC",
+            "customer_email": "defense@acme.corp",
+            "license_type": "Enterprise",
+            "allowed_installations": 5,
+            "expires_in_days": 365,
+            "features": {"api": True, "clustering": True}
+        }, headers=headers)
+        assert create_res.status_code == 200
+        lic = create_res.json()
+        assert "license_key" in lic
 
         # Online Activation
         act_res = await ac.post("/api/licenses/activate", json={
@@ -124,9 +156,16 @@ async def test_server_command_safeguards():
         token = login_res.json()["access_token"]
         headers = {"Authorization": f"Bearer {token}"}
 
-        srvs_res = await ac.get("/api/servers", headers=headers)
-        assert srvs_res.status_code == 200
-        srv = srvs_res.json()[0]
+        # Dynamically create test server
+        srv_res = await ac.post("/api/servers", json={
+            "name": "vps-test-safeguard",
+            "hostname": "test.safeguard.net",
+            "provider": "Custom VPS",
+            "public_ip": "10.0.0.99",
+            "ssh_port": 22
+        }, headers=headers)
+        assert srv_res.status_code == 200
+        srv = srv_res.json()
 
         # 1. Reject dangerous restart without confirmation
         dangerous_fail = await ac.post(f"/api/servers/{srv['id']}/command", json={
@@ -154,9 +193,26 @@ async def test_deployment_pipeline_flow():
         token = login_res.json()["access_token"]
         headers = {"Authorization": f"Bearer {token}"}
 
-        apps_res = await ac.get("/api/applications", headers=headers)
-        assert apps_res.status_code == 200
-        app_obj = apps_res.json()[0]
+        # Dynamically create server and application
+        srv_res = await ac.post("/api/servers", json={
+            "name": "vps-test-deploy",
+            "hostname": "deploy.test.local",
+            "provider": "AWS EC2",
+            "public_ip": "10.0.0.101"
+        }, headers=headers)
+        assert srv_res.status_code == 200
+        server_id = srv_res.json()["id"]
+
+        app_res = await ac.post("/api/applications", json={
+            "name": "Test Pipeline App",
+            "environment": "production",
+            "domain": "test-pipeline.enterprise.local",
+            "server_id": server_id,
+            "service_name": "test-pipeline-service",
+            "process_manager": "Docker"
+        }, headers=headers)
+        assert app_res.status_code == 200
+        app_obj = app_res.json()
 
         # Trigger deployment pipeline
         dep_res = await ac.post("/api/deployments/trigger", json={

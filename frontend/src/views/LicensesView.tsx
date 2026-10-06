@@ -31,7 +31,7 @@ export const LicensesView: React.FC = () => {
   const [activationsModalLicense, setActivationsModalLicense] = useState<LicenseItem | null>(null);
 
   // Form
-  const [productName, setProductName] = useState('Smart Campus Enterprise Suite');
+  const [productName, setProductName] = useState('Enterprise Software Suite');
   const [customerName, setCustomerName] = useState('');
   const [customerEmail, setCustomerEmail] = useState('');
   const [licenseType, setLicenseType] = useState('Enterprise');
@@ -198,8 +198,23 @@ export const LicensesView: React.FC = () => {
                 </tr>
               ) : licenses.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="py-12 text-center text-slate-500">
-                    No enterprise licenses generated yet.
+                  <td colSpan={8} className="py-16 text-center text-slate-400">
+                    <div className="space-y-3 max-w-sm mx-auto">
+                      <div className="p-3 bg-slate-950 border border-slate-800 w-12 h-12 rounded-xl mx-auto flex items-center justify-center text-slate-400">
+                        <Key size={24} />
+                      </div>
+                      <div className="font-semibold text-white text-sm">No Licenses Generated</div>
+                      <p className="text-xs text-slate-500">
+                        Issue digitally signed cryptographic Ed25519 licenses with node quota tracking.
+                      </p>
+                      <button
+                        onClick={() => setCreateModalOpen(true)}
+                        className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-brand-600 hover:bg-brand-500 text-white rounded-lg text-xs font-semibold shadow-sm transition-colors"
+                      >
+                        <Plus size={14} />
+                        <span>Generate Digital License</span>
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ) : (
