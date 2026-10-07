@@ -24,7 +24,10 @@ import {
   EyeOff,
   ChevronDown,
   ChevronUp,
-  Trash2
+  Trash2,
+  Globe,
+  Search,
+  ExternalLink
 } from 'lucide-react';
 import { api } from '../api/client';
 
@@ -75,8 +78,22 @@ export const ServersView: React.FC = () => {
   const [serverToDelete, setServerToDelete] = useState<Server | null>(null);
 
   const [testingId, setTestingId] = useState<string | null>(null);
-
   const [testNotice, setTestNotice] = useState<{ id: string; text: string; ok: boolean } | null>(null);
+
+  // Live Processes & Telemetry States
+  const [processesLoading, setProcessesLoading] = useState(false);
+  const [processSearch, setProcessSearch] = useState('');
+  const [probingSystem, setProbingSystem] = useState(false);
+
+  // Website & Domain Discovery Scanner States
+  const [scanModalOpen, setScanModalOpen] = useState(false);
+  const [scanningWebsites, setScanningWebsites] = useState(false);
+  const [scanResult, setScanResult] = useState<{
+    total_discovered: number;
+    newly_imported: number;
+    websites: any[];
+    message: string;
+  } | null>(null);
 
   const loadServers = async (selectId?: string) => {
     try {
@@ -101,11 +118,46 @@ export const ServersView: React.FC = () => {
   };
 
   const loadProcesses = async (serverId: string) => {
+    setProcessesLoading(true);
     try {
       const p = await api.getServerProcesses(serverId);
       setProcesses(p);
     } catch {
       setProcesses([]);
+    } finally {
+      setProcessesLoading(false);
+    }
+  };
+
+  const handleProbeSystem = async (s: Server) => {
+    setProbingSystem(true);
+    try {
+      const res = await api.discoverServerSystem(s.id);
+      setSuccessBanner(res.message);
+      setTimeout(() => setSuccessBanner(null), 6000);
+      await loadServers(s.id);
+      loadProcesses(s.id);
+    } catch (err: any) {
+      alert(err.message || 'Failed to probe server specifications');
+    } finally {
+      setProbingSystem(false);
+    }
+  };
+
+  const handleScanWebsites = async (s: Server) => {
+    setScanModalOpen(true);
+    setScanningWebsites(true);
+    setScanResult(null);
+    try {
+      const res = await api.scanServerWebsites(s.id, true);
+      setScanResult(res);
+      setSuccessBanner(`Scanned ${s.name}: ${res.total_discovered} websites discovered, ${res.newly_imported} imported to Applications.`);
+      setTimeout(() => setSuccessBanner(null), 6000);
+      loadServers(s.id);
+    } catch (err: any) {
+      alert(err.message || 'Failed to scan server websites');
+    } finally {
+      setScanningWebsites(false);
     }
   };
 
@@ -514,6 +566,26 @@ export const ServersView: React.FC = () => {
               </button>
 
               <button
+                onClick={() => handleScanWebsites(selectedServer)}
+                disabled={scanningWebsites}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-purple-900/60 hover:bg-purple-800 text-purple-200 border border-purple-700/80 rounded-lg text-xs font-semibold shadow-sm transition-colors"
+                title="Audit Apache, Nginx, and Docker web apps to auto-import as Applications"
+              >
+                <Globe size={14} className={scanningWebsites ? "animate-spin text-purple-300" : "text-purple-400"} />
+                <span>{scanningWebsites ? 'Scanning Websites...' : 'Scan Hosted Websites'}</span>
+              </button>
+
+              <button
+                onClick={() => handleProbeSystem(selectedServer)}
+                disabled={probingSystem}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg text-xs font-semibold transition-colors"
+                title="Execute live hardware and OS telemetry probe via SSH"
+              >
+                <Activity size={14} className={probingSystem ? "animate-spin text-emerald-400" : "text-emerald-400"} />
+                <span>{probingSystem ? 'Probing...' : 'Probe Live Specs'}</span>
+              </button>
+
+              <button
                 onClick={() => handleOpenConnection(selectedServer)}
                 className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg text-xs font-semibold transition-colors"
               >
@@ -569,10 +641,20 @@ export const ServersView: React.FC = () => {
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             {/* Server Hardware & OS Inspector */}
             <div className="p-5 rounded-xl bg-slate-900 border border-slate-800 space-y-4">
-              <h3 className="text-sm font-semibold text-white flex items-center gap-2">
-                <Terminal size={16} className="text-brand-400" />
-                Hardware & Kernel Specification
-              </h3>
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-semibold text-white flex items-center gap-2">
+                  <Terminal size={16} className="text-brand-400" />
+                  Hardware & Kernel Specification
+                </h3>
+                <button
+                  onClick={() => handleProbeSystem(selectedServer)}
+                  disabled={probingSystem}
+                  className="text-slate-400 hover:text-white p-1 rounded hover:bg-slate-800 transition-colors"
+                  title="Probe live specifications via SSH"
+                >
+                  <RefreshCw size={13} className={probingSystem ? "animate-spin text-emerald-400" : ""} />
+                </button>
+              </div>
               <div className="space-y-2.5 text-xs">
                 <div className="flex justify-between py-1.5 border-b border-slate-800">
                   <span className="text-slate-400">Hostname:</span>
@@ -589,6 +671,18 @@ export const ServersView: React.FC = () => {
                 <div className="flex justify-between py-1.5 border-b border-slate-800">
                   <span className="text-slate-400">Hosting Provider:</span>
                   <span className="text-slate-200 font-medium">{selectedServer.provider}</span>
+                </div>
+                <div className="flex justify-between py-1.5 border-b border-slate-800">
+                  <span className="text-slate-400">CPU Cores:</span>
+                  <span className="mono text-slate-200 font-semibold">{selectedServer.cpu_cores} VCPU Cores</span>
+                </div>
+                <div className="flex justify-between py-1.5 border-b border-slate-800">
+                  <span className="text-slate-400">Total RAM:</span>
+                  <span className="mono text-slate-200 font-semibold">{selectedServer.ram_total_mb} MB ({Math.round(selectedServer.ram_total_mb / 1024)} GB)</span>
+                </div>
+                <div className="flex justify-between py-1.5 border-b border-slate-800">
+                  <span className="text-slate-400">Disk Capacity:</span>
+                  <span className="mono text-slate-200 font-semibold">{selectedServer.disk_total_gb} GB SSD</span>
                 </div>
                 <div className="flex justify-between py-1.5 border-b border-slate-800">
                   <span className="text-slate-400">Public IPv4:</span>
@@ -611,22 +705,38 @@ export const ServersView: React.FC = () => {
 
             {/* Running Process Manager Inspection */}
             <div className="p-5 rounded-xl bg-slate-900 border border-slate-800 space-y-4 col-span-2">
-              <h3 className="text-sm font-semibold text-white flex items-center justify-between">
-                <span className="flex items-center gap-2">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <h3 className="text-sm font-semibold text-white flex items-center gap-2">
                   <Activity size={16} className="text-emerald-400" />
                   Active System Daemons & Top Processes ({selectedServer.name})
-                </span>
-                <button
-                  onClick={() => loadProcesses(selectedServer.id)}
-                  className="p-1 hover:bg-slate-800 text-slate-400 rounded"
-                >
-                  <RefreshCw size={12} />
-                </button>
-              </h3>
-              <div className="overflow-x-auto">
+                </h3>
+                <div className="flex items-center gap-2">
+                  <div className="relative">
+                    <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500" />
+                    <input
+                      type="text"
+                      placeholder="Filter processes..."
+                      value={processSearch}
+                      onChange={(e) => setProcessSearch(e.target.value)}
+                      className="pl-7 pr-2.5 py-1 text-xs bg-slate-950 border border-slate-800 rounded-lg text-slate-200 placeholder-slate-500 focus:outline-none focus:border-brand-500 w-36 sm:w-44"
+                    />
+                  </div>
+                  <button
+                    onClick={() => loadProcesses(selectedServer.id)}
+                    disabled={processesLoading}
+                    className="flex items-center gap-1 px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs transition-colors"
+                    title="Live SSH Process Probe"
+                  >
+                    <RefreshCw size={12} className={processesLoading ? "animate-spin text-brand-400" : ""} />
+                    <span>{processesLoading ? 'Querying...' : 'Live Probe'}</span>
+                  </button>
+                </div>
+              </div>
+
+              <div className="overflow-x-auto max-h-[380px] overflow-y-auto">
                 <table className="w-full text-left text-xs border-collapse">
-                  <thead>
-                    <tr className="border-b border-slate-800 bg-slate-950/60 text-slate-400 uppercase text-[10px]">
+                  <thead className="sticky top-0 bg-slate-950 border-b border-slate-800 z-10">
+                    <tr className="text-slate-400 uppercase text-[10px]">
                       <th className="py-2.5 px-3">PID</th>
                       <th className="py-2.5 px-3">Service Process</th>
                       <th className="py-2.5 px-3">User</th>
@@ -636,24 +746,58 @@ export const ServersView: React.FC = () => {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800/60 text-slate-300 mono">
-                    {processes.length === 0 ? (
+                    {processesLoading ? (
                       <tr>
-                        <td colSpan={6} className="py-8 text-center text-slate-500">
-                          No active agent process metrics reported yet. Connect server to stream process table.
+                        <td colSpan={6} className="py-10 text-center text-slate-400">
+                          <div className="flex items-center justify-center gap-2">
+                            <RefreshCw size={14} className="animate-spin text-brand-400" />
+                            <span>Connecting via SSH to query top active processes (`ps aux`)...</span>
+                          </div>
                         </td>
                       </tr>
-                    ) : (
-                      processes.map((p) => (
-                        <tr key={p.pid} className="hover:bg-slate-800/40">
+                    ) : (() => {
+                      const filtered = processes.filter((p) => {
+                        if (!processSearch) return true;
+                        const q = processSearch.toLowerCase();
+                        return (
+                          p.name?.toLowerCase().includes(q) ||
+                          p.user?.toLowerCase().includes(q) ||
+                          String(p.pid).includes(q) ||
+                          p.command?.toLowerCase().includes(q)
+                        );
+                      });
+
+                      if (filtered.length === 0) {
+                        return (
+                          <tr>
+                            <td colSpan={6} className="py-8 text-center text-slate-500">
+                              {processSearch ? 'No matching processes found.' : 'No processes returned. Click "Live Probe" to execute query via SSH.'}
+                            </td>
+                          </tr>
+                        );
+                      }
+
+                      return filtered.map((p) => (
+                        <tr key={p.pid} className="hover:bg-slate-800/40" title={p.command}>
                           <td className="py-2 px-3 text-slate-400">{p.pid}</td>
-                          <td className="py-2 px-3 font-semibold text-white">{p.name}</td>
+                          <td className="py-2 px-3 font-semibold text-white">
+                            <span className="cursor-help" title={p.command}>{p.name}</span>
+                          </td>
                           <td className="py-2 px-3 text-slate-400">{p.user}</td>
-                          <td className="py-2 px-3 text-emerald-400">{p.cpu_percent}%</td>
-                          <td className="py-2 px-3">{p.ram_mb} MB</td>
-                          <td className="py-2 px-3"><span className="text-emerald-400 uppercase text-[10px]">{p.status}</span></td>
+                          <td className={`py-2 px-3 font-semibold ${p.cpu_percent > 10 ? 'text-amber-400' : 'text-emerald-400'}`}>
+                            {p.cpu_percent}%
+                          </td>
+                          <td className="py-2 px-3 text-slate-300">
+                            {p.mem_percent !== undefined ? `${p.mem_percent}%` : (p.ram_mb ? `${p.ram_mb} MB` : '0.4%')}
+                          </td>
+                          <td className="py-2 px-3">
+                            <span className="px-1.5 py-0.5 rounded text-[10px] uppercase font-semibold bg-emerald-950/80 text-emerald-400 border border-emerald-800/60">
+                              {p.status || 'RUNNING'}
+                            </span>
+                          </td>
                         </tr>
-                      ))
-                    )}
+                      ));
+                    })()}
                   </tbody>
                 </table>
               </div>
@@ -892,6 +1036,108 @@ export const ServersView: React.FC = () => {
           isOpen={backupModalOpen}
           onClose={() => setBackupModalOpen(false)}
         />
+      )}
+
+      {/* Website & Domain Discovery Scanner Modal */}
+      {scanModalOpen && selectedServer && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-150">
+          <div className="w-full max-w-2xl bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[85vh]">
+            <div className="p-5 border-b border-slate-800 flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-purple-950/80 border border-purple-800/80 rounded-xl text-purple-400">
+                  <Globe size={18} />
+                </div>
+                <div>
+                  <h3 className="font-semibold text-white text-sm">
+                    Automated Website & Domain Discovery Scanner
+                  </h3>
+                  <p className="text-xs text-slate-400">
+                    Host: {selectedServer.name} <span className="font-mono text-purple-400">({selectedServer.public_ip})</span>
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setScanModalOpen(false)}
+                className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition-colors text-xs"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="p-5 overflow-y-auto space-y-4 text-xs">
+              {scanningWebsites ? (
+                <div className="py-12 flex flex-col items-center justify-center space-y-3 text-center">
+                  <RefreshCw size={28} className="animate-spin text-purple-400" />
+                  <div className="font-semibold text-white text-sm">Connecting & Scanning VPS Web Stack...</div>
+                  <div className="text-slate-400 max-w-md">
+                    Inspecting Apache2 VirtualHosts (/etc/apache2/sites-enabled/), Nginx server blocks (/etc/nginx/sites-enabled/), and running Docker containers via SSH...
+                  </div>
+                </div>
+              ) : scanResult ? (
+                <div className="space-y-4">
+                  <div className="p-3.5 bg-emerald-950/60 border border-emerald-800/80 rounded-xl text-emerald-300 flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <CheckCircle2 size={16} className="text-emerald-400 shrink-0" />
+                      <span>{scanResult.message}</span>
+                    </div>
+                    <span className="px-2 py-0.5 bg-emerald-900/80 text-emerald-200 rounded text-[11px] font-semibold">
+                      +{scanResult.newly_imported} Created
+                    </span>
+                  </div>
+
+                  <div className="rounded-xl border border-slate-800 overflow-hidden">
+                    <div className="bg-slate-950 px-3.5 py-2 border-b border-slate-800 font-semibold text-slate-300">
+                      Discovered Hosted Domains & Web Services ({scanResult.websites.length})
+                    </div>
+                    <div className="divide-y divide-slate-800/60 max-h-[300px] overflow-y-auto">
+                      {scanResult.websites.map((site: any, idx: number) => (
+                        <div key={idx} className="p-3 bg-slate-900/50 hover:bg-slate-800/50 flex items-center justify-between gap-3">
+                          <div className="space-y-0.5">
+                            <div className="flex items-center gap-2">
+                              <span className="font-semibold text-white text-xs">{site.domain || site.name}</span>
+                              <span className="px-1.5 py-0.5 rounded text-[10px] bg-slate-800 text-slate-300 border border-slate-700">
+                                {site.web_server || 'Docker'}
+                              </span>
+                              {site.ssl_enabled && (
+                                <span className="px-1.5 py-0.5 rounded text-[10px] bg-emerald-950 text-emerald-300 border border-emerald-800">
+                                  SSL Active
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-[11px] text-slate-400 font-mono">
+                              Port: {site.port} • Proxy / Target: {site.proxy_pass || site.root_path || 'Direct Host'}
+                            </div>
+                          </div>
+                          <span className="px-2 py-1 bg-brand-950 text-brand-300 border border-brand-800 rounded text-[11px] font-medium shrink-0">
+                            Managed in Apps
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+
+            <div className="p-4 bg-slate-950 border-t border-slate-800 flex items-center justify-between">
+              <button
+                onClick={() => handleScanWebsites(selectedServer)}
+                disabled={scanningWebsites}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-medium transition-colors"
+              >
+                <RefreshCw size={12} className={scanningWebsites ? "animate-spin" : ""} />
+                <span>Re-scan Server</span>
+              </button>
+
+              <button
+                onClick={() => setScanModalOpen(false)}
+                className="px-4 py-1.5 bg-brand-600 hover:bg-brand-500 text-white rounded-lg text-xs font-semibold shadow-sm transition-colors"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Delete Server Safeguard Modal */}

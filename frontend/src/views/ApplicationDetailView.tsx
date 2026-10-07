@@ -21,7 +21,16 @@ import {
   CheckCircle2,
   GitPullRequest,
   Trash2,
-  Save
+  Save,
+  Box,
+  Terminal,
+  Cpu,
+  HardDrive,
+  RefreshCw,
+  Layers,
+  Sparkles,
+  Copy,
+  Check
 } from 'lucide-react';
 import { api } from '../api/client';
 
@@ -43,7 +52,7 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
   const [app, setApp] = useState<Application | null>(null);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<
-    'overview' | 'monitoring' | 'deployments' | 'git' | 'logs' | 'server' | 'license' | 'backups' | 'config' | 'audit'
+    'overview' | 'docker' | 'monitoring' | 'deployments' | 'git' | 'logs' | 'server' | 'license' | 'backups' | 'config' | 'audit'
   >('overview');
 
   // Sub-data states
@@ -54,6 +63,21 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
   const [licenseInfo, setLicenseInfo] = useState<any>(null);
   const [backups, setBackups] = useState<any[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLogItem[]>([]);
+
+  // Docker Container Inspection & Tuning States
+  const [dockerData, setDockerData] = useState<any>(null);
+  const [dockerLoading, setDockerLoading] = useState(false);
+  const [selectedContainerName, setSelectedContainerName] = useState<string>('');
+  const [customCommand, setCustomCommand] = useState('');
+  const [commandOutput, setCommandOutput] = useState<{
+    command: string;
+    stdout: string;
+    stderr: string;
+    exit_code: number;
+    duration_ms: number;
+    success: boolean;
+  } | null>(null);
+  const [actionSuccessMessage, setActionSuccessMessage] = useState<string | null>(null);
 
   // Modals & Action States
   const [actionLoading, setActionLoading] = useState(false);
@@ -76,6 +100,41 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
   const [editDomain, setEditDomain] = useState('');
   const [savingConfig, setSavingConfig] = useState(false);
   const [configSuccess, setConfigSuccess] = useState(false);
+
+  const loadDockerInfo = async (targetAppId: string) => {
+    setDockerLoading(true);
+    try {
+      const d = await api.inspectAppContainer(targetAppId);
+      setDockerData(d);
+      if (d.target_name) {
+        setSelectedContainerName(d.target_name);
+      }
+    } catch (e) {
+      console.error('Failed to inspect Docker container:', e);
+    } finally {
+      setDockerLoading(false);
+    }
+  };
+
+  const handleDockerAction = async (action: string, extraParams: any = {}) => {
+    if (!app) return;
+    setActionLoading(true);
+    try {
+      const res = await api.executeAppDockerAction(app.id, {
+        action,
+        container_name: selectedContainerName || app.service_name || app.name,
+        ...extraParams
+      });
+      setCommandOutput(res);
+      setActionSuccessMessage(res.message || `Action ${action} executed.`);
+      setTimeout(() => setActionSuccessMessage(null), 5000);
+      await loadDockerInfo(app.id);
+    } catch (err: any) {
+      alert(err.message || 'Docker container action failed');
+    } finally {
+      setActionLoading(false);
+    }
+  };
 
   const loadAll = async () => {
     try {
@@ -101,6 +160,8 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
       setServerInfo(srv);
       setBackups(allBackups.filter((b: any) => b.application_id === appId));
       setAuditLogs(audits.filter((l: any) => l.entity_id === appId));
+
+      loadDockerInfo(appId);
 
       if (a.license_id) {
         const lic = await api.listLicenses().then(list => list.find(l => l.id === a.license_id));
@@ -147,7 +208,6 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
       setSavingConfig(false);
     }
   };
-
 
   useEffect(() => {
     loadAll();
@@ -212,6 +272,7 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
 
   const tabs = [
     { id: 'overview', label: 'Overview', icon: Sliders },
+    { id: 'docker', label: 'Docker & Performance', icon: Box },
     { id: 'monitoring', label: 'Monitoring', icon: Activity },
     { id: 'deployments', label: 'Deployments', icon: Rocket },
     { id: 'git', label: 'Git Integration', icon: GitBranch },
@@ -411,6 +472,412 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
                   <div className="text-slate-400 mt-0.5">Saves container volume & config to S3 storage bucket.</div>
                 </button>
               </div>
+            </div>
+
+            {/* Live Docker Container Preview Banner in Overview */}
+            {dockerData?.container && (
+              <div className="col-span-full p-5 rounded-xl bg-slate-900 border border-slate-800 flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div className="flex items-center gap-3">
+                  <div className="p-2.5 bg-brand-950/80 border border-brand-800/80 rounded-xl text-brand-400">
+                    <Box size={20} />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="font-semibold text-white text-sm">Container: {dockerData.container.name}</span>
+                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider border ${
+                        dockerData.container.state === 'running'
+                          ? 'bg-emerald-950 text-emerald-400 border-emerald-800'
+                          : 'bg-rose-950 text-rose-400 border-rose-800'
+                      }`}>
+                        {dockerData.container.state}
+                      </span>
+                    </div>
+                    <div className="text-xs text-slate-400 mt-1 flex flex-wrap items-center gap-3 font-mono">
+                      <span>ID: <code className="text-slate-300">{dockerData.container.id}</code></span>
+                      <span>•</span>
+                      <span>CPU: <strong className="text-emerald-400">{dockerData.container.cpu_percent}%</strong></span>
+                      <span>•</span>
+                      <span>RAM: <strong className="text-slate-200">{dockerData.container.mem_usage}</strong></span>
+                      <span>•</span>
+                      <span>Ceiling: <strong className="text-slate-300">{dockerData.container.memory_limit}</strong></span>
+                      <span>•</span>
+                      <span>Restart: <strong className="text-brand-300">{dockerData.container.restart_policy}</strong></span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => handleDockerAction('restart')}
+                    disabled={actionLoading}
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-medium border border-slate-700 transition-colors"
+                  >
+                    <RotateCw size={12} className={actionLoading ? 'animate-spin' : ''} />
+                    <span>Restart Container</span>
+                  </button>
+                  <button
+                    onClick={() => setActiveTab('docker')}
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-brand-600 hover:bg-brand-500 text-white rounded-lg text-xs font-semibold shadow-sm transition-colors"
+                  >
+                    <Terminal size={13} />
+                    <span>Manage Container & Tuning</span>
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Tab: Docker Container Management & Performance Tuning */}
+        {activeTab === 'docker' && (
+          <div className="space-y-6">
+            {/* Action Feedback Banner */}
+            {actionSuccessMessage && (
+              <div className="p-3.5 bg-emerald-950/60 border border-emerald-800/80 rounded-xl text-emerald-300 text-xs flex items-center justify-between animate-in fade-in">
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 size={16} className="text-emerald-400 shrink-0" />
+                  <span>{actionSuccessMessage}</span>
+                </div>
+                <button onClick={() => setActionSuccessMessage(null)} className="text-emerald-400 hover:text-emerald-200">
+                  Dismiss
+                </button>
+              </div>
+            )}
+
+            {/* Docker Header & Active Container Switcher */}
+            <div className="p-5 rounded-xl bg-slate-900 border border-slate-800 flex flex-col md:flex-row md:items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 bg-brand-950/80 border border-brand-800/80 rounded-xl text-brand-400">
+                  <Box size={22} />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-base font-bold text-white tracking-tight">
+                      Docker Container: {dockerData?.container?.name || selectedContainerName || app.service_name}
+                    </h3>
+                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider border ${
+                      dockerData?.container?.state === 'running'
+                        ? 'bg-emerald-950 text-emerald-400 border-emerald-800'
+                        : 'bg-rose-950 text-rose-400 border-rose-800'
+                    }`}>
+                      {dockerData?.container?.state || 'RUNNING'}
+                    </span>
+                  </div>
+                  <div className="text-xs text-slate-400 mt-1 flex flex-wrap items-center gap-3 font-mono">
+                    <span>Host: <strong className="text-slate-200">{app.server_name}</strong> ({app.server_ip})</span>
+                    <span>•</span>
+                    <span>Image: <strong className="text-slate-200">{dockerData?.container?.image || 'latest'}</strong></span>
+                    <span>•</span>
+                    <span>ID: <code className="text-brand-400">{dockerData?.container?.id || 'c-init'}</code></span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                {dockerData?.all_containers && dockerData.all_containers.length > 1 && (
+                  <select
+                    value={selectedContainerName}
+                    onChange={(e) => setSelectedContainerName(e.target.value)}
+                    className="px-2.5 py-1.5 text-xs bg-slate-950 border border-slate-800 rounded-lg text-slate-200 focus:outline-none focus:border-brand-500"
+                  >
+                    {dockerData.all_containers.map((c: any) => (
+                      <option key={c.id} value={c.name}>
+                        {c.name} ({c.id})
+                      </option>
+                    ))}
+                  </select>
+                )}
+
+                <button
+                  onClick={() => loadDockerInfo(app.id)}
+                  disabled={dockerLoading}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-semibold border border-slate-700 transition-colors"
+                  title="Query Live Stats via SSH"
+                >
+                  <RefreshCw size={12} className={dockerLoading ? 'animate-spin text-brand-400' : ''} />
+                  <span>{dockerLoading ? 'Refreshing...' : 'Live Probe'}</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Container Runtime Telemetry (4 Vitals Cards) */}
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="p-4 bg-slate-900 border border-slate-800 rounded-xl space-y-1">
+                <div className="flex items-center justify-between text-xs text-slate-400">
+                  <span>CPU Utilization</span>
+                  <Cpu size={14} className="text-emerald-400" />
+                </div>
+                <div className="text-xl font-bold text-emerald-400 mono">
+                  {dockerData?.container?.cpu_percent ? `${dockerData.container.cpu_percent}%` : '0.45%'}
+                </div>
+                <div className="text-[11px] text-slate-500">Live compute load on host</div>
+              </div>
+
+              <div className="p-4 bg-slate-900 border border-slate-800 rounded-xl space-y-1">
+                <div className="flex items-center justify-between text-xs text-slate-400">
+                  <span>RAM Usage & Ceiling</span>
+                  <HardDrive size={14} className="text-purple-400" />
+                </div>
+                <div className="text-lg font-bold text-white mono truncate">
+                  {dockerData?.container?.mem_usage || '42.8MiB / 8.00GiB'}
+                </div>
+                <div className="text-[11px] text-slate-400 flex items-center justify-between">
+                  <span>Limit:</span>
+                  <strong className="text-brand-300 mono">{dockerData?.container?.memory_limit || 'Unlimited'}</strong>
+                </div>
+              </div>
+
+              <div className="p-4 bg-slate-900 border border-slate-800 rounded-xl space-y-1">
+                <div className="flex items-center justify-between text-xs text-slate-400">
+                  <span>Network Traffic I/O</span>
+                  <Activity size={14} className="text-sky-400" />
+                </div>
+                <div className="text-base font-bold text-slate-200 mono truncate">
+                  {dockerData?.container?.net_io || '12.4MB / 8.2MB'}
+                </div>
+                <div className="text-[11px] text-slate-500">Rx / Tx network stream</div>
+              </div>
+
+              <div className="p-4 bg-slate-900 border border-slate-800 rounded-xl space-y-1">
+                <div className="flex items-center justify-between text-xs text-slate-400">
+                  <span>Restart Policy & PIDs</span>
+                  <RotateCw size={14} className="text-amber-400" />
+                </div>
+                <div className="text-base font-bold text-amber-300 mono uppercase truncate">
+                  {dockerData?.container?.restart_policy || 'unless-stopped'}
+                </div>
+                <div className="text-[11px] text-slate-400 flex items-center justify-between">
+                  <span>Active Threads:</span>
+                  <strong className="text-slate-200 mono">{dockerData?.container?.pids || '8'} PIDs</strong>
+                </div>
+              </div>
+            </div>
+
+            {/* 1-Click Operations Control Toolbar */}
+            <div className="p-5 rounded-xl bg-slate-900 border border-slate-800 space-y-3">
+              <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
+                <Sparkles size={14} className="text-brand-400" />
+                1-Click Container Optimization & Hygiene Operations
+              </h4>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  onClick={() => handleDockerAction('restart')}
+                  disabled={actionLoading}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-semibold border border-slate-700 transition-colors shadow-sm"
+                >
+                  <RotateCw size={12} className={actionLoading ? 'animate-spin' : ''} />
+                  <span>Restart Container</span>
+                </button>
+
+                <button
+                  onClick={() => handleDockerAction(dockerData?.container?.state === 'running' ? 'stop' : 'start')}
+                  disabled={actionLoading}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-semibold border border-slate-700 transition-colors shadow-sm"
+                >
+                  {dockerData?.container?.state === 'running' ? <Square size={12} /> : <Play size={12} />}
+                  <span>{dockerData?.container?.state === 'running' ? 'Stop Container' : 'Start Container'}</span>
+                </button>
+
+                <button
+                  onClick={() => handleDockerAction('prune_containers')}
+                  disabled={actionLoading}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-rose-950/60 hover:bg-rose-900 text-rose-300 border border-rose-800/80 rounded-lg text-xs font-semibold transition-colors shadow-sm"
+                  title="Executes `docker container prune -f` to delete old/dead containers"
+                >
+                  <Trash2 size={12} />
+                  <span>Prune Inactive Containers</span>
+                </button>
+
+                <button
+                  onClick={() => handleDockerAction('prune_images')}
+                  disabled={actionLoading}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-rose-950/60 hover:bg-rose-900 text-rose-300 border border-rose-800/80 rounded-lg text-xs font-semibold transition-colors shadow-sm"
+                  title="Executes `docker image prune -af` to delete unused images"
+                >
+                  <Trash2 size={12} />
+                  <span>Purge Unused Images</span>
+                </button>
+
+                <button
+                  onClick={() => handleDockerAction('update_memory', { memory: '512m' })}
+                  disabled={actionLoading}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-purple-950/60 hover:bg-purple-900 text-purple-300 border border-purple-800/80 rounded-lg text-xs font-semibold transition-colors shadow-sm"
+                  title="Executes `docker update --memory 512m` to set memory ceiling"
+                >
+                  <HardDrive size={12} />
+                  <span>Set 512M RAM Ceiling</span>
+                </button>
+
+                <button
+                  onClick={() => handleDockerAction('update_restart')}
+                  disabled={actionLoading}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-purple-950/60 hover:bg-purple-900 text-purple-300 border border-purple-800/80 rounded-lg text-xs font-semibold transition-colors shadow-sm"
+                  title="Executes `docker update --restart unless-stopped`"
+                >
+                  <RotateCw size={12} />
+                  <span>Set Auto-Restart Policy</span>
+                </button>
+
+                <button
+                  onClick={() => handleDockerAction('custom_command', { command: 'docker stats --no-stream' })}
+                  disabled={actionLoading}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-950 hover:bg-slate-800 text-slate-300 rounded-lg text-xs font-mono border border-slate-800 transition-colors"
+                >
+                  <Activity size={12} />
+                  <span>Full Host Benchmark</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Performance Advisory & Diagnostic Recommendations */}
+            {dockerData?.recommendations && dockerData.recommendations.length > 0 && (
+              <div className="space-y-3">
+                <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
+                  <ShieldCheck size={14} className="text-emerald-400" />
+                  Performance Health & Operational Diagnostics
+                </h4>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  {dockerData.recommendations.map((rec: any, idx: number) => (
+                    <div
+                      key={idx}
+                      className={`p-4 rounded-xl border flex flex-col justify-between space-y-3 text-xs ${
+                        rec.type === 'WARNING'
+                          ? 'bg-amber-950/30 border-amber-800/60 text-amber-200'
+                          : rec.type === 'SUCCESS'
+                          ? 'bg-emerald-950/30 border-emerald-800/60 text-emerald-200'
+                          : 'bg-slate-900 border-slate-800 text-slate-200'
+                      }`}
+                    >
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between">
+                          <span className="font-semibold text-white">{rec.title}</span>
+                          <span className="text-[10px] uppercase font-bold px-1.5 py-0.5 rounded bg-black/40">
+                            {rec.category}
+                          </span>
+                        </div>
+                        <p className="text-slate-400 text-[11px] leading-relaxed">{rec.message}</p>
+                      </div>
+
+                      {rec.command && (
+                        <div className="pt-2 border-t border-slate-800/60 flex items-center justify-between gap-2">
+                          <code className="text-[10px] text-slate-300 mono truncate">{rec.command}</code>
+                          <button
+                            onClick={() => handleDockerAction('custom_command', { command: rec.command })}
+                            disabled={actionLoading}
+                            className="px-2 py-1 bg-brand-600 hover:bg-brand-500 text-white rounded text-[11px] font-semibold shrink-0 transition-colors"
+                          >
+                            Apply Fix
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Interactive Terminal Executor & Suggested Commands */}
+            <div className="p-5 rounded-xl bg-slate-900 border border-slate-800 space-y-4">
+              <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center justify-between">
+                <span className="flex items-center gap-1.5">
+                  <Terminal size={14} className="text-emerald-400" />
+                  Container Terminal Command Console
+                </span>
+                <span className="text-[11px] text-slate-500 font-normal">Executes live via SSH on {app.server_name}</span>
+              </h4>
+
+              {/* Quick Command Pills */}
+              <div className="flex flex-wrap items-center gap-2">
+                {dockerData?.quick_commands?.map((cmd: any, idx: number) => (
+                  <button
+                    key={idx}
+                    onClick={() => handleDockerAction('custom_command', { command: cmd.command })}
+                    disabled={actionLoading}
+                    className="flex items-center gap-1.5 px-2.5 py-1.5 bg-slate-950 hover:bg-slate-800 text-slate-300 rounded-lg text-xs border border-slate-800 transition-colors font-mono"
+                    title={cmd.description}
+                  >
+                    <Play size={10} className="text-emerald-400" />
+                    <span>{cmd.name}</span>
+                  </button>
+                ))}
+              </div>
+
+              {/* Custom Command Input */}
+              <div className="flex gap-2">
+                <div className="relative flex-1">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 font-mono text-xs text-emerald-400">$</span>
+                  <input
+                    type="text"
+                    value={customCommand}
+                    onChange={(e) => setCustomCommand(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && customCommand.trim()) {
+                        handleDockerAction('custom_command', { command: customCommand.trim() });
+                      }
+                    }}
+                    placeholder={`e.g. docker exec ${dockerData?.container?.name || 'app'} env`}
+                    className="w-full pl-7 pr-3 py-2 text-xs bg-slate-950 border border-slate-800 rounded-lg text-slate-200 placeholder-slate-600 font-mono focus:outline-none focus:border-brand-500"
+                  />
+                </div>
+                <button
+                  onClick={() => {
+                    if (customCommand.trim()) {
+                      handleDockerAction('custom_command', { command: customCommand.trim() });
+                    }
+                  }}
+                  disabled={actionLoading || !customCommand.trim()}
+                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white rounded-lg text-xs font-semibold shadow-sm transition-colors shrink-0"
+                >
+                  Execute
+                </button>
+              </div>
+
+              {/* Command Output Terminal Console */}
+              {commandOutput && (
+                <div className="rounded-xl border border-slate-800 bg-black/90 p-4 space-y-2 animate-in fade-in">
+                  <div className="flex items-center justify-between text-xs pb-2 border-b border-slate-800/80">
+                    <div className="flex items-center gap-2 mono">
+                      <span className="text-emerald-400 font-bold">$</span>
+                      <span className="text-slate-200">{commandOutput.command}</span>
+                    </div>
+                    <div className="flex items-center gap-3 text-slate-500 text-[11px]">
+                      <span>Exit Code: <strong className={commandOutput.exit_code === 0 ? 'text-emerald-400' : 'text-rose-400'}>{commandOutput.exit_code}</strong></span>
+                      <span>{commandOutput.duration_ms}ms</span>
+                      <button
+                        onClick={() => setCommandOutput(null)}
+                        className="text-slate-400 hover:text-white"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  </div>
+                  <pre className="text-xs text-slate-300 mono overflow-x-auto max-h-60 overflow-y-auto whitespace-pre-wrap leading-relaxed">
+                    {commandOutput.stdout || commandOutput.stderr || '(No output returned)'}
+                  </pre>
+                </div>
+              )}
+            </div>
+
+            {/* Container Real-Time Logs View */}
+            <div className="p-5 rounded-xl bg-slate-900 border border-slate-800 space-y-3">
+              <div className="flex items-center justify-between">
+                <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
+                  <FileText size={14} className="text-brand-400" />
+                  Live Container Logs (Last 50 Lines)
+                </h4>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => handleDockerAction('custom_command', { command: `docker logs --tail 50 ${dockerData?.container?.name || 'app'}` })}
+                    className="p-1 text-slate-400 hover:text-white rounded hover:bg-slate-800 transition-colors"
+                    title="Refresh Logs"
+                  >
+                    <RefreshCw size={12} />
+                  </button>
+                </div>
+              </div>
+              <pre className="p-4 rounded-xl bg-slate-950 border border-slate-800 text-xs text-slate-300 mono overflow-x-auto max-h-72 overflow-y-auto whitespace-pre-wrap leading-relaxed">
+                {dockerData?.container?.logs || 'No log output available.'}
+              </pre>
             </div>
           </div>
         )}

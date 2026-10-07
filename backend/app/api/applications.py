@@ -16,6 +16,7 @@ from backend.app.schemas.api_schemas import (
 )
 from backend.app.services.audit import log_audit_event
 from backend.app.services.websocket_manager import ws_manager
+from backend.app.services.remote_executor import inspect_remote_container, execute_container_action
 
 router = APIRouter(prefix="/applications", tags=["Applications"])
 
@@ -370,4 +371,99 @@ async def delete_application(
     })
 
     return {"success": True, "message": f"Application '{app.name}' deregistered successfully."}
+
+@router.get("/{app_id}/docker/inspect")
+async def inspect_application_container(
+    app_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Connects to the server hosting this application, discovers matching Docker containers,
+    and loads deep runtime stats, configs, and optimization recommendations.
+    """
+    result = await db.execute(select(Application).where(Application.id == app_id, Application.deleted_at == None))
+    app = result.scalar_one_or_none()
+    if not app:
+        raise HTTPException(status_code=404, detail="Application not found.")
+
+    srv_res = await db.execute(select(Server).where(Server.id == app.server_id, Server.deleted_at == None))
+    srv = srv_res.scalar_one_or_none()
+    if not srv:
+        raise HTTPException(status_code=404, detail="Associated server node not found.")
+
+    data = inspect_remote_container(
+        server=srv,
+        app_name=app.name,
+        service_name=app.service_name,
+        port=app.port
+    )
+    return data
+
+@router.post("/{app_id}/docker/action")
+async def execute_app_docker_action(
+    app_id: str,
+    payload: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_roles(["SUPER_ADMIN", "APPLICATION_ADMIN", "INFRASTRUCTURE_ADMIN"]))
+):
+    """
+    Executes container control and performance optimization actions:
+    restart, stop, start, pause, unpause, prune_containers, prune_images, exec_cmd, update_memory, update_restart.
+    """
+    result = await db.execute(select(Application).where(Application.id == app_id, Application.deleted_at == None))
+    app = result.scalar_one_or_none()
+    if not app:
+        raise HTTPException(status_code=404, detail="Application not found.")
+
+    srv_res = await db.execute(select(Server).where(Server.id == app.server_id, Server.deleted_at == None))
+    srv = srv_res.scalar_one_or_none()
+    if not srv:
+        raise HTTPException(status_code=404, detail="Associated server node not found.")
+
+    action = payload.get("action", "restart")
+    container_target = payload.get("container_name") or app.service_name or app.name
+
+    res = execute_container_action(
+        server=srv,
+        container_name_or_id=container_target,
+        action=action,
+        params=payload
+    )
+
+    # Record app log
+    app_log = AppLog(
+        application_id=app.id,
+        server_id=srv.id,
+        category="docker",
+        severity="INFO" if res.get("success") else "WARN",
+        message=f"[{current_user.username}] Docker action '{action}' on '{container_target}': {res.get('message')}",
+        user=current_user.username
+    )
+    db.add(app_log)
+
+    await log_audit_event(
+        db=db,
+        action=f"DOCKER_{action.upper()}",
+        entity_type="application",
+        username=current_user.username,
+        user_id=current_user.id,
+        entity_id=app.id,
+        details={"action": action, "target": container_target, "exit_code": res.get("exit_code")},
+        result="SUCCESS" if res.get("success") else "FAILED"
+    )
+
+    await db.commit()
+
+    await ws_manager.broadcast({
+        "event": "docker_action_executed",
+        "application_id": app.id,
+        "server_id": srv.id,
+        "action": action,
+        "target": container_target,
+        "success": res.get("success")
+    })
+
+    return res
+
 

@@ -2,6 +2,7 @@ import pytest
 import pytest_asyncio
 from httpx import AsyncClient, ASGITransport
 from backend.app.main import app
+from backend.app.core.config import settings
 from backend.app.core.security import (
     verify_license_signature, generate_ed25519_keypair, sign_license_payload
 )
@@ -13,14 +14,21 @@ async def clean_database_after_tests():
     # Preserve user data and operational integrity across test runs
     pass
 
+async def get_admin_token(ac: AsyncClient) -> str:
+    login_res = await ac.post("/api/auth/login", json={
+        "username_or_email": settings.ADMIN_EMAIL,
+        "password": settings.ADMIN_PASSWORD
+    })
+    return login_res.json()["access_token"]
+
 @pytest.mark.asyncio
 async def test_auth_login_and_me():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         # 1. Login with valid super admin credentials
         login_res = await ac.post("/api/auth/login", json={
-            "username_or_email": "admin",
-            "password": "Password123!"
+            "username_or_email": settings.ADMIN_EMAIL,
+            "password": settings.ADMIN_PASSWORD
         })
         assert login_res.status_code == 200, f"Login failed: {login_res.text}"
         data = login_res.json()
@@ -32,18 +40,13 @@ async def test_auth_login_and_me():
         headers = {"Authorization": f"Bearer {token}"}
         me_res = await ac.get("/api/auth/me", headers=headers)
         assert me_res.status_code == 200
-        assert me_res.json()["username"] == "admin"
+        assert me_res.json()["email"] == settings.ADMIN_EMAIL
 
 @pytest.mark.asyncio
 async def test_rbac_protection():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        # Super admin creates a read-only viewer user
-        admin_login = await ac.post("/api/auth/login", json={
-            "username_or_email": "admin",
-            "password": "Password123!"
-        })
-        admin_token = admin_login.json()["access_token"]
+        admin_token = await get_admin_token(ac)
         admin_headers = {"Authorization": f"Bearer {admin_token}"}
 
         # Create viewer user
@@ -96,11 +99,7 @@ async def test_cryptographic_license_signing_and_verification():
 async def test_license_online_validation_and_activation():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        login_res = await ac.post("/api/auth/login", json={
-            "username_or_email": "admin",
-            "password": "Password123!"
-        })
-        token = login_res.json()["access_token"]
+        token = await get_admin_token(ac)
         headers = {"Authorization": f"Bearer {token}"}
 
         # Dynamically create license via API
@@ -149,11 +148,7 @@ async def test_license_online_validation_and_activation():
 async def test_server_command_safeguards():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        login_res = await ac.post("/api/auth/login", json={
-            "username_or_email": "admin",
-            "password": "Password123!"
-        })
-        token = login_res.json()["access_token"]
+        token = await get_admin_token(ac)
         headers = {"Authorization": f"Bearer {token}"}
 
         # Dynamically create test server
@@ -186,11 +181,7 @@ async def test_server_command_safeguards():
 async def test_deployment_pipeline_flow():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        login_res = await ac.post("/api/auth/login", json={
-            "username_or_email": "admin",
-            "password": "Password123!"
-        })
-        token = login_res.json()["access_token"]
+        token = await get_admin_token(ac)
         headers = {"Authorization": f"Bearer {token}"}
 
         # Dynamically create server and application
@@ -233,11 +224,7 @@ async def test_deployment_pipeline_flow():
 async def test_server_connection_and_terminal_execution():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        login_res = await ac.post("/api/auth/login", json={
-            "username_or_email": "admin",
-            "password": "Password123!"
-        })
-        token = login_res.json()["access_token"]
+        token = await get_admin_token(ac)
         headers = {"Authorization": f"Bearer {token}"}
 
         # 1. Create a server
@@ -289,11 +276,7 @@ async def test_server_connection_and_terminal_execution():
 async def test_database_backup_flow():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
-        login_res = await ac.post("/api/auth/login", json={
-            "username_or_email": "admin",
-            "password": "Password123!"
-        })
-        token = login_res.json()["access_token"]
+        token = await get_admin_token(ac)
         headers = {"Authorization": f"Bearer {token}"}
 
         # 1. Create server for database backup
@@ -333,4 +316,96 @@ async def test_database_backup_flow():
         del_res = await ac.delete(f"/api/backups/{backup_id}", headers=headers)
         assert del_res.status_code == 200
         assert del_res.json()["success"] is True
+
+@pytest.mark.asyncio
+async def test_server_processes_and_website_auto_discovery():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        token = await get_admin_token(ac)
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # 1. Create server
+        srv_res = await ac.post("/api/servers", json={
+            "name": "vps-node-discovery",
+            "hostname": "discovery.kkdes.co.ke",
+            "public_ip": "185.192.97.84",
+            "ssh_password": "TestPassword123"
+        }, headers=headers)
+        assert srv_res.status_code == 200
+        srv_id = srv_res.json()["id"]
+
+        # 2. Get processes (guaranteed non-empty list)
+        proc_res = await ac.get(f"/api/servers/{srv_id}/processes", headers=headers)
+        assert proc_res.status_code == 200
+        procs = proc_res.json()
+        assert isinstance(procs, list)
+        assert len(procs) > 0
+        assert "name" in procs[0]
+        assert "pid" in procs[0]
+
+        # 3. Trigger hardware probe
+        hw_res = await ac.post(f"/api/servers/{srv_id}/discover-system", headers=headers)
+        assert hw_res.status_code == 200
+        hw_data = hw_res.json()
+        assert hw_data["success"] is True
+        assert "cpu_cores" in hw_data["specs"]
+
+        # 4. Trigger website and domain scanner
+        scan_res = await ac.post(f"/api/servers/{srv_id}/scan-websites?auto_import=true", headers=headers)
+        assert scan_res.status_code == 200
+        scan_data = scan_res.json()
+        assert scan_data["success"] is True
+        assert scan_data["total_discovered"] > 0
+        assert len(scan_data["websites"]) > 0
+
+@pytest.mark.asyncio
+async def test_application_docker_inspection_and_actions():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        token = await get_admin_token(ac)
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # 1. Create server & application
+        srv_res = await ac.post("/api/servers", json={
+            "name": "vps-docker-test",
+            "hostname": "docker.test.local",
+            "public_ip": "10.0.0.77"
+        }, headers=headers)
+        assert srv_res.status_code == 200
+        srv_id = srv_res.json()["id"]
+
+        app_res = await ac.post("/api/applications", json={
+            "name": "Somesha App",
+            "domain": "somesha.kkdes.co.ke",
+            "server_id": srv_id,
+            "service_name": "somesha-web",
+            "port": 3000,
+            "process_manager": "Docker"
+        }, headers=headers)
+        assert app_res.status_code == 200
+        app_id = app_res.json()["id"]
+
+        # 2. Deep-inspect Docker container
+        insp_res = await ac.get(f"/api/applications/{app_id}/docker/inspect", headers=headers)
+        assert insp_res.status_code == 200
+        insp_data = insp_res.json()
+        assert "container" in insp_data
+        assert "recommendations" in insp_data
+        assert "quick_commands" in insp_data
+        assert len(insp_data["quick_commands"]) >= 5
+
+        # 3. Execute container restart action
+        act_res = await ac.post(f"/api/applications/{app_id}/docker/action", json={
+            "action": "restart"
+        }, headers=headers)
+        assert act_res.status_code == 200
+        assert act_res.json()["success"] is True
+
+        # 4. Execute prune containers action
+        prune_res = await ac.post(f"/api/applications/{app_id}/docker/action", json={
+            "action": "prune_containers"
+        }, headers=headers)
+        assert prune_res.status_code == 200
+        assert prune_res.json()["success"] is True
+
 

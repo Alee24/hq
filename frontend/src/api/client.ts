@@ -138,6 +138,73 @@ class ApiClient {
     return this.request<any[]>(`/applications/${id}/logs?limit=${limit}`);
   }
 
+  async inspectAppContainer(id: string) {
+    return this.request<{
+      found: boolean;
+      target_name: string;
+      container: {
+        id: string;
+        name: string;
+        image: string;
+        status: string;
+        state: string;
+        created: string;
+        restart_policy: string;
+        memory_limit: string;
+        cpu_percent: string;
+        mem_percent: string;
+        mem_usage: string;
+        net_io: string;
+        block_io: string;
+        pids: string;
+        ports: string;
+        mounts: string[];
+        env_vars: string[];
+        logs: string;
+      };
+      all_containers: Array<{
+        id: string;
+        name: string;
+        image: string;
+        status: string;
+        ports: string;
+      }>;
+      recommendations: Array<{
+        type: 'WARNING' | 'SUCCESS' | 'INFO';
+        category: string;
+        title: string;
+        message: string;
+        command: string | null;
+      }>;
+      quick_commands: Array<{
+        name: string;
+        command: string;
+        description: string;
+      }>;
+    }>(`/applications/${id}/docker/inspect`);
+  }
+
+  async executeAppDockerAction(id: string, payload: {
+    action: string;
+    container_name?: string;
+    command?: string;
+    memory?: string;
+    tail?: number;
+  }) {
+    return this.request<{
+      success: boolean;
+      command: string;
+      stdout: string;
+      stderr: string;
+      exit_code: number;
+      duration_ms: number;
+      message: string;
+    }>(`/applications/${id}/docker/action`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
   // ==========================================
   // Servers
   // ==========================================
@@ -162,13 +229,37 @@ class ApiClient {
     });
   }
 
-
   async getServerMetrics(id: string, limit: number = 24) {
     return this.request<any[]>(`/servers/${id}/metrics?limit=${limit}`);
   }
 
   async getServerProcesses(id: string) {
     return this.request<any[]>(`/servers/${id}/processes`);
+  }
+
+  async discoverServerSystem(id: string) {
+    return this.request<{
+      success: boolean;
+      server_id: string;
+      specs: any;
+      message: string;
+    }>(`/servers/${id}/discover-system`, {
+      method: 'POST',
+    });
+  }
+
+  async scanServerWebsites(id: string, autoImport: boolean = true) {
+    return this.request<{
+      success: boolean;
+      server_id: string;
+      server_name: string;
+      total_discovered: number;
+      newly_imported: number;
+      websites: any[];
+      message: string;
+    }>(`/servers/${id}/scan-websites?auto_import=${autoImport}`, {
+      method: 'POST',
+    });
   }
 
   async executeServerCommand(id: string, action: string, confirmation?: string, serviceName?: string) {
