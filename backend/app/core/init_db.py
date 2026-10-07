@@ -36,23 +36,35 @@ async def purge_dummy_data():
         # Remove all non-admin demo / test users
         await db.execute(delete(User).where(User.username != settings.ADMIN_USERNAME))
         
-        # Ensure Super Admin exists
-        res = await db.execute(select(User).where((User.username == settings.ADMIN_USERNAME) | (User.email == settings.ADMIN_EMAIL)))
+        # Ensure Super Admin exists with authoritative credentials
+        res = await db.execute(
+            select(User).where(
+                (User.username == settings.ADMIN_USERNAME) |
+                (User.email == settings.ADMIN_EMAIL) |
+                (User.email == "mettoalex@gmail.com") |
+                (User.username == "admin")
+            )
+        )
         admin_user = res.scalar_one_or_none()
         if not admin_user:
             admin_user = User(
                 username=settings.ADMIN_USERNAME,
                 email=settings.ADMIN_EMAIL,
                 hashed_password=hash_password(settings.ADMIN_PASSWORD),
-                full_name="Enterprise Super Administrator",
+                full_name="Alex Metto (Super Admin)",
                 role="SUPER_ADMIN",
                 is_active=True
             )
             db.add(admin_user)
             await db.flush()
         else:
+            admin_user.username = settings.ADMIN_USERNAME
+            admin_user.email = settings.ADMIN_EMAIL
+            admin_user.hashed_password = hash_password(settings.ADMIN_PASSWORD)
+            admin_user.full_name = "Alex Metto (Super Admin)"
             admin_user.is_active = True
             admin_user.role = "SUPER_ADMIN"
+            await db.flush()
             
         # Ensure standard Alert Rules exist
         rule_check = await db.execute(select(AlertRule).limit(1))
@@ -197,21 +209,32 @@ async def init_db(seed_demo: bool = False):
         print(f"[SCHEMA MIGRATION WARNING]: {e}")
 
     async with AsyncSessionLocal() as db:
-        # Check if root admin exists
-        res = await db.execute(select(User).where((User.username == settings.ADMIN_USERNAME) | (User.email == settings.ADMIN_EMAIL)))
+        # Ensure Super Admin exists with authoritative credentials
+        res = await db.execute(
+            select(User).where(
+                (User.username == settings.ADMIN_USERNAME) |
+                (User.email == settings.ADMIN_EMAIL) |
+                (User.email == "mettoalex@gmail.com") |
+                (User.username == "admin")
+            )
+        )
         existing_admin = res.scalar_one_or_none()
         if not existing_admin:
             u = User(
                 username=settings.ADMIN_USERNAME,
                 email=settings.ADMIN_EMAIL,
                 hashed_password=hash_password(settings.ADMIN_PASSWORD),
-                full_name="Enterprise Super Administrator",
+                full_name="Alex Metto (Super Admin)",
                 role="SUPER_ADMIN",
                 is_active=True
             )
             db.add(u)
             await db.flush()
         else:
+            existing_admin.username = settings.ADMIN_USERNAME
+            existing_admin.email = settings.ADMIN_EMAIL
+            existing_admin.hashed_password = hash_password(settings.ADMIN_PASSWORD)
+            existing_admin.full_name = "Alex Metto (Super Admin)"
             existing_admin.is_active = True
             existing_admin.role = "SUPER_ADMIN"
             await db.flush()

@@ -23,9 +23,9 @@ class Settings(BaseSettings):
     SEED_DEMO_DATA: bool = False
     
     # Root Super Administrator Defaults
-    ADMIN_USERNAME: str = "admin"
-    ADMIN_EMAIL: str = "admin@command-center.local"
-    ADMIN_PASSWORD: str = "Password123!"
+    ADMIN_USERNAME: str = "mettoalex"
+    ADMIN_EMAIL: str = "mettoalex@gmail.com"
+    ADMIN_PASSWORD: str = "Digital@1989"
     
     # Master Keypairs for License Management (Ed25519)
     # Stored or auto-generated if missing

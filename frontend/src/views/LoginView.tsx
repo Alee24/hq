@@ -1,30 +1,30 @@
 import React, { useState } from 'react';
-import { Shield, Lock, User, ArrowRight, AlertCircle } from 'lucide-react';
+import { Shield, Lock, User, ArrowRight, AlertCircle, Eye, EyeOff } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
 export const LoginView: React.FC = () => {
   const { login } = useAuth();
-  const [username, setUsername] = useState('admin');
-  const [password, setPassword] = useState('Password123!');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!username.trim() || !password) {
+      setError('Please enter your username/email and password.');
+      return;
+    }
     setError(null);
     setLoading(true);
     try {
-      await login({ username_or_email: username, password });
+      await login({ username_or_email: username.trim(), password });
     } catch (err: any) {
       setError(err.message || 'Authentication failed. Please verify credentials.');
     } finally {
       setLoading(false);
     }
-  };
-
-  const handleQuickLogin = (userRoleName: string) => {
-    setUsername(userRoleName);
-    setPassword('Password123!');
   };
 
   return (
@@ -50,7 +50,7 @@ export const LoginView: React.FC = () => {
           </div>
         )}
 
-        {/* Login Form */}
+        {/* Production Login Form */}
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="space-y-1.5">
             <label className="block text-xs font-semibold text-slate-300">
@@ -61,10 +61,12 @@ export const LoginView: React.FC = () => {
               <input
                 type="text"
                 required
+                autoFocus
+                autoComplete="username"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
                 className="w-full pl-9 pr-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500 transition-colors"
-                placeholder="admin"
+                placeholder="Email address or username"
               />
             </div>
           </div>
@@ -76,13 +78,23 @@ export const LoginView: React.FC = () => {
             <div className="relative">
               <Lock size={16} className="absolute left-3 top-3 text-slate-500" />
               <input
-                type="password"
+                type={showPassword ? 'text' : 'password'}
                 required
+                autoComplete="current-password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                className="w-full pl-9 pr-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500 transition-colors"
-                placeholder="••••••••••••"
+                className="w-full pl-9 pr-10 py-2 bg-slate-950 border border-slate-800 rounded-lg text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500 transition-colors"
+                placeholder="Enter password"
               />
+              <button
+                type="button"
+                onClick={() => setShowPassword(!showPassword)}
+                className="absolute right-3 top-2.5 text-slate-500 hover:text-slate-300 focus:outline-none transition-colors"
+                tabIndex={-1}
+                aria-label={showPassword ? 'Hide password' : 'Show password'}
+              >
+                {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+              </button>
             </div>
           </div>
 
@@ -95,58 +107,17 @@ export const LoginView: React.FC = () => {
               <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
             ) : (
               <>
-                <span>Authenticate & Access Command Center</span>
+                <span>Sign In to Command Center</span>
                 <ArrowRight size={16} />
               </>
             )}
           </button>
         </form>
 
-        {/* Quick Demo Credentials */}
-        <div className="pt-4 border-t border-slate-800 space-y-2">
-          <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider text-center">
-            Role Quick Select
-          </div>
-          <div className="grid grid-cols-2 gap-2 text-xs">
-            <button
-              type="button"
-              onClick={() => handleQuickLogin('admin')}
-              className="p-2 rounded bg-slate-950 border border-slate-800 hover:border-slate-700 text-slate-300 text-left transition-colors"
-            >
-              <div className="font-semibold text-brand-400">admin</div>
-              <div className="text-[10px] text-slate-400">Super Admin (All)</div>
-            </button>
-            <button
-              type="button"
-              onClick={() => handleQuickLogin('infra_admin')}
-              className="p-2 rounded bg-slate-950 border border-slate-800 hover:border-slate-700 text-slate-300 text-left transition-colors"
-            >
-              <div className="font-semibold text-emerald-400">infra_admin</div>
-              <div className="text-[10px] text-slate-400">Infrastructure Lead</div>
-            </button>
-            <button
-              type="button"
-              onClick={() => handleQuickLogin('deploy_admin')}
-              className="p-2 rounded bg-slate-950 border border-slate-800 hover:border-slate-700 text-slate-300 text-left transition-colors"
-            >
-              <div className="font-semibold text-purple-400">deploy_admin</div>
-              <div className="text-[10px] text-slate-400">Deployment Admin</div>
-            </button>
-            <button
-              type="button"
-              onClick={() => handleQuickLogin('viewer')}
-              className="p-2 rounded bg-slate-950 border border-slate-800 hover:border-slate-700 text-slate-300 text-left transition-colors"
-            >
-              <div className="font-semibold text-slate-400">viewer</div>
-              <div className="text-[10px] text-slate-400">Read Only Auditor</div>
-            </button>
-          </div>
-        </div>
-
-        {/* Bottom security watermark */}
-        <div className="text-center text-[11px] text-slate-500 flex items-center justify-center gap-1.5 mono">
+        {/* Security watermark */}
+        <div className="pt-2 border-t border-slate-800 text-center text-[11px] text-slate-500 flex items-center justify-center gap-1.5 mono">
           <Shield size={12} className="text-slate-400" />
-          <span>FIPS 140-2 / ED25519 COMPLIANT MESH</span>
+          <span>ENTERPRISE ENCRYPTED SESSION</span>
         </div>
       </div>
     </div>

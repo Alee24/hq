@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from datetime import timedelta
+from backend.app.core.config import settings
 from backend.app.core.database import get_db
 from backend.app.core.security import verify_password, hash_password, create_access_token
 from backend.app.models.entities import User
@@ -13,12 +14,28 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 @router.post("/login", response_model=TokenResponse)
 async def login(login_data: UserLogin, db: AsyncSession = Depends(get_db)):
-    # Find user by username or email
+    ident = login_data.username_or_email.strip()
+    # Find user by username or email (case-insensitive)
     stmt = select(User).where(
-        (User.username == login_data.username_or_email) | (User.email == login_data.username_or_email)
+        (User.username == ident) | (User.email.ilike(ident)) | (User.username.ilike(ident))
     )
     result = await db.execute(stmt)
     user = result.scalar_one_or_none()
+
+    # Failsafe: If super admin logs in and user doesn't exist yet or needs sync
+    if not user and ident.lower() in [settings.ADMIN_EMAIL.lower(), settings.ADMIN_USERNAME.lower(), "admin"]:
+        if verify_password(login_data.password, hash_password(settings.ADMIN_PASSWORD)):
+            user = User(
+                username=settings.ADMIN_USERNAME,
+                email=settings.ADMIN_EMAIL,
+                hashed_password=hash_password(settings.ADMIN_PASSWORD),
+                full_name="Alex Metto (Super Admin)",
+                role="SUPER_ADMIN",
+                is_active=True
+            )
+            db.add(user)
+            await db.commit()
+            await db.refresh(user)
 
     if not user or not verify_password(login_data.password, user.hashed_password):
         raise HTTPException(
