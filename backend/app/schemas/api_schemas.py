@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 
@@ -12,7 +12,7 @@ class UserLogin(BaseModel):
     mfa_code: Optional[str] = None
 
 class UserRegister(BaseModel):
-    email: EmailStr
+    email: str = Field(..., description="User email address")
     username: str
     password: str
     full_name: Optional[str] = None
@@ -389,7 +389,7 @@ class RollbackRequest(BaseModel):
 class LicenseCreate(BaseModel):
     product_name: str
     customer_name: str
-    customer_email: EmailStr
+    customer_email: str = Field(..., description="Customer contact email")
     product_version: str = "v1.0.0"
     license_type: str = "Enterprise"
     allowed_installations: int = 5

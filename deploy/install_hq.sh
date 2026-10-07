@@ -385,8 +385,8 @@ deploy_containers() {
     log_info "Building and launching Central Software Command Center containers..."
     cd "${INSTALL_DIR}"
 
-    # Build services
-    docker compose build
+    # Build services cleanly without stale layer cache
+    docker compose build --no-cache
 
     # Stop any stale or degraded containers cleanly
     docker compose down --remove-orphans 2>/dev/null || true
