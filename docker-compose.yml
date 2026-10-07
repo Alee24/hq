@@ -36,10 +36,10 @@ services:
         condition: service_started
     healthcheck:
       test: ["CMD-SHELL", "curl -f -s http://127.0.0.1:8000/api/health || python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')\" || exit 1"]
-      interval: 10s
+      interval: 5s
       timeout: 5s
-      retries: 6
-      start_period: 25s
+      retries: 12
+      start_period: 10s
     networks:
       - command-center-network
 

@@ -28,26 +28,23 @@ from backend.app.api.system_health import router as system_health_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Initialize DB schema and core production configuration
-    try:
-        await init_db(seed_demo=settings.SEED_DEMO_DATA)
-    except Exception as e:
-        print(f"[STARTUP DB NOTICE]: {e}. Scheduling background retry loop.", flush=True)
-        async def retry_db_init():
-            for i in range(1, 30):
+    # Launch background DB initialization task without blocking HTTP server readiness
+    async def run_db_initialization():
+        for attempt in range(1, 60):
+            try:
+                await init_db(seed_demo=settings.SEED_DEMO_DATA)
+                print("[STARTUP DB SUCCESS]: Database schema and administrator initialized successfully.", flush=True)
+                break
+            except Exception as e:
+                print(f"[STARTUP DB NOTICE - Attempt {attempt}/60]: Waiting for database readiness ({e}). Retrying in 2s...", flush=True)
                 await asyncio.sleep(2)
-                try:
-                    await init_db(seed_demo=settings.SEED_DEMO_DATA)
-                    print("[STARTUP DB SUCCESS]: Database initialized successfully.", flush=True)
-                    break
-                except Exception as retry_err:
-                    print(f"[STARTUP DB RETRY {i}/30]: Still waiting for database readiness: {retry_err}", flush=True)
-        asyncio.create_task(retry_db_init())
-    
-    # Launch background monitoring worker loop
-    monitoring_task = asyncio.create_task(monitoring_worker_loop())
+        
+        # Launch background monitoring worker loop once DB is active
+        asyncio.create_task(monitoring_worker_loop())
+
+    db_init_task = asyncio.create_task(run_db_initialization())
     yield
-    monitoring_task.cancel()
+    db_init_task.cancel()
 
 app = FastAPI(
     title=settings.PROJECT_NAME,

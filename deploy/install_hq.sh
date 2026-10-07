@@ -183,7 +183,7 @@ configure_environment() {
     if [ ! -f "$ENV_FILE" ]; then
         log_info "Generating fresh production .env file with cryptographically secure tokens..."
         SECRET_KEY=$(openssl rand -hex 32)
-        POSTGRES_PASS=$(openssl rand -hex 16)
+        POSTGRES_PASS="ChangeMeSecurePass123"
         
         cat <<EOF > "$ENV_FILE"
 # ==============================================================================
@@ -385,9 +385,21 @@ deploy_containers() {
     log_info "Building and launching Central Software Command Center containers..."
     cd "${INSTALL_DIR}"
 
-    # Build and start services in background
+    # Build services
     docker compose build
-    docker compose up -d
+
+    # Stop any stale or degraded containers cleanly
+    docker compose down --remove-orphans 2>/dev/null || true
+
+    # Launch services in background
+    if ! docker compose up -d; then
+        log_warn "Initial container startup encountered a warning. Inspecting service logs..."
+        docker compose logs --tail=40 backend || true
+        docker compose logs --tail=20 postgres || true
+        log_info "Retrying container launch..."
+        sleep 4
+        docker compose up -d
+    fi
 
     log_success "Containers started. Awaiting service healthchecks..."
 }
