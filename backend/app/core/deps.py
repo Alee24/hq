@@ -38,6 +38,10 @@ async def get_current_user_optional(
             token = auth_header[7:]
 
     if not token:
+        # Check query parameters (for direct browser file downloads)
+        token = request.query_params.get("token")
+
+    if not token:
         return None
 
     payload = decode_access_token(token)

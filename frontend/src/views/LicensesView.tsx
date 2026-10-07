@@ -29,6 +29,7 @@ export const LicensesView: React.FC = () => {
   const [publicKeyModalOpen, setPublicKeyModalOpen] = useState(false);
   const [publicKeyPem, setPublicKeyPem] = useState('');
   const [activationsModalLicense, setActivationsModalLicense] = useState<LicenseItem | null>(null);
+  const [downloadingLicId, setDownloadingLicId] = useState<string | null>(null);
 
   // Form
   const [productName, setProductName] = useState('Enterprise Software Suite');
@@ -94,6 +95,17 @@ export const LicensesView: React.FC = () => {
       loadData();
     } catch (err: any) {
       alert(err.message || 'Renewal failed');
+    }
+  };
+
+  const handleDownloadKey = async (licId: string, filename: string) => {
+    setDownloadingLicId(licId);
+    try {
+      await api.downloadLicenseKey(licId, filename);
+    } catch (err: any) {
+      alert(err.message || 'Failed to download license key file');
+    } finally {
+      setDownloadingLicId(null);
     }
   };
 
@@ -249,14 +261,14 @@ export const LicensesView: React.FC = () => {
                     </td>
                     <td className="py-3 px-4 text-right">
                       <div className="flex items-center justify-end gap-1.5">
-                        <a
-                          href={`/api/licenses/${lic.id}/download-key`}
-                          download
+                        <button
+                          onClick={() => handleDownloadKey(lic.id, `${lic.license_key}.key`)}
+                          disabled={downloadingLicId === lic.id}
                           className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded transition-colors"
                           title="Download Signed license.key File"
                         >
-                          <Download size={13} />
-                        </a>
+                          <Download size={13} className={downloadingLicId === lic.id ? 'animate-bounce' : ''} />
+                        </button>
                         <button
                           onClick={() => handleRenew(lic.id)}
                           className="p-1.5 text-slate-400 hover:text-emerald-400 hover:bg-slate-800 rounded transition-colors"

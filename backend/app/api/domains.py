@@ -90,3 +90,30 @@ async def verify_domain_ssl(
         "issuer": domain.ssl_issuer,
         "verified_at": domain.last_checked_at.isoformat()
     }
+
+@router.delete("/{domain_id}")
+async def delete_domain(
+    domain_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_roles(["SUPER_ADMIN", "INFRASTRUCTURE_ADMIN"]))
+):
+    result = await db.execute(select(Domain).where(Domain.id == domain_id))
+    domain = result.scalar_one_or_none()
+    if not domain:
+        raise HTTPException(status_code=404, detail="Domain record not found.")
+
+    await log_audit_event(
+        db=db,
+        action="DELETE_DOMAIN",
+        entity_type="domain",
+        username=current_user.username,
+        user_id=current_user.id,
+        entity_id=domain.id,
+        details={"domain": domain.domain_name, "ip": domain.server_ip},
+        result="SUCCESS"
+    )
+
+    await db.delete(domain)
+    await db.commit()
+    return {"success": True, "message": f"Domain '{domain.domain_name}' deleted successfully."}
+

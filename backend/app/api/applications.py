@@ -335,3 +335,39 @@ async def get_application_logs(
     )
     logs = result.scalars().all()
     return [LogItemResponse.model_validate(l) for l in logs]
+
+@router.delete("/{app_id}")
+async def delete_application(
+    app_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_roles(["SUPER_ADMIN", "APPLICATION_ADMIN"]))
+):
+    result = await db.execute(select(Application).where(Application.id == app_id, Application.deleted_at == None))
+    app = result.scalar_one_or_none()
+    if not app:
+        raise HTTPException(status_code=404, detail="Application not found.")
+
+    app.is_active = False
+    app.deleted_at = datetime.now(timezone.utc)
+
+    await log_audit_event(
+        db=db,
+        action="DELETE_APPLICATION",
+        entity_type="application",
+        username=current_user.username,
+        user_id=current_user.id,
+        entity_id=app.id,
+        details={"name": app.name, "domain": app.domain},
+        result="SUCCESS"
+    )
+
+    await db.commit()
+
+    await ws_manager.broadcast({
+        "event": "application_deleted",
+        "application_id": app.id,
+        "name": app.name
+    })
+
+    return {"success": True, "message": f"Application '{app.name}' deregistered successfully."}
+

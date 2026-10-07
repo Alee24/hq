@@ -599,3 +599,18 @@ class LogItemResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+class SystemSettingsResponse(BaseModel):
+    monitor_interval: int = 60
+    session_timeout: int = 1440
+    webhook_url: str = "https://hooks.slack.com/services/T00/B00/X00"
+    license_signing_enforced: bool = True
+    whitelist_agent_execution: bool = True
+
+class SystemSettingsUpdate(BaseModel):
+    monitor_interval: Optional[int] = 60
+    session_timeout: Optional[int] = 1440
+    webhook_url: Optional[str] = "https://hooks.slack.com/services/T00/B00/X00"
+    license_signing_enforced: Optional[bool] = True
+    whitelist_agent_execution: Optional[bool] = True
+

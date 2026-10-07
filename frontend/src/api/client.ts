@@ -113,6 +113,13 @@ class ApiClient {
     });
   }
 
+  async deleteApplication(id: string) {
+    return this.request<any>(`/applications/${id}`, {
+      method: 'DELETE',
+    });
+  }
+
+
   async executeAppAction(id: string, action: string) {
     return this.request<any>(`/applications/${id}/action`, {
       method: 'POST',
@@ -148,6 +155,13 @@ class ApiClient {
       body: JSON.stringify(data),
     });
   }
+
+  async deleteServer(id: string) {
+    return this.request<any>(`/servers/${id}`, {
+      method: 'DELETE',
+    });
+  }
+
 
   async getServerMetrics(id: string, limit: number = 24) {
     return this.request<any[]>(`/servers/${id}/metrics?limit=${limit}`);
@@ -247,6 +261,13 @@ class ApiClient {
     return this.request<any>(`/domains/${id}/verify-ssl`, { method: 'POST' });
   }
 
+  async deleteDomain(id: string) {
+    return this.request<any>(`/domains/${id}`, {
+      method: 'DELETE',
+    });
+  }
+
+
   // ==========================================
   // Deployments & Git
   // ==========================================
@@ -314,6 +335,27 @@ class ApiClient {
     return this.request<any>(`/licenses/${id}/renew?additional_days=${additionalDays}`, { method: 'POST' });
   }
 
+  async downloadLicenseKey(id: string, filename: string = 'license.key') {
+    const token = this.getToken();
+    const url = `/api/licenses/${id}/download-key${token ? `?token=${encodeURIComponent(token)}` : ''}`;
+    const res = await fetch(url, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Failed to download license key' }));
+      throw new Error(err.detail || 'Failed to download license key');
+    }
+    const blob = await res.blob();
+    const objectUrl = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = objectUrl;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.URL.revokeObjectURL(objectUrl);
+  }
+
   // ==========================================
   // Logs
   // ==========================================
@@ -352,6 +394,27 @@ class ApiClient {
 
   async deleteBackup(id: string) {
     return this.request<any>(`/backups/${id}`, { method: 'DELETE' });
+  }
+
+  async downloadBackup(id: string, filename: string) {
+    const token = this.getToken();
+    const url = `/api/backups/${id}/download${token ? `?token=${encodeURIComponent(token)}` : ''}`;
+    const res = await fetch(url, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Failed to download backup' }));
+      throw new Error(err.detail || 'Failed to download backup');
+    }
+    const blob = await res.blob();
+    const objectUrl = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = objectUrl;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.URL.revokeObjectURL(objectUrl);
   }
 
   async triggerBackup(appId?: string, serverId?: string) {
@@ -393,6 +456,19 @@ class ApiClient {
     });
   }
 
+  async deleteAlertRule(id: string) {
+    return this.request<any>(`/alerts/rules/${id}`, {
+      method: 'DELETE',
+    });
+  }
+
+  async updateAlertRule(id: string, data: any) {
+    return this.request<any>(`/alerts/rules/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
+  }
+
   async listUsers() {
     return this.request<any[]>('/admin/users');
   }
@@ -404,9 +480,27 @@ class ApiClient {
     });
   }
 
+  async deleteUser(userId: string) {
+    return this.request<any>(`/admin/users/${userId}`, {
+      method: 'DELETE',
+    });
+  }
+
   async updateUserRole(userId: string, role: string) {
     return this.request<any>(`/admin/users/${userId}/role?role=${role}`, { method: 'PUT' });
   }
+
+  async getSystemSettings() {
+    return this.request<any>('/admin/settings');
+  }
+
+  async updateSystemSettings(data: any) {
+    return this.request<any>('/admin/settings', {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
+  }
+
 
   async listApiKeys() {
     return this.request<any[]>('/admin/api-keys');

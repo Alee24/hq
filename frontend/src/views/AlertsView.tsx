@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Bell, CheckCircle2, RefreshCw, Plus, AlertTriangle, XCircle, Sliders } from 'lucide-react';
+import { Bell, CheckCircle2, RefreshCw, Plus, AlertTriangle, XCircle, Sliders, Trash2 } from 'lucide-react';
 import { api } from '../api/client';
 import { AlertItem, AlertRuleItem } from '../types';
 import { StatusBadge } from '../components/StatusBadge';
@@ -52,6 +52,17 @@ export const AlertsView: React.FC = () => {
       alert(err.message || 'Operation failed');
     }
   };
+
+  const handleDeleteRule = async (id: string) => {
+    if (!confirm('Are you sure you want to delete this alert rule?')) return;
+    try {
+      await api.deleteAlertRule(id);
+      loadData();
+    } catch (err: any) {
+      alert(err.message || 'Failed to delete alert rule');
+    }
+  };
+
 
   const handleCreateRule = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -203,12 +214,22 @@ export const AlertsView: React.FC = () => {
           {rules.map((r) => (
             <div key={r.id} className="p-3.5 bg-slate-950 rounded-lg border border-slate-800 space-y-1 text-xs">
               <div className="flex items-center justify-between">
-                <span className="font-semibold text-white">{r.name}</span>
-                <StatusBadge status={r.severity} size="sm" />
+                <span className="font-semibold text-white truncate max-w-[170px]">{r.name}</span>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <StatusBadge status={r.severity} size="sm" />
+                  <button
+                    onClick={() => handleDeleteRule(r.id)}
+                    className="p-1 text-slate-500 hover:text-rose-400 hover:bg-slate-900 rounded transition-colors"
+                    title="Delete Alert Rule"
+                  >
+                    <Trash2 size={12} />
+                  </button>
+                </div>
               </div>
               <div className="text-slate-400 mono text-[11px]">
                 Condition: {r.metric_name} &gt; {r.threshold}%
               </div>
+
               <div className="text-[10px] text-slate-500 uppercase">Channel: {r.channel}</div>
             </div>
           ))}

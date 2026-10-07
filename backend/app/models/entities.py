@@ -373,3 +373,14 @@ class ServerTerminalLog(Base):
     exit_code = Column(Integer, default=0)
     execution_duration_ms = Column(Integer, default=0)
     created_at = Column(DateTime, default=utcnow, index=True)
+
+class SystemSetting(Base):
+    __tablename__ = "system_settings"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    key = Column(String(100), unique=True, nullable=False, index=True)
+    value = Column(Text, nullable=False)
+    category = Column(String(50), default="general")
+    description = Column(String(255), nullable=True)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
+

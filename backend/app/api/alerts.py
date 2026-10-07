@@ -98,3 +98,64 @@ async def create_alert_rule(
     await db.commit()
     await db.refresh(rule)
     return AlertRuleResponse.model_validate(rule)
+
+@router.delete("/rules/{rule_id}")
+async def delete_alert_rule(
+    rule_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_roles(["SUPER_ADMIN", "MONITORING_ADMIN"]))
+):
+    result = await db.execute(select(AlertRule).where(AlertRule.id == rule_id))
+    rule = result.scalar_one_or_none()
+    if not rule:
+        raise HTTPException(status_code=404, detail="Alert rule not found.")
+
+    await log_audit_event(
+        db=db,
+        action="DELETE_ALERT_RULE",
+        entity_type="alert_rule",
+        username=current_user.username,
+        user_id=current_user.id,
+        entity_id=rule.id,
+        details={"name": rule.name, "metric": rule.metric_name},
+        result="SUCCESS"
+    )
+
+    await db.delete(rule)
+    await db.commit()
+    return {"success": True, "message": f"Alert rule '{rule.name}' deleted successfully."}
+
+@router.put("/rules/{rule_id}", response_model=AlertRuleResponse)
+async def update_alert_rule(
+    rule_id: str,
+    payload: AlertRuleCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_roles(["SUPER_ADMIN", "MONITORING_ADMIN"]))
+):
+    result = await db.execute(select(AlertRule).where(AlertRule.id == rule_id))
+    rule = result.scalar_one_or_none()
+    if not rule:
+        raise HTTPException(status_code=404, detail="Alert rule not found.")
+
+    rule.name = payload.name
+    rule.metric_name = payload.metric_name
+    rule.condition = payload.condition
+    rule.threshold = payload.threshold
+    rule.severity = payload.severity
+    rule.channel = payload.channel
+
+    await log_audit_event(
+        db=db,
+        action="UPDATE_ALERT_RULE",
+        entity_type="alert_rule",
+        username=current_user.username,
+        user_id=current_user.id,
+        entity_id=rule.id,
+        details={"name": rule.name, "metric": rule.metric_name, "threshold": rule.threshold},
+        result="SUCCESS"
+    )
+
+    await db.commit()
+    await db.refresh(rule)
+    return AlertRuleResponse.model_validate(rule)
+

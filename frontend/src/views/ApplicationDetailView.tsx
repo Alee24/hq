@@ -19,9 +19,12 @@ import {
   Download,
   AlertTriangle,
   CheckCircle2,
-  GitPullRequest
+  GitPullRequest,
+  Trash2,
+  Save
 } from 'lucide-react';
 import { api } from '../api/client';
+
 import { Application, DeploymentItem, LogItem, AuditLogItem } from '../types';
 import { StatusBadge } from '../components/StatusBadge';
 import { ConfirmationModal } from '../components/ConfirmationModal';
@@ -62,10 +65,26 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
   const [rollbackModalOpen, setRollbackModalOpen] = useState(false);
   const [targetDeploymentForRollback, setTargetDeploymentForRollback] = useState<DeploymentItem | null>(null);
 
+  // Delete App Modal
+  const [deleteModalOpen, setDeleteModalOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+
+  // Config tab form state
+  const [editServiceName, setEditServiceName] = useState('');
+  const [editHealthUrl, setEditHealthUrl] = useState('');
+  const [editPort, setEditPort] = useState(80);
+  const [editDomain, setEditDomain] = useState('');
+  const [savingConfig, setSavingConfig] = useState(false);
+  const [configSuccess, setConfigSuccess] = useState(false);
+
   const loadAll = async () => {
     try {
       const a = await api.getApplication(appId);
       setApp(a);
+      setEditServiceName(a.service_name || '');
+      setEditHealthUrl(a.health_check_url || '');
+      setEditPort(a.port || 80);
+      setEditDomain(a.domain || '');
 
       const [deps, appLogs, git, srv, allBackups, audits] = await Promise.all([
         api.listDeployments(appId),
@@ -93,6 +112,42 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
       setLoading(false);
     }
   };
+
+  const handleDeleteApp = async () => {
+    if (!app) return;
+    setDeleting(true);
+    try {
+      await api.deleteApplication(app.id);
+      setDeleteModalOpen(false);
+      onBack();
+    } catch (err: any) {
+      alert(err.message || 'Failed to delete application');
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const handleSaveConfig = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!app) return;
+    setSavingConfig(true);
+    try {
+      await api.updateApplication(app.id, {
+        service_name: editServiceName,
+        health_check_url: editHealthUrl,
+        port: Number(editPort),
+        domain: editDomain,
+      });
+      setConfigSuccess(true);
+      setTimeout(() => setConfigSuccess(false), 3000);
+      await loadAll();
+    } catch (err: any) {
+      alert(err.message || 'Failed to update application configuration');
+    } finally {
+      setSavingConfig(false);
+    }
+  };
+
 
   useEffect(() => {
     loadAll();
@@ -256,8 +311,18 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
               <Rocket size={13} />
               <span>Deploy Release</span>
             </button>
+
+            <button
+              onClick={() => setDeleteModalOpen(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-rose-950/80 hover:bg-rose-900 border border-rose-800 text-rose-300 text-xs font-medium rounded-lg transition-colors"
+              title="Deregister Application"
+            >
+              <Trash2 size={13} />
+              <span>Delete App</span>
+            </button>
           </div>
         </div>
+
 
         {/* Tab Navigation */}
         <div className="flex items-center gap-1 border-t border-slate-800 pt-3 overflow-x-auto text-xs">
@@ -610,17 +675,76 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
         {/* Tab 9: Configuration */}
         {activeTab === 'config' && (
           <div className="p-6 rounded-xl bg-slate-900 border border-slate-800 space-y-4 text-xs">
-            <h3 className="text-sm font-semibold text-white">Application Runtime Configuration</h3>
-            <div className="grid grid-cols-2 gap-4">
-              <div className="p-3 bg-slate-950 rounded-lg border border-slate-800 space-y-1">
-                <span className="text-slate-500">Service Daemon Name:</span>
-                <div className="text-sm font-mono text-white">{app.service_name}</div>
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-sm font-semibold text-white">Application Runtime Configuration</h3>
+                <p className="text-slate-400 text-[11px] mt-0.5">Edit process manager parameters, routing ports, and health endpoint URLs.</p>
               </div>
-              <div className="p-3 bg-slate-950 rounded-lg border border-slate-800 space-y-1">
-                <span className="text-slate-500">Health Endpoint:</span>
-                <div className="text-sm font-mono text-white">{app.health_check_url}</div>
-              </div>
+              {configSuccess && (
+                <span className="flex items-center gap-1.5 text-xs text-emerald-400 font-semibold animate-in fade-in">
+                  <CheckCircle2 size={14} /> Configuration saved successfully
+                </span>
+              )}
             </div>
+
+            <form onSubmit={handleSaveConfig} className="space-y-4 pt-2">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-slate-300 font-semibold mb-1">Domain Name (FQDN)</label>
+                  <input
+                    type="text"
+                    required
+                    value={editDomain}
+                    onChange={(e) => setEditDomain(e.target.value)}
+                    className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-slate-100 font-mono focus:outline-none focus:border-brand-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-slate-300 font-semibold mb-1">Port</label>
+                  <input
+                    type="number"
+                    required
+                    value={editPort}
+                    onChange={(e) => setEditPort(Number(e.target.value))}
+                    className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-slate-100 font-mono focus:outline-none focus:border-brand-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-slate-300 font-semibold mb-1">Service Daemon Name</label>
+                  <input
+                    type="text"
+                    required
+                    value={editServiceName}
+                    onChange={(e) => setEditServiceName(e.target.value)}
+                    className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-slate-100 font-mono focus:outline-none focus:border-brand-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-slate-300 font-semibold mb-1">Health Check URL</label>
+                  <input
+                    type="text"
+                    required
+                    value={editHealthUrl}
+                    onChange={(e) => setEditHealthUrl(e.target.value)}
+                    className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-slate-100 font-mono focus:outline-none focus:border-brand-500"
+                  />
+                </div>
+              </div>
+
+              <div className="flex justify-end pt-2">
+                <button
+                  type="submit"
+                  disabled={savingConfig}
+                  className="flex items-center gap-2 px-4 py-2 bg-brand-600 hover:bg-brand-500 disabled:opacity-50 text-white rounded-lg text-xs font-semibold shadow-sm transition-colors"
+                >
+                  <Save size={13} />
+                  <span>{savingConfig ? 'Saving...' : 'Save Configuration'}</span>
+                </button>
+              </div>
+            </form>
           </div>
         )}
 
@@ -673,6 +797,18 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
           }
         }}
         onClose={() => setConfirmModalOpen(false)}
+      />
+
+      {/* Delete Application Modal */}
+      <ConfirmationModal
+        isOpen={deleteModalOpen}
+        title="Deregister Application Safeguard"
+        message={`Are you sure you want to delete '${app.name}' (${app.domain})? This will detach its routing, backups, and process management.`}
+        confirmKeyword="DELETE"
+        confirmButtonText="Deregister Application"
+        isDestructive={true}
+        onConfirm={handleDeleteApp}
+        onClose={() => setDeleteModalOpen(false)}
       />
 
       {/* Rollback Confirmation Modal */}

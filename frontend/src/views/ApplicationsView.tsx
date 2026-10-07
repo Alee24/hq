@@ -12,7 +12,8 @@ import {
   GitBranch,
   ChevronRight,
   RefreshCw,
-  AlertCircle
+  AlertCircle,
+  Trash2
 } from 'lucide-react';
 import { api } from '../api/client';
 import { Application } from '../types';
@@ -36,6 +37,11 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
   const [confirmModalOpen, setConfirmModalOpen] = useState(false);
   const [selectedAppForAction, setSelectedAppForAction] = useState<Application | null>(null);
   const [pendingAction, setPendingAction] = useState<string>('restart');
+
+  // Delete Confirmation
+  const [deleteModalOpen, setDeleteModalOpen] = useState(false);
+  const [selectedAppForDelete, setSelectedAppForDelete] = useState<Application | null>(null);
+
 
   // Create App Modal
   const [createModalOpen, setCreateModalOpen] = useState(false);
@@ -100,6 +106,20 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
       setSelectedAppForAction(null);
     }
   };
+
+  const executeConfirmedDelete = async () => {
+    if (!selectedAppForDelete) return;
+    setDeleteModalOpen(false);
+    try {
+      await api.deleteApplication(selectedAppForDelete.id);
+      await loadData();
+    } catch (err: any) {
+      alert(err.message || 'Failed to delete application');
+    } finally {
+      setSelectedAppForDelete(null);
+    }
+  };
+
 
   const handleCreateApp = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -334,6 +354,16 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
                           {app.health_status === 'OFFLINE' ? <Play size={13} /> : <Square size={13} />}
                         </button>
                         <button
+                          onClick={() => {
+                            setSelectedAppForDelete(app);
+                            setDeleteModalOpen(true);
+                          }}
+                          className="p-1.5 text-slate-400 hover:text-rose-400 hover:bg-slate-800 rounded transition-colors"
+                          title="Delete Application"
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                        <button
                           onClick={() => onSelectApp(app.id)}
                           className="p-1.5 text-brand-400 hover:text-brand-300 hover:bg-slate-800 rounded transition-colors"
                           title="View Details"
@@ -361,6 +391,19 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
         onConfirm={executeConfirmedAction}
         onClose={() => setConfirmModalOpen(false)}
       />
+
+      {/* Confirmation Safeguard Modal for Application Deletion */}
+      <ConfirmationModal
+        isOpen={deleteModalOpen}
+        title="Deregister Application Safeguard"
+        message={`Are you sure you want to delete '${selectedAppForDelete?.name}' (${selectedAppForDelete?.domain})? This will detach its routing and process management.`}
+        confirmKeyword="DELETE"
+        confirmButtonText="Deregister Application"
+        isDestructive={true}
+        onConfirm={executeConfirmedDelete}
+        onClose={() => setDeleteModalOpen(false)}
+      />
+
 
       {/* Create Application Modal */}
       {createModalOpen && (

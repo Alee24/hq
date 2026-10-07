@@ -32,6 +32,7 @@ export const DatabaseBackupModal: React.FC<DatabaseBackupModalProps> = ({
   const [creating, setCreating] = useState(false);
   const [backups, setBackups] = useState<BackupItem[]>([]);
   const [loading, setLoading] = useState(false);
+  const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
   useEffect(() => {
@@ -79,6 +80,17 @@ export const DatabaseBackupModal: React.FC<DatabaseBackupModalProps> = ({
       loadBackups();
     } catch (err: any) {
       alert(err.message || 'Failed to delete backup.');
+    }
+  };
+
+  const handleDownload = async (backupId: string, filename: string) => {
+    setDownloadingId(backupId);
+    try {
+      await api.downloadBackup(backupId, filename);
+    } catch (err: any) {
+      alert(err.message || 'Failed to download backup archive');
+    } finally {
+      setDownloadingId(null);
     }
   };
 
@@ -233,14 +245,15 @@ export const DatabaseBackupModal: React.FC<DatabaseBackupModalProps> = ({
                   </div>
 
                   <div className="flex items-center gap-2">
-                    <a
-                      href={`/api/backups/${b.id}/download`}
-                      download
-                      className="flex items-center gap-1 px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded text-xs transition-colors font-semibold"
+                    <button
+                      onClick={() => handleDownload(b.id, b.filename)}
+                      disabled={downloadingId === b.id}
+                      className="flex items-center gap-1.5 px-3 py-1.5 bg-sky-600 hover:bg-sky-500 text-white rounded text-xs transition-colors font-semibold shadow-sm"
+                      title="Download Database Backup Archive (.sql.gz)"
                     >
-                      <Download size={12} />
-                      <span>Download</span>
-                    </a>
+                      <Download size={12} className={downloadingId === b.id ? 'animate-bounce' : ''} />
+                      <span>{downloadingId === b.id ? 'Downloading...' : 'Download'}</span>
+                    </button>
                     <button
                       onClick={() => handleDelete(b.id)}
                       className="p-1.5 hover:bg-rose-950 hover:text-rose-400 text-slate-400 rounded transition-colors"

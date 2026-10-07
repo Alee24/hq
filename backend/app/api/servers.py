@@ -474,3 +474,39 @@ async def get_agent_install_script(
     base_url = f"{request.url.scheme}://{request.url.netloc}"
     script_text = generate_agent_enrollment_script(srv, base_url)
     return Response(content=script_text, media_type="text/x-shellscript")
+
+@router.delete("/{server_id}")
+async def delete_server(
+    server_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_roles(["SUPER_ADMIN", "INFRASTRUCTURE_ADMIN"]))
+):
+    result = await db.execute(select(Server).where(Server.id == server_id, Server.deleted_at == None))
+    srv = result.scalar_one_or_none()
+    if not srv:
+        raise HTTPException(status_code=404, detail="Server node not found.")
+
+    srv.is_active = False
+    srv.deleted_at = datetime.now(timezone.utc)
+
+    await log_audit_event(
+        db=db,
+        action="DELETE_SERVER",
+        entity_type="server",
+        username=current_user.username,
+        user_id=current_user.id,
+        entity_id=srv.id,
+        details={"name": srv.name, "ip": srv.public_ip},
+        result="SUCCESS"
+    )
+
+    await db.commit()
+
+    await ws_manager.broadcast({
+        "event": "server_deleted",
+        "server_id": srv.id,
+        "name": srv.name
+    })
+
+    return {"success": True, "message": f"Server node '{srv.name}' ({srv.public_ip}) deregistered successfully."}
+

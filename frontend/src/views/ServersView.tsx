@@ -23,9 +23,11 @@ import {
   Eye,
   EyeOff,
   ChevronDown,
-  ChevronUp
+  ChevronUp,
+  Trash2
 } from 'lucide-react';
 import { api } from '../api/client';
+
 import { Server, ServerMetric } from '../types';
 import { StatusBadge } from '../components/StatusBadge';
 import { ConfirmationModal } from '../components/ConfirmationModal';
@@ -69,7 +71,11 @@ export const ServersView: React.FC = () => {
   const [backupModalOpen, setBackupModalOpen] = useState(false);
   const [backupServer, setBackupServer] = useState<Server | null>(null);
 
+  const [deleteServerModalOpen, setDeleteServerModalOpen] = useState(false);
+  const [serverToDelete, setServerToDelete] = useState<Server | null>(null);
+
   const [testingId, setTestingId] = useState<string | null>(null);
+
   const [testNotice, setTestNotice] = useState<{ id: string; text: string; ok: boolean } | null>(null);
 
   const loadServers = async (selectId?: string) => {
@@ -187,6 +193,22 @@ export const ServersView: React.FC = () => {
       alert(err.message || 'Server operation failed');
     }
   };
+
+  const executeConfirmedServerDelete = async () => {
+    if (!serverToDelete) return;
+    setDeleteServerModalOpen(false);
+    try {
+      await api.deleteServer(serverToDelete.id);
+      localStorage.removeItem('cc_selected_server_id');
+      loadServers();
+      setSuccessBanner(`Server node '${serverToDelete.name}' deregistered successfully.`);
+    } catch (err: any) {
+      alert(err.message || 'Failed to delete server node');
+    } finally {
+      setServerToDelete(null);
+    }
+  };
+
 
   const handleRegisterServer = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -449,8 +471,20 @@ export const ServersView: React.FC = () => {
                     >
                       <Power size={13} />
                     </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setServerToDelete(srv);
+                        setDeleteServerModalOpen(true);
+                      }}
+                      className="p-1.5 text-slate-400 hover:text-rose-400 hover:bg-slate-800 rounded transition-colors"
+                      title="Deregister VPS Node"
+                    >
+                      <Trash2 size={13} />
+                    </button>
                   </div>
                 </div>
+
               </div>
             );
           })}
@@ -859,6 +893,19 @@ export const ServersView: React.FC = () => {
           onClose={() => setBackupModalOpen(false)}
         />
       )}
+
+      {/* Delete Server Safeguard Modal */}
+      <ConfirmationModal
+        isOpen={deleteServerModalOpen}
+        title="Deregister VPS Node Safeguard"
+        message={`Are you sure you want to deregister '${serverToDelete?.name}' (${serverToDelete?.public_ip})? All active SSH credentials, telemetry metrics, and terminal sessions will be detached.`}
+        confirmKeyword="DELETE"
+        confirmButtonText="Deregister VPS Node"
+        isDestructive={true}
+        onConfirm={executeConfirmedServerDelete}
+        onClose={() => setDeleteServerModalOpen(false)}
+      />
     </div>
   );
 };
+

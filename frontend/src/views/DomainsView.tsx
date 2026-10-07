@@ -1,13 +1,19 @@
 import React, { useEffect, useState } from 'react';
-import { Globe, Plus, RefreshCw, ShieldCheck, ShieldAlert, ExternalLink, CheckCircle2, Clock } from 'lucide-react';
+import { Globe, Plus, RefreshCw, ShieldCheck, ShieldAlert, ExternalLink, CheckCircle2, Clock, Trash2 } from 'lucide-react';
 import { api } from '../api/client';
 import { DomainItem } from '../types';
 import { StatusBadge } from '../components/StatusBadge';
+import { ConfirmationModal } from '../components/ConfirmationModal';
 
 export const DomainsView: React.FC = () => {
   const [domains, setDomains] = useState<DomainItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [verifyingId, setVerifyingId] = useState<string | null>(null);
+
+  // Delete Domain Modal
+  const [deleteModalOpen, setDeleteModalOpen] = useState(false);
+  const [selectedDomainForDelete, setSelectedDomainForDelete] = useState<DomainItem | null>(null);
+
 
   // Add Domain Modal
   const [createModalOpen, setCreateModalOpen] = useState(false);
@@ -55,6 +61,20 @@ export const DomainsView: React.FC = () => {
       alert(err.message || 'Failed to register domain');
     }
   };
+
+  const executeConfirmedDelete = async () => {
+    if (!selectedDomainForDelete) return;
+    setDeleteModalOpen(false);
+    try {
+      await api.deleteDomain(selectedDomainForDelete.id);
+      loadDomains();
+    } catch (err: any) {
+      alert(err.message || 'Failed to delete domain');
+    } finally {
+      setSelectedDomainForDelete(null);
+    }
+  };
+
 
   return (
     <div className="p-6 md:p-8 space-y-6 max-w-7xl mx-auto">
@@ -166,13 +186,25 @@ export const DomainsView: React.FC = () => {
                       </span>
                     </td>
                     <td className="py-3 px-4 text-right">
-                      <button
-                        onClick={() => handleVerifySsl(d)}
-                        disabled={verifyingId === d.id}
-                        className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded text-[11px] font-medium border border-slate-700 transition-colors"
-                      >
-                        {verifyingId === d.id ? 'Verifying...' : 'Verify TLS'}
-                      </button>
+                      <div className="flex items-center justify-end gap-1.5">
+                        <button
+                          onClick={() => handleVerifySsl(d)}
+                          disabled={verifyingId === d.id}
+                          className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded text-[11px] font-medium border border-slate-700 transition-colors"
+                        >
+                          {verifyingId === d.id ? 'Verifying...' : 'Verify TLS'}
+                        </button>
+                        <button
+                          onClick={() => {
+                            setSelectedDomainForDelete(d);
+                            setDeleteModalOpen(true);
+                          }}
+                          className="p-1 text-slate-400 hover:text-rose-400 hover:bg-slate-800 rounded transition-colors"
+                          title="Delete Domain"
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))
@@ -228,6 +260,19 @@ export const DomainsView: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* Delete Confirmation Modal */}
+      <ConfirmationModal
+        isOpen={deleteModalOpen}
+        title="Delete Monitored Domain"
+        message={`Are you sure you want to delete '${selectedDomainForDelete?.domain_name}'? Automatic TLS/SSL certificate checks and DNS resolution monitoring will cease.`}
+        confirmKeyword="DELETE"
+        confirmButtonText="Delete Domain"
+        isDestructive={true}
+        onConfirm={executeConfirmedDelete}
+        onClose={() => setDeleteModalOpen(false)}
+      />
     </div>
   );
 };
+

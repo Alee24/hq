@@ -22,10 +22,13 @@ dist/
 build/
 *.egg-info/
 
-# Databases
+# Databases & Backups
 *.db
 *.sqlite
 *.sqlite3
+backups_store/
+*.sql.gz
+*.tar.gz
 
 # Logs
 *.log

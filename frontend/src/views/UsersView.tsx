@@ -1,11 +1,16 @@
 import React, { useEffect, useState } from 'react';
-import { Users as UsersIcon, Shield, RefreshCw, Plus } from 'lucide-react';
+import { Users as UsersIcon, Shield, RefreshCw, Plus, Trash2 } from 'lucide-react';
 import { api } from '../api/client';
 import { User, UserRole } from '../types';
+import { ConfirmationModal } from '../components/ConfirmationModal';
 
 export const UsersView: React.FC = () => {
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
+
+  // Delete User Modal
+  const [deleteModalOpen, setDeleteModalOpen] = useState(false);
+  const [selectedUserForDelete, setSelectedUserForDelete] = useState<User | null>(null);
 
   // Create User Modal
   const [createModalOpen, setCreateModalOpen] = useState(false);
@@ -14,6 +19,7 @@ export const UsersView: React.FC = () => {
   const [newFullName, setNewFullName] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [newRole, setNewRole] = useState<UserRole>('APPLICATION_ADMIN');
+
 
   const loadUsers = async () => {
     try {
@@ -57,6 +63,18 @@ export const UsersView: React.FC = () => {
       loadUsers();
     } catch (err: any) {
       alert(err.message || 'Failed to create user');
+    }
+  };
+
+  const executeConfirmedDelete = async () => {
+    if (!selectedUserForDelete) return;
+    try {
+      await api.deleteUser(selectedUserForDelete.id);
+      setDeleteModalOpen(false);
+      setSelectedUserForDelete(null);
+      await loadUsers();
+    } catch (err: any) {
+      alert(err.message || 'Failed to delete user account');
     }
   };
 
@@ -113,12 +131,13 @@ export const UsersView: React.FC = () => {
                 <th className="py-3 px-4">MFA State</th>
                 <th className="py-3 px-4">Account Status</th>
                 <th className="py-3 px-4">Registered Date</th>
+                <th className="py-3 px-4 text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800/60 text-slate-300">
               {loading ? (
                 <tr>
-                  <td colSpan={6} className="py-12 text-center text-slate-500">Loading user accounts...</td>
+                  <td colSpan={7} className="py-12 text-center text-slate-500">Loading user accounts...</td>
                 </tr>
               ) : (
                 users.map((u) => (
@@ -160,6 +179,20 @@ export const UsersView: React.FC = () => {
                     </td>
                     <td className="py-3 px-4 mono text-slate-400">
                       {new Date(u.created_at).toLocaleDateString()}
+                    </td>
+                    <td className="py-3 px-4 text-right">
+                      {u.username !== 'admin' && (
+                        <button
+                          onClick={() => {
+                            setSelectedUserForDelete(u);
+                            setDeleteModalOpen(true);
+                          }}
+                          className="p-1.5 rounded bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 hover:text-rose-300 transition-colors"
+                          title="Delete User"
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      )}
                     </td>
                   </tr>
                 ))
@@ -256,6 +289,22 @@ export const UsersView: React.FC = () => {
             </form>
           </div>
         </div>
+      )}
+
+      {/* Delete User Confirmation Modal */}
+      {selectedUserForDelete && (
+        <ConfirmationModal
+          isOpen={deleteModalOpen}
+          title="Delete User Account"
+          message={`Are you sure you want to delete user account "${selectedUserForDelete.username}" (${selectedUserForDelete.email})? This action will permanently revoke their access credentials.`}
+          confirmButtonText="Delete User"
+          isDestructive={true}
+          onConfirm={executeConfirmedDelete}
+          onClose={() => {
+            setDeleteModalOpen(false);
+            setSelectedUserForDelete(null);
+          }}
+        />
       )}
     </div>
   );

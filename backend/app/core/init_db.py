@@ -7,8 +7,10 @@ from backend.app.core.config import settings
 from backend.app.core.security import hash_password, sign_license_payload
 from backend.app.models.entities import (
     User, Server, Application, Domain, ServerMetric, MonitoringResult,
-    Deployment, License, LicenseActivation, Alert, AlertRule, Backup, AppLog, AuditLog, Incident
+    Deployment, License, LicenseActivation, Alert, AlertRule, Backup, AppLog, AuditLog, Incident,
+    SystemSetting
 )
+
 
 async def purge_dummy_data():
     """Purges all dummy data (servers, applications, domains, mock licenses,
@@ -73,7 +75,21 @@ async def purge_dummy_data():
                     channel=chan
                 ))
 
+        # Ensure default System Settings exist
+        settings_check = await db.execute(select(SystemSetting).limit(1))
+        if not settings_check.scalar_one_or_none():
+            default_settings = [
+                ("monitor_interval", "60", "monitoring", "Synthetic health check interval in seconds"),
+                ("session_timeout", "1440", "security", "Operator session idle timeout in minutes"),
+                ("webhook_url", "https://hooks.slack.com/services/T00/B00/X00", "notifications", "Central incident alert webhook"),
+                ("license_signing_enforced", "true", "licensing", "Ed25519 signature enforcement flag"),
+                ("whitelist_agent_execution", "true", "security", "Strict whitelist command security enforcement")
+            ]
+            for s_key, s_val, s_cat, s_desc in default_settings:
+                db.add(SystemSetting(key=s_key, value=s_val, category=s_cat, description=s_desc))
+
         await db.commit()
+
 
 from sqlalchemy import text
 
