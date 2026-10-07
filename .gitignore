@@ -21,6 +21,7 @@ venv/
 dist/
 build/
 *.egg-info/
+*.tsbuildinfo
 
 # Databases & Backups
 *.db

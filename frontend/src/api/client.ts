@@ -318,6 +318,89 @@ class ApiClient {
     return this.request<string>(`/servers/${id}/agent/install-script`);
   }
 
+  async scheduleServerReboot(id: string, data: { delay_minutes?: number; schedule_time?: string; reason?: string; recurring?: string }) {
+    return this.request<{
+      success: boolean;
+      message: string;
+      schedule: any;
+      stdout: string;
+    }>(`/servers/${id}/reboot/schedule`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async cancelServerReboot(id: string) {
+    return this.request<{
+      success: boolean;
+      message: string;
+      stdout: string;
+    }>(`/servers/${id}/reboot/cancel`, {
+      method: 'POST',
+    });
+  }
+
+  async getServerRebootStatus(id: string) {
+    return this.request<{
+      is_scheduled: boolean;
+      delay_minutes: number | null;
+      remaining_seconds: number;
+      reason: string | null;
+      recurring: string;
+      scheduled_at: string | null;
+      description: string;
+    }>(`/servers/${id}/reboot/status`);
+  }
+
+  async getServerPerformanceAnalysis(id: string) {
+    return this.request<{
+      health_grade: string;
+      health_score: number;
+      bottleneck: string;
+      spikes_count: number;
+      spikes: Array<{
+        id: string;
+        metric: string;
+        severity: 'CRITICAL' | 'WARNING' | 'INFO';
+        current_value: string;
+        threshold: string;
+        process_name: string;
+        pid: number;
+        user: string;
+        detected_at: string;
+        recommendation: string;
+      }>;
+      insights: Array<{
+        category: string;
+        status: string;
+        details: string;
+      }>;
+      hardware: any;
+      preset_commands: Array<{
+        key: string;
+        title: string;
+        command: string;
+        desc: string;
+      }>;
+    }>(`/servers/${id}/performance/analysis`);
+  }
+
+  async runServerTroubleshoot(id: string, data: { command_key: string; custom_command?: string }) {
+    return this.request<{
+      success: boolean;
+      key: string;
+      command: string;
+      stdout: string;
+      stderr: string;
+      exit_code: number;
+      duration_ms: number;
+      executed_at: string;
+    }>(`/servers/${id}/troubleshoot/run`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
   // ==========================================
   // Monitoring
   // ==========================================
@@ -478,6 +561,17 @@ class ApiClient {
     retention_days?: number;
   }) {
     return this.request<any>('/backups/database', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async createWebConfigBackup(data: {
+    server_id: string;
+    config_type: string;
+    retention_days?: number;
+  }) {
+    return this.request<any>('/backups/web-config', {
       method: 'POST',
       body: JSON.stringify(data),
     });

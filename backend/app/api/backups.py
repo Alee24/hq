@@ -9,10 +9,10 @@ from datetime import datetime, timezone
 from backend.app.core.database import get_db
 from backend.app.core.deps import get_current_user, get_current_user_optional, require_roles
 from backend.app.models.entities import User, Backup, Application, Server
-from backend.app.schemas.api_schemas import BackupResponse, DatabaseBackupRequest
+from backend.app.schemas.api_schemas import BackupResponse, DatabaseBackupRequest, WebConfigBackupRequest
 from backend.app.services.audit import log_audit_event
 from backend.app.services.websocket_manager import ws_manager
-from backend.app.services.remote_executor import execute_remote_command
+from backend.app.services.remote_executor import execute_remote_command, backup_remote_web_configs
 
 router = APIRouter(prefix="/backups", tags=["Backups"])
 
@@ -235,6 +235,68 @@ async def create_database_backup(
         "database_type": db_type,
         "database_name": clean_db_name,
         "filename": filename
+    })
+
+    b_resp = BackupResponse.model_validate(backup)
+    b_resp.server_name = srv.name
+    return b_resp
+
+@router.post("/web-config", response_model=BackupResponse)
+async def create_web_config_backup(
+    payload: WebConfigBackupRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_roles(["SUPER_ADMIN", "INFRASTRUCTURE_ADMIN", "APPLICATION_ADMIN"]))
+):
+    """
+    Archives Apache, Nginx, or Web Root configurations on the remote server and produces
+    a downloadable tar.gz package locally.
+    """
+    srv_res = await db.execute(select(Server).where(Server.id == payload.server_id, Server.deleted_at == None))
+    srv = srv_res.scalar_one_or_none()
+    if not srv:
+        raise HTTPException(status_code=404, detail="Target server not found.")
+
+    res = backup_remote_web_configs(srv, payload.config_type)
+
+    backup = Backup(
+        server_id=srv.id,
+        database_type=f"WEB_{payload.config_type.upper()}",
+        database_name=f"{payload.config_type.lower()}_configs",
+        filename=res["filename"],
+        file_size_mb=res["file_size_mb"],
+        destination=res["destination"],
+        status="COMPLETED",
+        verified=True,
+        retention_days=payload.retention_days
+    )
+    db.add(backup)
+    await db.flush()
+
+    await log_audit_event(
+        db=db,
+        action="WEB_CONFIG_BACKUP_CREATED",
+        entity_type="backup",
+        username=current_user.username,
+        user_id=current_user.id,
+        entity_id=backup.id,
+        details={
+            "config_type": payload.config_type,
+            "server": srv.name,
+            "filename": res["filename"],
+            "size_mb": res["file_size_mb"]
+        },
+        result="SUCCESS"
+    )
+
+    await db.commit()
+    await db.refresh(backup)
+
+    await ws_manager.broadcast({
+        "event": "web_config_backup_created",
+        "backup_id": backup.id,
+        "server_id": srv.id,
+        "config_type": payload.config_type,
+        "filename": res["filename"]
     })
 
     b_resp = BackupResponse.model_validate(backup)

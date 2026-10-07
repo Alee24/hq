@@ -38,7 +38,11 @@ import { ServerTerminalModal } from '../components/ServerTerminalModal';
 import { ServerConnectionModal } from '../components/ServerConnectionModal';
 import { DatabaseBackupModal } from '../components/DatabaseBackupModal';
 
-export const ServersView: React.FC = () => {
+interface ServersViewProps {
+  onSelectServer?: (serverId: string) => void;
+}
+
+export const ServersView: React.FC<ServersViewProps> = ({ onSelectServer }) => {
   const [servers, setServers] = useState<Server[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedServer, setSelectedServer] = useState<Server | null>(null);
@@ -168,7 +172,11 @@ export const ServersView: React.FC = () => {
   const handleServerSelect = (s: Server) => {
     setSelectedServer(s);
     localStorage.setItem('cc_selected_server_id', s.id);
-    loadProcesses(s.id);
+    if (onSelectServer) {
+      onSelectServer(s.id);
+    } else {
+      loadProcesses(s.id);
+    }
   };
 
   const handleOpenTerminal = (s: Server, e?: React.MouseEvent) => {
@@ -495,6 +503,22 @@ export const ServersView: React.FC = () => {
                   </button>
                 </div>
 
+                {/* Manage Server & Details Direct Action */}
+                {onSelectServer && (
+                  <div className="pt-1">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onSelectServer(srv.id);
+                      }}
+                      className="w-full py-1.5 px-3 bg-brand-600/90 hover:bg-brand-500 text-white rounded-lg text-[11px] font-semibold flex items-center justify-center gap-1.5 transition-colors shadow-sm"
+                    >
+                      <span>Manage Server & Details</span>
+                      <ExternalLink size={11} />
+                    </button>
+                  </div>
+                )}
+
                 {/* Node Details & Safeguard Actions */}
                 <div className="pt-2 border-t border-slate-800/60 flex items-center justify-between text-[11px] text-slate-400">
                   <span className="font-mono text-[10px]">
@@ -564,6 +588,16 @@ export const ServersView: React.FC = () => {
                 <Terminal size={14} />
                 <span>Open Terminal</span>
               </button>
+
+              {onSelectServer && (
+                <button
+                  onClick={() => onSelectServer(selectedServer.id)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-brand-600 hover:bg-brand-500 text-white rounded-lg text-xs font-semibold shadow-sm transition-colors"
+                >
+                  <ExternalLink size={14} />
+                  <span>Open Full Dashboard & Manage</span>
+                </button>
+              )}
 
               <button
                 onClick={() => handleScanWebsites(selectedServer)}

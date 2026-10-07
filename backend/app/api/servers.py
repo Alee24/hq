@@ -9,13 +9,16 @@ from backend.app.models.entities import User, Server, ServerMetric, Application,
 from backend.app.schemas.api_schemas import (
     ServerCreate, ServerUpdate, ServerResponse, ServerCommandRequest, ServerMetricResponse,
     ServerConnectionConfig, ServerConnectionTestResponse, TerminalExecRequest,
-    TerminalExecResponse, ServerTerminalLogResponse
+    TerminalExecResponse, ServerTerminalLogResponse, ScheduledRebootRequest,
+    TroubleshootCommandRequest
 )
 from backend.app.services.audit import log_audit_event
 from backend.app.services.websocket_manager import ws_manager
 from backend.app.services.remote_executor import (
     test_server_connection, execute_remote_command, generate_agent_enrollment_script,
-    get_remote_server_processes, discover_remote_server_hardware, scan_remote_server_websites
+    get_remote_server_processes, discover_remote_server_hardware, scan_remote_server_websites,
+    schedule_remote_reboot, cancel_remote_reboot, get_remote_reboot_status,
+    analyze_server_performance_and_spikes, execute_troubleshoot_command
 )
 
 router = APIRouter(prefix="/servers", tags=["Servers"])
@@ -438,6 +441,148 @@ async def execute_server_command(
         "status": srv.status,
         "message": resp_msg
     }
+
+@router.post("/{server_id}/reboot/schedule")
+async def schedule_server_reboot_endpoint(
+    server_id: str,
+    payload: ScheduledRebootRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_roles(["SUPER_ADMIN", "INFRASTRUCTURE_ADMIN"]))
+):
+    """
+    Schedules an operating system reboot on the server.
+    Supports delay in minutes (shutdown -r +X) or recurring crontab maintenance.
+    """
+    result = await db.execute(select(Server).where(Server.id == server_id, Server.deleted_at == None))
+    srv = result.scalar_one_or_none()
+    if not srv:
+        raise HTTPException(status_code=404, detail="Server not found.")
+
+    res = schedule_remote_reboot(
+        server=srv,
+        delay_minutes=payload.delay_minutes,
+        schedule_time=payload.schedule_time,
+        reason=payload.reason,
+        recurring=payload.recurring
+    )
+
+    await log_audit_event(
+        db=db,
+        action="SERVER_REBOOT_SCHEDULED",
+        entity_type="server",
+        username=current_user.username,
+        user_id=current_user.id,
+        entity_id=srv.id,
+        details={"delay_minutes": payload.delay_minutes, "reason": payload.reason, "recurring": payload.recurring},
+        result="SUCCESS"
+    )
+
+    await ws_manager.broadcast({
+        "event": "server_reboot_scheduled",
+        "server_id": srv.id,
+        "schedule": res["schedule"]
+    })
+
+    return res
+
+@router.post("/{server_id}/reboot/cancel")
+async def cancel_server_reboot_endpoint(
+    server_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_roles(["SUPER_ADMIN", "INFRASTRUCTURE_ADMIN"]))
+):
+    """
+    Cancels any active scheduled reboot on the host.
+    """
+    result = await db.execute(select(Server).where(Server.id == server_id, Server.deleted_at == None))
+    srv = result.scalar_one_or_none()
+    if not srv:
+        raise HTTPException(status_code=404, detail="Server not found.")
+
+    res = cancel_remote_reboot(srv)
+
+    await log_audit_event(
+        db=db,
+        action="SERVER_REBOOT_CANCELLED",
+        entity_type="server",
+        username=current_user.username,
+        user_id=current_user.id,
+        entity_id=srv.id,
+        details={"action": "cancel_reboot"},
+        result="SUCCESS"
+    )
+
+    await ws_manager.broadcast({
+        "event": "server_reboot_cancelled",
+        "server_id": srv.id
+    })
+
+    return res
+
+@router.get("/{server_id}/reboot/status")
+async def get_server_reboot_status_endpoint(
+    server_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Checks if a reboot is currently scheduled for this host.
+    """
+    result = await db.execute(select(Server).where(Server.id == server_id, Server.deleted_at == None))
+    srv = result.scalar_one_or_none()
+    if not srv:
+        raise HTTPException(status_code=404, detail="Server not found.")
+
+    return get_remote_reboot_status(srv)
+
+@router.get("/{server_id}/performance/analysis")
+async def get_server_performance_analysis_endpoint(
+    server_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Live usage spikes detection, performance bottlenecks analysis, and remediation recommendations.
+    """
+    result = await db.execute(select(Server).where(Server.id == server_id, Server.deleted_at == None))
+    srv = result.scalar_one_or_none()
+    if not srv:
+        raise HTTPException(status_code=404, detail="Server not found.")
+
+    analysis = analyze_server_performance_and_spikes(srv)
+    return analysis
+
+@router.post("/{server_id}/troubleshoot/run")
+async def run_troubleshoot_command_endpoint(
+    server_id: str,
+    payload: TroubleshootCommandRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_roles(["SUPER_ADMIN", "INFRASTRUCTURE_ADMIN"]))
+):
+    """
+    Executes a 1-click preset troubleshooting command (disk bloat, top hogs, cache drop, ports, systemd errors).
+    """
+    result = await db.execute(select(Server).where(Server.id == server_id, Server.deleted_at == None))
+    srv = result.scalar_one_or_none()
+    if not srv:
+        raise HTTPException(status_code=404, detail="Server not found.")
+
+    res = execute_troubleshoot_command(srv, payload.command_key, payload.custom_command)
+
+    # Save to ServerTerminalLog
+    term_log = ServerTerminalLog(
+        server_id=srv.id,
+        user_id=current_user.id,
+        username=current_user.username,
+        command=res.get("command", payload.command_key),
+        output=res.get("stdout") or res.get("stderr"),
+        exit_code=res.get("exit_code", 0),
+        execution_duration_ms=res.get("duration_ms", 0)
+    )
+    db.add(term_log)
+    await db.commit()
+
+    return res
 
 # ==========================================
 # Remote Connection & Terminal Endpoints

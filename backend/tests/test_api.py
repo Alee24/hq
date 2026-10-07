@@ -409,3 +409,67 @@ async def test_application_docker_inspection_and_actions():
         assert prune_res.json()["success"] is True
 
 
+@pytest.mark.asyncio
+async def test_web_config_backup_and_troubleshoot_management():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        token = await get_admin_token(ac)
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # 1. Register server
+        srv_res = await ac.post("/api/servers", json={
+            "public_ip": "10.0.0.99",
+            "name": "vps-detail-test",
+            "ssh_password": "TestPassword!2026"
+        }, headers=headers)
+        assert srv_res.status_code == 200
+        srv_id = srv_res.json()["id"]
+
+        # 2. Web config backup (APACHE & NGINX)
+        b_res = await ac.post("/api/backups/web-config", json={
+            "server_id": srv_id,
+            "config_type": "WEB_STACK",
+            "retention_days": 14
+        }, headers=headers)
+        assert b_res.status_code == 200
+        b_data = b_res.json()
+        assert b_data["status"] == "COMPLETED"
+        assert "web-config" in b_data["filename"]
+        assert b_data["file_size_mb"] > 0
+        backup_id = b_data["id"]
+
+        # 3. Schedule OS reboot
+        reb_res = await ac.post(f"/api/servers/{srv_id}/reboot/schedule", json={
+            "delay_minutes": 30,
+            "reason": "Kernel security patch maintenance"
+        }, headers=headers)
+        assert reb_res.status_code == 200
+        assert reb_res.json()["success"] is True
+
+        # 4. Check reboot status
+        stat_res = await ac.get(f"/api/servers/{srv_id}/reboot/status", headers=headers)
+        assert stat_res.status_code == 200
+        assert stat_res.json()["is_scheduled"] is True
+
+        # 5. Cancel scheduled reboot
+        canc_res = await ac.post(f"/api/servers/{srv_id}/reboot/cancel", headers=headers)
+        assert canc_res.status_code == 200
+        assert canc_res.json()["success"] is True
+
+        # 6. Performance analysis & spikes detection
+        perf_res = await ac.get(f"/api/servers/{srv_id}/performance/analysis", headers=headers)
+        assert perf_res.status_code == 200
+        perf_data = perf_res.json()
+        assert "health_grade" in perf_data
+        assert "spikes" in perf_data
+        assert "preset_commands" in perf_data
+        assert len(perf_data["preset_commands"]) >= 5
+
+        # 7. Execute 1-click troubleshoot command
+        tb_res = await ac.post(f"/api/servers/{srv_id}/troubleshoot/run", json={
+            "command_key": "DROP_CACHES"
+        }, headers=headers)
+        assert tb_res.status_code == 200
+        assert "command" in tb_res.json()
+
+
+

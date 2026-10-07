@@ -567,6 +567,21 @@ class DatabaseBackupRequest(BaseModel):
     application_id: Optional[str] = None
     retention_days: int = 30
 
+class WebConfigBackupRequest(BaseModel):
+    server_id: str
+    config_type: str = "WEB_STACK" # APACHE, NGINX, WEB_ROOT, WEB_STACK
+    retention_days: int = 30
+
+class ScheduledRebootRequest(BaseModel):
+    delay_minutes: Optional[int] = 15
+    schedule_time: Optional[str] = None
+    reason: str = "Scheduled maintenance reboot"
+    recurring: Optional[str] = None # NONE, DAILY, WEEKLY_SUNDAY
+
+class TroubleshootCommandRequest(BaseModel):
+    command_key: str # TOP_CPU, TOP_MEM, DISK_HOGS, DOCKER_PRUNE, DROP_CACHES, LISTENING_PORTS, FAILED_UNITS, JOURNAL_ERRORS, TEST_NGINX, TEST_APACHE, ZOMBIE_PROCS, CUSTOM
+    custom_command: Optional[str] = None
+
 class SystemHealthItem(BaseModel):
     name: str
     category: str

@@ -11,6 +11,7 @@ import { DashboardView } from './views/DashboardView';
 import { ApplicationsView } from './views/ApplicationsView';
 import { ApplicationDetailView } from './views/ApplicationDetailView';
 import { ServersView } from './views/ServersView';
+import { ServerDetailView } from './views/ServerDetailView';
 import { DomainsView } from './views/DomainsView';
 import { MonitoringView } from './views/MonitoringView';
 import { DeploymentsView } from './views/DeploymentsView';
@@ -31,6 +32,7 @@ export const MainAppShell: React.FC = () => {
   const { user, loading } = useAuth();
   const [currentView, setCurrentView] = useState('overview');
   const [selectedAppId, setSelectedAppId] = useState<string | null>(null);
+  const [selectedServerId, setSelectedServerId] = useState<string | null>(null);
 
   const [searchModalOpen, setSearchModalOpen] = useState(false);
   const [wizardModalOpen, setWizardModalOpen] = useState(false);
@@ -66,8 +68,12 @@ export const MainAppShell: React.FC = () => {
     if (view === 'applications' && id) {
       setSelectedAppId(id);
       setCurrentView('application-detail');
+    } else if (view === 'servers' && id) {
+      setSelectedServerId(id);
+      setCurrentView('server-detail');
     } else {
       setSelectedAppId(null);
+      setSelectedServerId(null);
       setCurrentView(view);
     }
   };
@@ -76,7 +82,13 @@ export const MainAppShell: React.FC = () => {
     <div className="flex h-screen w-screen overflow-hidden bg-slate-950 text-slate-100">
       {/* Sidebar */}
       <Sidebar
-        currentView={currentView === 'application-detail' ? 'applications' : currentView}
+        currentView={
+          currentView === 'application-detail'
+            ? 'applications'
+            : currentView === 'server-detail'
+            ? 'servers'
+            : currentView
+        }
         onSelectView={(v) => navigateTo(v)}
       />
 
@@ -108,7 +120,17 @@ export const MainAppShell: React.FC = () => {
             />
           )}
 
-          {currentView === 'servers' && <ServersView />}
+          {currentView === 'servers' && (
+            <ServersView onSelectServer={(id) => navigateTo('servers', id)} />
+          )}
+
+          {currentView === 'server-detail' && selectedServerId && (
+            <ServerDetailView
+              serverId={selectedServerId}
+              onBack={() => navigateTo('servers')}
+              onNavigate={(v, id) => navigateTo(v, id)}
+            />
+          )}
 
           {currentView === 'domains' && <DomainsView />}
 
