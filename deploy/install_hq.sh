@@ -3,7 +3,7 @@
 # Central Software Command Center - Automated Production Deployment Script
 # Target Domain: hq.kkdes.co.ke
 # Target Directory: /var/www/hq
-# Operating System: Ubuntu / Debian Linux VPS
+# Operating System: Ubuntu / Debian Linux VPS with Apache2 Web Server
 # ==============================================================================
 
 set -eo pipefail
@@ -24,6 +24,7 @@ INSTALL_DIR="/var/www/hq"
 REPO_URL="https://github.com/Alee24/hq.git"
 FRONTEND_PORT="8088"
 BACKEND_PORT="8000"
+WEB_SERVER="apache"
 
 log_info() {
     echo -e "${CYAN}[INFO]${NC} $(date '+%Y-%m-%d %H:%M:%S') - $1"
@@ -46,6 +47,7 @@ print_banner() {
     echo "=========================================================================="
     echo "       CENTRAL SOFTWARE COMMAND CENTER - PRODUCTION INSTALLER             "
     echo "       Target Domain: https://${DOMAIN}                                  "
+    echo "       Host Web Server: Apache2 Reverse Proxy                            "
     echo "=========================================================================="
     echo -e "${NC}"
 }
@@ -60,22 +62,35 @@ check_root() {
     log_success "Root privileges verified."
 }
 
-# 2. Check and Install Required System Packages
+# 2. Detect Host Web Server (Apache vs Nginx)
+detect_web_server() {
+    if command -v apache2 &>/dev/null || [ -d "/etc/apache2" ]; then
+        WEB_SERVER="apache"
+    elif command -v nginx &>/dev/null && [ -f "/etc/nginx/nginx.conf" ]; then
+        WEB_SERVER="nginx"
+    else
+        WEB_SERVER="apache" # Default to Apache on this VPS
+    fi
+    log_info "Detected active host web server: ${WEB_SERVER}"
+}
+
+# 3. Check and Install Required System Packages
 install_dependencies() {
-    log_info "Verifying core system packages (curl, git, openssl, jq, nginx, certbot)..."
+    log_info "Verifying core system packages (curl, git, openssl, jq, docker, certbot)..."
     export DEBIAN_FRONTEND=noninteractive
     
-    apt-get update -qq
+    # Update package lists, ignoring any broken third-party repos
+    apt-get update -qq || true
 
     PACKAGES_TO_INSTALL=()
-    for pkg in curl git openssl jq ca-certificates gnupg lsb-release ufw; do
+    for pkg in curl git openssl jq ca-certificates gnupg lsb-release; do
         if ! dpkg -s "$pkg" &>/dev/null; then
             PACKAGES_TO_INSTALL+=("$pkg")
         fi
     done
 
     if [ ${#PACKAGES_TO_INSTALL[@]} -gt 0 ]; then
-        log_info "Installing packages: ${PACKAGES_TO_INSTALL[*]}..."
+        log_info "Installing system packages: ${PACKAGES_TO_INSTALL[*]}..."
         apt-get install -y "${PACKAGES_TO_INSTALL[@]}"
     fi
 
@@ -90,28 +105,43 @@ install_dependencies() {
     # Ensure Docker Compose plugin exists
     if ! docker compose version &>/dev/null; then
         log_info "Installing Docker Compose plugin..."
-        apt-get install -y docker-compose-plugin
+        apt-get install -y docker-compose-plugin || true
     fi
 
     # Enable and start Docker service
     systemctl enable --now docker
     log_success "Docker Engine and Docker Compose are active and verified."
 
-    # Install Host Nginx & Certbot for SSL termination
-    if ! command -v nginx &>/dev/null; then
-        log_info "Installing Nginx web server..."
-        apt-get install -y nginx
-        systemctl enable --now nginx
+    # Install & Configure Web Server packages
+    if [ "$WEB_SERVER" = "apache" ]; then
+        if ! command -v apache2 &>/dev/null; then
+            log_info "Installing Apache2 web server..."
+            apt-get install -y apache2
+        fi
+        systemctl enable --now apache2 || true
+
+        # Enable Apache proxy and websocket modules
+        log_info "Enabling Apache2 reverse proxy & websocket modules (proxy, proxy_http, proxy_wstunnel, rewrite, headers, ssl)..."
+        a2enmod proxy proxy_http proxy_wstunnel rewrite headers ssl || true
+
+        if ! dpkg -s python3-certbot-apache &>/dev/null; then
+            log_info "Installing Certbot Apache plugin..."
+            apt-get install -y certbot python3-certbot-apache || true
+        fi
+    else
+        if ! command -v nginx &>/dev/null; then
+            apt-get install -y nginx
+            systemctl enable --now nginx || true
+        fi
+        if ! dpkg -s python3-certbot-nginx &>/dev/null; then
+            apt-get install -y certbot python3-certbot-nginx || true
+        fi
     fi
 
-    if ! command -v certbot &>/dev/null; then
-        log_info "Installing Certbot and Python3 Nginx plugin..."
-        apt-get install -y certbot python3-certbot-nginx
-    fi
     log_success "System dependencies verified."
 }
 
-# 3. Repository Setup and Synchronization
+# 4. Repository Setup and Synchronization
 setup_repository() {
     # Check if currently inside a clone or nested clone
     if [ -f "$(pwd)/docker-compose.yml" ]; then
@@ -124,7 +154,7 @@ setup_repository() {
     mkdir -p "${INSTALL_DIR}"
     cd "${INSTALL_DIR}"
     
-    # Configure git safe directory
+    # Configure git safe directory globally
     git config --global --add safe.directory "*" || true
 
     if [ -d "${INSTALL_DIR}/.git" ]; then
@@ -143,7 +173,7 @@ setup_repository() {
     log_success "Repository synchronized at commit $(git rev-parse --short HEAD 2>/dev/null || echo 'HEAD')."
 }
 
-# 4. Generate Production Secrets & Environment File
+# 5. Generate Production Secrets & Environment File
 configure_environment() {
     log_info "Configuring production environment variables (.env)..."
     cd "${INSTALL_DIR}"
@@ -202,16 +232,80 @@ EOF
     fi
 }
 
-# 5. Host Nginx Reverse Proxy & Let's Encrypt SSL Configuration
+# 6. Host Apache2 Reverse Proxy & Let's Encrypt SSL Configuration
+configure_apache_and_ssl() {
+    log_info "Configuring host Apache2 reverse proxy for ${DOMAIN}..."
+
+    # Enable essential Apache proxy modules
+    a2enmod proxy proxy_http proxy_wstunnel rewrite headers ssl || true
+
+    APACHE_CONF="/etc/apache2/sites-available/${DOMAIN}.conf"
+
+    cat <<EOF > "$APACHE_CONF"
+<VirtualHost *:80>
+    ServerName ${DOMAIN}
+    ServerAdmin ${ADMIN_EMAIL}
+
+    RewriteEngine On
+
+    # Real-time WebSocket Hub Proxy for /ws
+    RewriteCond %{HTTP:Upgrade} =websocket [NC]
+    RewriteRule /(.*)           ws://127.0.0.1:${FRONTEND_PORT}/\$1 [P,L]
+
+    ProxyPreserveHost On
+    ProxyPass /ws ws://127.0.0.1:${FRONTEND_PORT}/ws
+    ProxyPassReverse /ws ws://127.0.0.1:${FRONTEND_PORT}/ws
+
+    # REST APIs & Web Frontend
+    ProxyPass / http://127.0.0.1:${FRONTEND_PORT}/
+    ProxyPassReverse / http://127.0.0.1:${FRONTEND_PORT}/
+
+    # Forwarded Protocol headers
+    RequestHeader set X-Forwarded-Proto expr=%{REQUEST_SCHEME}
+    RequestHeader set X-Forwarded-Port expr=%{SERVER_PORT}
+
+    ErrorLog \${APACHE_LOG_DIR}/${DOMAIN}_error.log
+    CustomLog \${APACHE_LOG_DIR}/${DOMAIN}_access.log combined
+</VirtualHost>
+EOF
+
+    # Enable virtual host
+    a2ensite "${DOMAIN}.conf"
+
+    # Test Apache syntax
+    if apache2ctl configtest; then
+        systemctl reload apache2
+        log_success "Host Apache2 configuration validated and reloaded."
+    else
+        log_error "Host Apache2 configuration test failed. Please review ${APACHE_CONF}."
+        exit 1
+    fi
+
+    # Automated SSL via Certbot for Apache
+    log_info "Checking Let's Encrypt SSL certificate for ${DOMAIN}..."
+    if certbot certificates 2>/dev/null | grep -q "${DOMAIN}"; then
+        log_success "SSL certificate for ${DOMAIN} is already active."
+    else
+        log_info "Requesting Let's Encrypt SSL certificate via Certbot Apache plugin..."
+        if certbot --apache -d "${DOMAIN}" --non-interactive --agree-tos -m "${ADMIN_EMAIL}" --redirect; then
+            log_success "Let's Encrypt SSL certificate successfully installed and HTTPS redirect enabled on Apache!"
+            systemctl reload apache2
+        else
+            log_warn "Certbot automated certificate acquisition encountered an issue."
+            log_warn "If DNS for ${DOMAIN} is not yet pointing to this server, point your A record to this IP and rerun: certbot --apache -d ${DOMAIN}"
+            log_warn "Application will remain accessible via HTTP at http://${DOMAIN}"
+        fi
+    fi
+}
+
+# Fallback: Host Nginx Reverse Proxy Configuration
 configure_nginx_and_ssl() {
     log_info "Configuring host Nginx reverse proxy for ${DOMAIN}..."
 
     NGINX_AVAILABLE="/etc/nginx/sites-available/${DOMAIN}"
     NGINX_ENABLED="/etc/nginx/sites-enabled/${DOMAIN}"
 
-    # Ensure proxy upgrade map is available in nginx.conf or site file
     cat <<EOF > "$NGINX_AVAILABLE"
-# Configuration for ${DOMAIN}
 map \$http_upgrade \$connection_upgrade {
     default upgrade;
     ''      close;
@@ -224,7 +318,6 @@ server {
 
     client_max_body_size 500M;
 
-    # Primary web application
     location / {
         proxy_pass http://127.0.0.1:${FRONTEND_PORT};
         proxy_http_version 1.1;
@@ -239,7 +332,6 @@ server {
         proxy_buffering off;
     }
 
-    # Real-time WebSocket connection
     location /ws {
         proxy_pass http://127.0.0.1:${FRONTEND_PORT}/ws;
         proxy_http_version 1.1;
@@ -254,7 +346,6 @@ server {
         proxy_buffering off;
     }
 
-    # REST APIs
     location /api/ {
         proxy_pass http://127.0.0.1:${FRONTEND_PORT}/api/;
         proxy_http_version 1.1;
@@ -269,36 +360,27 @@ server {
 }
 EOF
 
-    # Enable virtual host
     ln -sf "$NGINX_AVAILABLE" "$NGINX_ENABLED"
 
-    # Test Nginx syntax
     if nginx -t; then
         systemctl reload nginx
         log_success "Host Nginx configuration validated and reloaded."
     else
-        log_error "Host Nginx syntax check failed. Please review $NGINX_AVAILABLE."
+        log_error "Host Nginx syntax check failed."
         exit 1
     fi
 
-    # Automated SSL via Certbot
-    log_info "Checking Let's Encrypt SSL certificate for ${DOMAIN}..."
     if certbot certificates 2>/dev/null | grep -q "${DOMAIN}"; then
         log_success "SSL certificate for ${DOMAIN} is already active."
     else
-        log_info "Requesting Let's Encrypt SSL certificate via Certbot..."
         if certbot --nginx -d "${DOMAIN}" --non-interactive --agree-tos -m "${ADMIN_EMAIL}" --redirect; then
-            log_success "Let's Encrypt SSL certificate successfully installed and HTTPS redirect enabled!"
+            log_success "Let's Encrypt SSL certificate successfully installed!"
             systemctl reload nginx
-        else
-            log_warn "Certbot automated certificate acquisition encountered an issue."
-            log_warn "If DNS for ${DOMAIN} is not yet pointing to this server, point your A record to this IP and rerun: certbot --nginx -d ${DOMAIN}"
-            log_warn "Application will remain accessible via HTTP at http://${DOMAIN}"
         fi
     fi
 }
 
-# 6. Build and Launch Docker Compose Stack
+# 7. Build and Launch Docker Compose Stack
 deploy_containers() {
     log_info "Building and launching Central Software Command Center containers..."
     cd "${INSTALL_DIR}"
@@ -310,7 +392,7 @@ deploy_containers() {
     log_success "Containers started. Awaiting service healthchecks..."
 }
 
-# 7. Automated Health & API Validation
+# 8. Automated Health & API Validation
 validate_health() {
     log_info "Validating container health and API availability..."
     cd "${INSTALL_DIR}"
@@ -352,7 +434,7 @@ validate_health() {
     log_info "Domain health probe (${DOMAIN}/api/health): HTTP ${DOMAIN_STATUS}"
 }
 
-# 8. Print Executive Deployment Summary
+# 9. Print Executive Deployment Summary
 print_summary() {
     echo ""
     echo -e "${GREEN}${BOLD}==========================================================================${NC}"
@@ -373,7 +455,11 @@ print_summary() {
     echo -e "    View Logs:           ${YELLOW}cd ${INSTALL_DIR} && docker compose logs -f${NC}"
     echo -e "    Container Status:    ${YELLOW}cd ${INSTALL_DIR} && docker compose ps${NC}"
     echo -e "    Restart Services:    ${YELLOW}cd ${INSTALL_DIR} && docker compose restart${NC}"
-    echo -e "    Nginx Status:        ${YELLOW}systemctl status nginx${NC}"
+    if [ "$WEB_SERVER" = "apache" ]; then
+        echo -e "    Apache Status:       ${YELLOW}systemctl status apache2${NC}"
+    else
+        echo -e "    Nginx Status:        ${YELLOW}systemctl status nginx${NC}"
+    fi
     echo ""
     echo -e "${GREEN}All systems fully operational and production-ready.${NC}"
     echo ""
@@ -383,10 +469,15 @@ print_summary() {
 main() {
     print_banner
     check_root
+    detect_web_server
     install_dependencies
     setup_repository
     configure_environment
-    configure_nginx_and_ssl
+    if [ "$WEB_SERVER" = "apache" ]; then
+        configure_apache_and_ssl
+    else
+        configure_nginx_and_ssl
+    fi
     deploy_containers
     validate_health
     print_summary
