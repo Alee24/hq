@@ -113,27 +113,31 @@ install_dependencies() {
 
 # 3. Repository Setup and Synchronization
 setup_repository() {
+    # Check if currently inside a clone or nested clone
+    if [ -f "$(pwd)/docker-compose.yml" ]; then
+        INSTALL_DIR="$(pwd)"
+    elif [ -d "${INSTALL_DIR}/hq/.git" ]; then
+        INSTALL_DIR="${INSTALL_DIR}/hq"
+    fi
+
     log_info "Configuring repository in ${INSTALL_DIR}..."
     mkdir -p "${INSTALL_DIR}"
+    cd "${INSTALL_DIR}"
     
     # Configure git safe directory
-    git config --global --add safe.directory "${INSTALL_DIR}" || true
+    git config --global --add safe.directory "*" || true
 
     if [ -d "${INSTALL_DIR}/.git" ]; then
         log_info "Existing git repository found in ${INSTALL_DIR}. Pulling latest changes..."
-        cd "${INSTALL_DIR}"
         git remote set-url origin "${REPO_URL}" || true
-        git fetch origin
-        CURRENT_BRANCH=$(git branch --show-current || echo "master")
-        if [ -z "$CURRENT_BRANCH" ]; then
-            CURRENT_BRANCH="master"
-        fi
-        git checkout "$CURRENT_BRANCH" || git checkout master || git checkout main
-        git pull origin "$CURRENT_BRANCH" || true
+        git fetch origin master
+        git reset --hard origin/master
     else
-        log_info "Cloning Central Command Center into ${INSTALL_DIR}..."
-        git clone "${REPO_URL}" "${INSTALL_DIR}"
-        cd "${INSTALL_DIR}"
+        log_info "Synchronizing Central Command Center into ${INSTALL_DIR}..."
+        git init
+        git remote add origin "${REPO_URL}" 2>/dev/null || git remote set-url origin "${REPO_URL}"
+        git fetch origin master
+        git checkout -B master origin/master
     fi
 
     log_success "Repository synchronized at commit $(git rev-parse --short HEAD 2>/dev/null || echo 'HEAD')."
