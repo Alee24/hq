@@ -25,13 +25,16 @@ async def login(login_data: UserLogin, db: AsyncSession = Depends(get_db)):
     # Failsafe: If super admin logs in and user doesn't exist yet or needs sync
     if not user and ident.lower() in [settings.ADMIN_EMAIL.lower(), settings.ADMIN_USERNAME.lower(), "admin"]:
         if verify_password(login_data.password, hash_password(settings.ADMIN_PASSWORD)):
+            now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
             user = User(
                 username=settings.ADMIN_USERNAME,
                 email=settings.ADMIN_EMAIL,
                 hashed_password=hash_password(settings.ADMIN_PASSWORD),
                 full_name="Alex Metto (Super Admin)",
                 role="SUPER_ADMIN",
-                is_active=True
+                is_active=True,
+                created_at=now_naive,
+                updated_at=now_naive
             )
             db.add(user)
             await db.commit()

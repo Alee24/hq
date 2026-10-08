@@ -495,7 +495,9 @@ async def license_and_activate_alert_endpoint(
             from cryptography.hazmat.primitives import serialization
             sig_b64 = base64.b64encode(sig_bytes).decode('utf-8')
             payload_b64 = base64.b64encode(json.dumps(cert_payload, separators=(',', ':')).encode('utf-8')).decode('utf-8')
-            spki_pub_b64 = base64.b64encode(pub_obj.public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)).decode('utf-8')
+            pub_key = priv_obj.public_key()
+            spki_pub_bytes = pub_key.public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+            spki_pub_b64 = base64.b64encode(spki_pub_bytes).decode('utf-8')
 
             certificate_text = (
                 "-----BEGIN COMMAND CENTER LICENSE PAYLOAD-----\n"

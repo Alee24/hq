@@ -46,6 +46,7 @@ async def purge_dummy_data():
             )
         )
         admin_user = res.scalar_one_or_none()
+        now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
         if not admin_user:
             admin_user = User(
                 username=settings.ADMIN_USERNAME,
@@ -53,7 +54,9 @@ async def purge_dummy_data():
                 hashed_password=hash_password(settings.ADMIN_PASSWORD),
                 full_name="Alex Metto (Super Admin)",
                 role="SUPER_ADMIN",
-                is_active=True
+                is_active=True,
+                created_at=now_naive,
+                updated_at=now_naive
             )
             db.add(admin_user)
             await db.flush()
@@ -64,6 +67,7 @@ async def purge_dummy_data():
             admin_user.full_name = "Alex Metto (Super Admin)"
             admin_user.is_active = True
             admin_user.role = "SUPER_ADMIN"
+            admin_user.updated_at = now_naive
             await db.flush()
             
         # Ensure standard Alert Rules exist
