@@ -121,6 +121,22 @@ export const ServerDetailView: React.FC<ServerDetailViewProps> = ({
   } | null>(null);
   const [customCommand, setCustomCommand] = useState('free -h');
 
+  // Per-Card Live Output Responses
+  const [cardOutputs, setCardOutputs] = useState<Record<string, {
+    command: string;
+    stdout: string;
+    stderr: string;
+    exit_code: number;
+    duration_ms: number;
+    executed_at: string;
+    success: boolean;
+  }>>({});
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+
+  // Terminal Execution History & Audit Logs
+  const [terminalHistoryLogs, setTerminalHistoryLogs] = useState<any[]>([]);
+  const [loadingLogs, setLoadingLogs] = useState(false);
+
   // Websites & Domains
   const [websites, setWebsites] = useState<any[]>([]);
   const [scanningWebsites, setScanningWebsites] = useState(false);
@@ -151,11 +167,24 @@ export const ServerDetailView: React.FC<ServerDetailViewProps> = ({
       loadMetricsHistory();
       loadDatabases();
       loadDockerSuite();
+      loadTerminalLogs();
     } catch (err: any) {
       console.error(err);
       showToast(err.message || 'Failed to load server details', 'error');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const loadTerminalLogs = async () => {
+    setLoadingLogs(true);
+    try {
+      const logs = await api.getTerminalHistory(serverId);
+      setTerminalHistoryLogs(logs || []);
+    } catch (e) {
+      console.error('Failed to load terminal logs:', e);
+    } finally {
+      setLoadingLogs(false);
     }
   };
 
@@ -356,9 +385,44 @@ export const ServerDetailView: React.FC<ServerDetailViewProps> = ({
         command_key: key,
         custom_command: custom
       });
+      const outputObj = {
+        command: res.command,
+        stdout: res.stdout,
+        stderr: res.stderr,
+        exit_code: res.exit_code,
+        duration_ms: res.duration_ms,
+        executed_at: new Date().toLocaleTimeString(),
+        success: res.exit_code === 0,
+      };
+
+      setCardOutputs(prev => ({
+        ...prev,
+        [key]: outputObj
+      }));
       setTerminalOutput(res);
-      showToast(`Command '${res.command}' executed successfully (${res.duration_ms}ms)`, 'success');
+      showToast(`Command '${res.command}' executed (${res.duration_ms}ms)`, res.exit_code === 0 ? 'success' : 'error');
+
+      // Refresh terminal history logs
+      loadTerminalLogs();
+
+      // Refresh related diagnostics
+      if (key.startsWith('DOCKER_')) loadDockerSuite();
+      if (key.includes('PG_') || key.includes('REDIS_') || key.includes('MYSQL')) loadDatabases();
+      if (key.includes('RESTART_')) loadProcesses();
     } catch (err: any) {
+      const errorObj = {
+        command: custom || key,
+        stdout: '',
+        stderr: err.message || 'Command execution failed on VPS',
+        exit_code: 1,
+        duration_ms: 0,
+        executed_at: new Date().toLocaleTimeString(),
+        success: false,
+      };
+      setCardOutputs(prev => ({
+        ...prev,
+        [key]: errorObj
+      }));
       showToast(err.message || 'Command execution failed', 'error');
     } finally {
       setTroubleshootRunning(null);
@@ -444,12 +508,14 @@ export const ServerDetailView: React.FC<ServerDetailViewProps> = ({
   const renderTroubleshootCard = (c: { key: string; title: string; cmd: string; desc: string }) => {
     const isRunning = troubleshootRunning === c.key;
     const isDestructive = c.key === 'REBOOT_NOW' || c.key === 'DOCKER_PRUNE_ALL';
+    const cardResp = cardOutputs[c.key];
+
     return (
       <div
         key={c.key}
-        className={`p-3 bg-slate-950 border rounded-xl space-y-2 transition-all flex flex-col justify-between ${
+        className={`p-3.5 bg-slate-950 border rounded-xl space-y-2.5 transition-all flex flex-col justify-between ${
           isDestructive ? 'border-rose-950/60 hover:border-rose-700' : 'border-slate-800 hover:border-brand-500/60'
-        }`}
+        } ${cardResp ? 'border-slate-700 shadow-lg ring-1 ring-brand-500/30' : ''}`}
       >
         <div className="space-y-1">
           <div className="flex items-center justify-between">
@@ -457,23 +523,101 @@ export const ServerDetailView: React.FC<ServerDetailViewProps> = ({
             <span className="text-[10px] text-slate-500 font-mono">{c.key}</span>
           </div>
           <p className="text-[11px] text-slate-400">{c.desc}</p>
-          <div className="font-mono text-[10px] text-slate-500 truncate bg-slate-900/60 p-1 rounded">
+          <div className="font-mono text-[10px] text-slate-400 truncate bg-slate-900/80 p-1 rounded border border-slate-800/80">
             {c.cmd}
           </div>
         </div>
 
-        <button
-          onClick={() => handleRunTroubleshoot(c.key)}
-          disabled={isRunning}
-          className={`w-full mt-2 inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors disabled:opacity-50 ${
-            isDestructive
-              ? 'bg-rose-700 hover:bg-rose-600 text-white'
-              : 'bg-brand-600/80 hover:bg-brand-500 text-white'
-          }`}
-        >
-          {isRunning ? <RotateCw size={12} className="animate-spin" /> : <Play size={12} />}
-          <span>{isRunning ? 'Executing...' : 'Run Command'}</span>
-        </button>
+        <div className="space-y-2">
+          <button
+            onClick={() => handleRunTroubleshoot(c.key)}
+            disabled={isRunning}
+            className={`w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all active:scale-95 disabled:opacity-50 ${
+              isDestructive
+                ? 'bg-rose-700 hover:bg-rose-600 text-white'
+                : 'bg-brand-600 hover:bg-brand-500 text-white shadow-sm'
+            }`}
+          >
+            {isRunning ? <RotateCw size={12} className="animate-spin" /> : <Play size={12} />}
+            <span>{isRunning ? 'Executing on VPS...' : '▷ Run Command'}</span>
+          </button>
+
+          {/* Running Status Feedback */}
+          {isRunning && (
+            <div className="p-2 bg-slate-900/95 border border-slate-800 rounded-lg text-[10px] text-brand-300 font-mono flex items-center gap-2 animate-pulse">
+              <span className="w-1.5 h-1.5 rounded-full bg-brand-400 animate-ping" />
+              <span>Sending command to VPS via SSH as root...</span>
+            </div>
+          )}
+
+          {/* LIVE RESPONSE BOX DIRECTLY BELOW THE CARD */}
+          {cardResp && !isRunning && (
+            <div className="rounded-lg bg-black border border-slate-800 overflow-hidden shadow-xl animate-in fade-in slide-in-from-top-1 text-left">
+              <div className="px-2.5 py-1.5 bg-slate-900/95 border-b border-slate-800 flex items-center justify-between text-[10px] font-mono">
+                <div className="flex items-center gap-1.5">
+                  <span className={`px-1.5 py-0.2 rounded font-bold ${
+                    cardResp.exit_code === 0
+                      ? 'bg-emerald-950 text-emerald-400 border border-emerald-800'
+                      : 'bg-rose-950 text-rose-400 border border-rose-800'
+                  }`}>
+                    Exit: {cardResp.exit_code}
+                  </span>
+                  <span className="text-slate-400">{cardResp.duration_ms}ms</span>
+                  <span className="text-slate-500">• {cardResp.executed_at}</span>
+                </div>
+
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => {
+                      navigator.clipboard.writeText(cardResp.stdout || cardResp.stderr || cardResp.command);
+                      setCopiedKey(c.key);
+                      setTimeout(() => setCopiedKey(null), 2000);
+                    }}
+                    className="p-1 text-slate-400 hover:text-white transition-colors"
+                    title="Copy response"
+                  >
+                    {copiedKey === c.key ? <Check size={11} className="text-emerald-400" /> : <Copy size={11} />}
+                  </button>
+                  <button
+                    onClick={() => {
+                      setCardOutputs(prev => {
+                        const next = { ...prev };
+                        delete next[c.key];
+                        return next;
+                      });
+                    }}
+                    className="p-1 text-slate-500 hover:text-slate-300 text-xs leading-none"
+                    title="Close"
+                  >
+                    &times;
+                  </button>
+                </div>
+              </div>
+
+              {/* Output Content */}
+              <div className="p-2.5 max-h-48 overflow-y-auto space-y-1 font-mono text-[11px] leading-relaxed bg-[#090e1a]">
+                <div className="text-brand-400 font-semibold truncate text-[10px]">
+                  $ {cardResp.command}
+                </div>
+                {cardResp.stdout && (
+                  <pre className="text-slate-200 whitespace-pre-wrap font-mono break-all text-[11px]">
+                    {cardResp.stdout}
+                  </pre>
+                )}
+                {cardResp.stderr && (
+                  <pre className="text-rose-400 whitespace-pre-wrap font-mono break-all text-[11px]">
+                    {cardResp.stderr}
+                  </pre>
+                )}
+                {!cardResp.stdout && !cardResp.stderr && (
+                  <div className="text-emerald-400 italic text-[10px]">
+                    Command executed successfully with zero errors.
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
       </div>
     );
   };
@@ -1954,6 +2098,109 @@ export const ServerDetailView: React.FC<ServerDetailViewProps> = ({
                 </pre>
               </div>
             )}
+          </div>
+
+          {/* Live Execution History & Terminal Audit Logs */}
+          <div className="p-5 bg-slate-900/80 border border-slate-800 rounded-xl space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-sm font-semibold text-white flex items-center gap-2">
+                  <Clock size={16} className="text-brand-400" />
+                  Terminal Execution History & Audit Logs ({terminalHistoryLogs.length})
+                </h3>
+                <p className="text-xs text-slate-400">Live trail of all SSH terminal commands executed on {server.name}</p>
+              </div>
+
+              <button
+                onClick={loadTerminalLogs}
+                disabled={loadingLogs}
+                className="px-2.5 py-1.5 bg-slate-950 hover:bg-slate-800 text-slate-300 rounded-lg text-xs font-mono border border-slate-800 flex items-center gap-1.5 transition-colors"
+              >
+                <RefreshCw size={11} className={loadingLogs ? 'animate-spin text-brand-400' : ''} />
+                <span>Refresh Logs</span>
+              </button>
+            </div>
+
+            <div className="overflow-x-auto rounded-lg border border-slate-800">
+              <table className="w-full text-left text-xs font-mono">
+                <thead className="bg-slate-950 text-slate-400 text-[11px] border-b border-slate-800">
+                  <tr>
+                    <th className="py-2.5 px-3">Timestamp</th>
+                    <th className="py-2.5 px-3">Command Executed</th>
+                    <th className="py-2.5 px-3">User</th>
+                    <th className="py-2.5 px-3 text-center">Status</th>
+                    <th className="py-2.5 px-3">Duration</th>
+                    <th className="py-2.5 px-3 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800/60 text-slate-300">
+                  {terminalHistoryLogs.length === 0 ? (
+                    <tr>
+                      <td colSpan={6} className="py-8 text-center text-slate-500 font-sans text-xs">
+                        No command logs recorded yet. Run any preset command above or execute a command to see live logs.
+                      </td>
+                    </tr>
+                  ) : (
+                    terminalHistoryLogs.map((log: any, idx: number) => {
+                      const isSuccess = log.exit_code === 0;
+                      return (
+                        <tr key={log.id || idx} className="hover:bg-slate-800/40">
+                          <td className="py-2.5 px-3 text-slate-400 text-[11px]">
+                            {new Date(log.created_at).toLocaleTimeString()}
+                          </td>
+                          <td className="py-2.5 px-3 font-semibold text-white max-w-xs truncate" title={log.command}>
+                            <span className="text-brand-400 mr-1">$</span>
+                            {log.command}
+                          </td>
+                          <td className="py-2.5 px-3 text-slate-400">{log.username || 'root'}</td>
+                          <td className="py-2.5 px-3 text-center">
+                            <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                              isSuccess
+                                ? 'bg-emerald-950 text-emerald-400 border border-emerald-800'
+                                : 'bg-rose-950 text-rose-400 border border-rose-800'
+                            }`}>
+                              Exit: {log.exit_code}
+                            </span>
+                          </td>
+                          <td className="py-2.5 px-3 text-slate-400">
+                            {log.execution_duration_ms || 0}ms
+                          </td>
+                          <td className="py-2.5 px-3 text-right">
+                            <div className="flex items-center justify-end gap-1.5">
+                              <button
+                                onClick={() => {
+                                  setTerminalOutput({
+                                    command: log.command,
+                                    stdout: log.output || '(No output recorded)',
+                                    stderr: '',
+                                    exit_code: log.exit_code,
+                                    duration_ms: log.execution_duration_ms,
+                                    executed_at: log.created_at
+                                  });
+                                  showToast('Output loaded into console view', 'info');
+                                }}
+                                className="px-2 py-1 bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300 rounded text-[11px]"
+                                title="View Output in Console"
+                              >
+                                View
+                              </button>
+                              <button
+                                onClick={() => handleRunTroubleshoot('CUSTOM', log.command)}
+                                className="px-2 py-1 bg-brand-950 hover:bg-brand-900 border border-brand-800 text-brand-300 rounded text-[11px] flex items-center gap-1"
+                                title="Rerun command"
+                              >
+                                <Play size={10} />
+                                <span>Rerun</span>
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       )}
