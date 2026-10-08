@@ -428,10 +428,17 @@ export const LicensesView: React.FC = () => {
                       {String(node.last_heartbeat).replace('T', ' ').slice(0, 19)}
                     </td>
                     <td className="py-3 px-4 text-right">
-                      <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-950 text-emerald-400 border border-emerald-800/60">
-                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-                        <span>{node.status}</span>
-                      </span>
+                      {node.status === 'REVOKED' ? (
+                        <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-rose-950 text-rose-400 border border-rose-800/60">
+                          <span className="w-1.5 h-1.5 rounded-full bg-rose-400"></span>
+                          <span>REVOKED</span>
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-950 text-emerald-400 border border-emerald-800/60">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                          <span>{node.status || 'ACTIVE'}</span>
+                        </span>
+                      )}
                     </td>
                   </tr>
                 ))}

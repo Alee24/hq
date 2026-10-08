@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Response
+from fastapi import APIRouter, Depends, HTTPException, status, Response, Body
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from typing import List, Optional
@@ -363,28 +363,44 @@ async def activate_license(
 @router.post("/{license_id}/revoke")
 async def revoke_license(
     license_id: str,
+    payload: Optional[dict] = Body(None),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_roles(["SUPER_ADMIN", "LICENSE_ADMIN"]))
 ):
-    result = await db.execute(select(License).where(License.id == license_id))
+    action = (payload.get("action") if payload else "revoke") or "revoke"
+    reason = (payload.get("reason") if payload else None)
+
+    stmt = select(License).where(
+        (License.id == license_id) | (License.license_key == license_id)
+    )
+    result = await db.execute(stmt)
     lic = result.scalar_one_or_none()
     if not lic:
         raise HTTPException(status_code=404, detail="License not found.")
 
-    lic.status = "REVOKED"
+    is_reinstating = action.lower() in ["reinstate", "restore", "activate"]
+    new_status = "ACTIVE" if is_reinstating else "REVOKED"
+    lic.status = new_status
+
+    # Also synchronize activations
+    act_res = await db.execute(select(LicenseActivation).where(LicenseActivation.license_id == lic.id))
+    activations = act_res.scalars().all()
+    for act in activations:
+        act.is_active = is_reinstating
+
     await log_audit_event(
         db=db,
-        action="REVOKE_LICENSE",
+        action="REINSTATE_LICENSE" if is_reinstating else "REVOKE_LICENSE",
         entity_type="license",
         username=current_user.username,
         user_id=current_user.id,
         entity_id=lic.id,
-        details={"license_key": lic.license_key, "product": lic.product_name},
+        details={"license_key": lic.license_key, "action": action, "reason": reason},
         result="SUCCESS"
     )
     await db.commit()
 
-    return {"success": True, "license_id": lic.id, "status": "REVOKED"}
+    return {"success": True, "license_id": lic.id, "status": new_status, "action": action}
 
 @router.post("/{license_id}/renew")
 async def renew_license(

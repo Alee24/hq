@@ -416,22 +416,51 @@ def client_heartbeat(req: HeartbeatRequest, request: Request):
     now_iso = datetime.now(timezone.utc).isoformat()
 
     with get_db() as conn:
-        if req.license_id:
-            lic = conn.execute("SELECT * FROM licenses WHERE license_id = ?", (req.license_id,)).fetchone()
+        lic_id = req.license_id
+        # Fallback: if client doesn't send license_id, resolve from prior activations for this machine_id
+        if not lic_id and req.machine_id:
+            act_match = conn.execute(
+                "SELECT license_id FROM activations WHERE machine_id = ? ORDER BY id DESC LIMIT 1",
+                (req.machine_id,)
+            ).fetchone()
+            if act_match and act_match["license_id"]:
+                lic_id = act_match["license_id"]
+
+        if lic_id:
+            lic = conn.execute("SELECT * FROM licenses WHERE license_id = ?", (lic_id,)).fetchone()
             if lic and lic["is_revoked"] == 1:
+                # Mark activation as REVOKED
+                conn.execute("""
+                    UPDATE activations
+                    SET last_heartbeat = ?, ip_address = ?, hostname = COALESCE(?, hostname), status = 'REVOKED'
+                    WHERE license_id = ? AND machine_id = ?
+                """, (now_iso, client_ip, req.hostname, lic_id, req.machine_id))
+                conn.commit()
                 return {
+                    "status": "revoked",
                     "is_revoked": True,
+                    "is_valid": False,
+                    "license_id": lic_id,
                     "reason": lic["revocation_reason"] or "Revoked by vendor administrator."
                 }
 
+            # License is unrevoked / active / reinstated
             conn.execute("""
                 UPDATE activations
-                SET last_heartbeat = ?, ip_address = ?, hostname = COALESCE(?, hostname)
+                SET last_heartbeat = ?, ip_address = ?, hostname = COALESCE(?, hostname), status = 'ACTIVE'
                 WHERE license_id = ? AND machine_id = ?
-            """, (now_iso, client_ip, req.hostname, req.license_id, req.machine_id))
+            """, (now_iso, client_ip, req.hostname, lic_id, req.machine_id))
             conn.commit()
 
-    return {"status": "ok", "is_valid": True, "is_revoked": False}
+            return {
+                "status": "ok",
+                "is_valid": True,
+                "is_revoked": False,
+                "reactivated": True,
+                "license_id": lic_id
+            }
+
+    return {"status": "ok", "is_valid": True, "is_revoked": False, "reactivated": True}
 
 @app.post("/api/v1/licenses/telemetry-alert")
 @app.post("/api/v1/client/telemetry-alert")
@@ -542,20 +571,42 @@ def toggle_license_revoke(license_id: str, req: RevokeRequest):
         if not lic:
             raise HTTPException(status_code=404, detail="License not found")
 
-        new_status = 1 if req.action == "revoke" else 0
+        is_revoke = req.action.lower() in ["revoke", "kill"]
+        new_status = 1 if is_revoke else 0
+        act_status = 'REVOKED' if is_revoke else 'ACTIVE'
+        reason_val = req.reason if is_revoke else None
+
         conn.execute("""
             UPDATE licenses
             SET is_revoked = ?, revocation_reason = ?
             WHERE license_id = ?
-        """, (new_status, req.reason if new_status == 1 else None, license_id))
+        """, (new_status, reason_val, license_id))
+
+        conn.execute("""
+            UPDATE activations
+            SET status = ?
+            WHERE license_id = ?
+        """, (act_status, license_id))
         conn.commit()
+
+    logger.info(f"🔄 License {license_id} status changed: is_revoked={bool(new_status)} ({act_status})")
 
     broadcast_sync({
         "type": "LICENSE_STATUS_CHANGED",
         "data": {
             "license_id": license_id,
             "is_revoked": bool(new_status),
-            "reason": req.reason if new_status == 1 else None
+            "status": act_status,
+            "action": req.action,
+            "reason": reason_val
+        }
+    })
+
+    broadcast_sync({
+        "type": "ACTIVATION_UPDATE",
+        "data": {
+            "license_id": license_id,
+            "status": act_status
         }
     })
 
@@ -563,7 +614,9 @@ def toggle_license_revoke(license_id: str, req: RevokeRequest):
         "status": "ok",
         "license_id": license_id,
         "is_revoked": bool(new_status),
-        "reason": req.reason if new_status == 1 else None
+        "activation_status": act_status,
+        "action": req.action,
+        "reason": reason_val
     }
 
 # ==============================================================================
