@@ -1,0 +1,14 @@
+[Unit]
+Description=KKDES Central Software Command Center
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/command_center
+ExecStart=/usr/local/bin/uvicorn server:app --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
