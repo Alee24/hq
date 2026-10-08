@@ -291,6 +291,21 @@ class DomainResponse(BaseModel):
     class Config:
         from_attributes = True
 
+class DomainSslActionResponse(BaseModel):
+    success: bool
+    domain_id: str
+    domain_name: str
+    ssl_status: str
+    ssl_issuer: str
+    days_remaining: int
+    ssl_expires_at: Optional[datetime] = None
+    command: str
+    stdout: str
+    stderr: str
+    exit_code: int
+    duration_ms: int
+    message: str
+
 # ==========================================
 # Monitoring & Incident Schemas
 # ==========================================

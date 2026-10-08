@@ -504,6 +504,24 @@ class ApiClient {
     return this.request<any>(`/domains/${id}/verify-ssl`, { method: 'POST' });
   }
 
+  async updateDomainSsl(id: string) {
+    return this.request<{
+      success: boolean;
+      domain_id: string;
+      domain_name: string;
+      ssl_status: string;
+      ssl_issuer?: string;
+      days_remaining?: number;
+      ssl_expires_at?: string;
+      command?: string;
+      stdout?: string;
+      stderr?: string;
+      exit_code: number;
+      duration_ms: number;
+      message: string;
+    }>(`/domains/${id}/update-ssl`, { method: 'POST' });
+  }
+
   async deleteDomain(id: string) {
     return this.request<any>(`/domains/${id}`, {
       method: 'DELETE',

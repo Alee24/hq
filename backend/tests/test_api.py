@@ -1,5 +1,6 @@
 import pytest
 import pytest_asyncio
+import uuid
 from httpx import AsyncClient, ASGITransport
 from backend.app.main import app
 from backend.app.core.config import settings
@@ -593,6 +594,64 @@ async def test_git_status_actions_and_batch_scan():
         assert scan_data["success"] is True
         assert "total_scanned" in scan_data
         assert "updated_apps" in scan_data
+
+@pytest.mark.asyncio
+async def test_domain_ssl_update_and_verification():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        token = await get_admin_token(ac)
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # 1. Register a server node
+        srv_res = await ac.post("/api/servers", json={
+            "name": "vps-ssl-test-node",
+            "hostname": "ssl.test.local",
+            "public_ip": "185.192.97.84",
+            "ssh_password": "TestPassword123"
+        }, headers=headers)
+        assert srv_res.status_code == 200
+        srv_id = srv_res.json()["id"]
+
+        unique_domain = f"test-cert-{uuid.uuid4().hex[:8]}.enterprise.local"
+
+        # 2. Create domain
+        dom_res = await ac.post("/api/domains", json={
+            "domain_name": unique_domain,
+            "server_ip": "185.192.97.84"
+        }, headers=headers)
+        assert dom_res.status_code == 200
+        dom_id = dom_res.json()["id"]
+
+        # 3. Test POST /api/domains/{id}/verify-ssl
+        verify_res = await ac.post(f"/api/domains/{dom_id}/verify-ssl", headers=headers)
+        assert verify_res.status_code == 200
+        verify_data = verify_res.json()
+        assert "ssl_status" in verify_data
+        assert "days_remaining" in verify_data
+
+        # 4. Test POST /api/domains/{id}/update-ssl
+        update_res = await ac.post(f"/api/domains/{dom_id}/update-ssl", headers=headers)
+        assert update_res.status_code == 200
+        update_data = update_res.json()
+        assert update_data["domain_id"] == dom_id
+        assert update_data["domain_name"] == unique_domain
+        assert "command" in update_data
+        assert "ssl_status" in update_data
+        assert "exit_code" in update_data
+        assert "duration_ms" in update_data
+        assert "message" in update_data
+
+        # 5. Verify domain details in GET /api/domains
+        list_res = await ac.get("/api/domains", headers=headers)
+        assert list_res.status_code == 200
+        matched = next((d for d in list_res.json() if d["id"] == dom_id), None)
+        assert matched is not None
+        assert matched["domain_name"] == unique_domain
+
+        # 6. Clean up
+        del_res = await ac.delete(f"/api/domains/{dom_id}", headers=headers)
+        assert del_res.status_code == 200
+
 
 
 

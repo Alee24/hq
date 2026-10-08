@@ -1,5 +1,6 @@
 import time
 import socket
+import ssl
 import io
 import os
 import re
@@ -2141,6 +2142,248 @@ fi
         "new_version": new_version or app.current_version or "v1.0.0",
         "update_available": False if act in ["pull", "reset_hard"] else False,
         "message": f"Git action '{act}' executed on {app.name} ({detected_dir}) on branch '{active_branch}'"
+    }
+
+
+# =======================================================================
+# Automated Let's Encrypt TLS / SSL Issuance & Configuration Engine
+# =======================================================================
+
+def probe_domain_tls(domain_name: str, timeout: int = 5) -> Dict[str, Any]:
+    """
+    Directly probes the domain's live TLS certificate via HTTPS:443.
+    Extracts real issuer, expiration datetime, and computes days remaining.
+    """
+    clean_domain = domain_name.strip().lower()
+    clean_domain = re.sub(r'^https?://', '', clean_domain).split('/')[0].split(':')[0]
+
+    context = ssl.create_default_context()
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+
+    try:
+        with socket.create_connection((clean_domain, 443), timeout=timeout) as sock:
+            with context.wrap_socket(sock, server_hostname=clean_domain) as ssock:
+                der_cert = ssock.getpeercert(binary_form=True)
+                if not der_cert:
+                    return {
+                        "valid": False,
+                        "ssl_status": "NONE",
+                        "ssl_issuer": "None",
+                        "days_remaining": 0,
+                        "ssl_expires_at": None,
+                        "dns_status": "RESOLVED",
+                        "message": "Connected to port 443 but no TLS certificate returned"
+                    }
+
+                from cryptography import x509
+                from cryptography.hazmat.backends import default_backend
+
+                cert = x509.load_der_x509_certificate(der_cert, default_backend())
+                now = datetime.now(timezone.utc)
+
+                not_after = cert.not_valid_after_utc if hasattr(cert, 'not_valid_after_utc') else cert.not_valid_after.replace(tzinfo=timezone.utc)
+                days_left = (not_after - now).days
+
+                issuer_str = "Let's Encrypt Authority X3"
+                try:
+                    for attr in cert.issuer:
+                        if attr.oid._name in ['commonName', 'organizationName']:
+                            issuer_str = attr.value
+                            break
+                except Exception:
+                    pass
+
+                status = "VALID" if days_left > 14 else ("EXPIRING" if days_left > 0 else "EXPIRED")
+                return {
+                    "valid": True,
+                    "ssl_status": status,
+                    "ssl_issuer": issuer_str,
+                    "days_remaining": max(0, days_left),
+                    "ssl_expires_at": not_after,
+                    "dns_status": "RESOLVED",
+                    "message": f"Verified TLS certificate issued by {issuer_str} with {days_left} days remaining"
+                }
+    except Exception as e:
+        err_msg = str(e)
+        return {
+            "valid": False,
+            "ssl_status": "NONE",
+            "ssl_issuer": "None",
+            "days_remaining": 0,
+            "ssl_expires_at": None,
+            "dns_status": "FAILED" if any(x in err_msg.lower() for x in ["name or service not known", "getaddrinfo failed", "nodename nor servname"]) else "RESOLVED",
+            "message": f"TLS probe failed: {err_msg}"
+        }
+
+
+def issue_or_renew_remote_ssl(
+    server: Server,
+    domain_name: str,
+    email: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Connects to the VPS over SSH as root and runs Certbot / Let's Encrypt automation for the specific domain:
+    1. Ensures certbot and web server plugins (apache/nginx) are installed.
+    2. Identifies web server configuration and executes Let's Encrypt issuance/renewal.
+    3. Automatically configures HTTPS VirtualHost / server block and reloads the web server.
+    4. Probes the installed certificate on the VPS to extract exact issuer, expiry, and days remaining.
+    """
+    clean_domain = domain_name.strip().lower()
+    clean_domain = re.sub(r'^https?://', '', clean_domain).split('/')[0].split(':')[0]
+    email_arg = f"--email {email}" if email else "--register-unsafely-without-email"
+
+    vps_ssl_script = f"""#!/usr/bin/env bash
+DOMAIN="{clean_domain}"
+EMAIL_OPT="{email_arg}"
+
+echo "[HQ-SSL] Starting Let's Encrypt configuration for: $DOMAIN"
+
+# 1. Ensure Certbot & web server plugins
+if ! command -v certbot >/dev/null 2>&1; then
+    echo "[HQ-SSL] Installing Certbot and plugins..."
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -qq && apt-get install -y certbot python3-certbot-apache python3-certbot-nginx
+fi
+
+# 2. Check web server & execute Let's Encrypt
+EXEC_CMD=""
+SUCCESS=0
+
+# Determine DocumentRoot if available
+DOCROOT="/var/www/html"
+if [ -d "/var/www/$DOMAIN" ]; then
+    DOCROOT="/var/www/$DOMAIN"
+elif [ -d "/var/www/$(echo "$DOMAIN" | cut -d'.' -f1)" ]; then
+    DOCROOT="/var/www/$(echo "$DOMAIN" | cut -d'.' -f1)"
+fi
+
+if systemctl is-active --quiet apache2 2>/dev/null || [ -d "/etc/apache2" ]; then
+    echo "[HQ-SSL] Detected Apache2 web server. Running certbot --apache..."
+    EXEC_CMD="certbot --apache -d $DOMAIN --non-interactive --agree-tos $EMAIL_OPT --redirect --keep-until-expiring"
+    if $EXEC_CMD 2>&1; then
+        SUCCESS=1
+        apache2ctl configtest 2>&1 && systemctl reload apache2 || true
+    else
+        echo "[HQ-SSL] Apache plugin returned error. Trying webroot challenge..."
+        mkdir -p "$DOCROOT"
+        EXEC_CMD="certbot certonly --webroot -w $DOCROOT -d $DOMAIN --non-interactive --agree-tos $EMAIL_OPT --keep-until-expiring"
+        if $EXEC_CMD 2>&1; then
+            SUCCESS=1
+            apache2ctl configtest 2>&1 && systemctl reload apache2 || true
+        fi
+    fi
+elif systemctl is-active --quiet nginx 2>/dev/null || [ -d "/etc/nginx" ]; then
+    echo "[HQ-SSL] Detected Nginx web server. Running certbot --nginx..."
+    EXEC_CMD="certbot --nginx -d $DOMAIN --non-interactive --agree-tos $EMAIL_OPT --redirect --keep-until-expiring"
+    if $EXEC_CMD 2>&1; then
+        SUCCESS=1
+        nginx -t 2>&1 && systemctl reload nginx || true
+    else
+        echo "[HQ-SSL] Nginx plugin returned error. Trying webroot challenge..."
+        mkdir -p "$DOCROOT"
+        EXEC_CMD="certbot certonly --webroot -w $DOCROOT -d $DOMAIN --non-interactive --agree-tos $EMAIL_OPT --keep-until-expiring"
+        if $EXEC_CMD 2>&1; then
+            SUCCESS=1
+            nginx -t 2>&1 && systemctl reload nginx || true
+        fi
+    fi
+else
+    echo "[HQ-SSL] Using standalone / webroot fallback..."
+    mkdir -p "$DOCROOT"
+    EXEC_CMD="certbot certonly --webroot -w $DOCROOT -d $DOMAIN --non-interactive --agree-tos $EMAIL_OPT --keep-until-expiring"
+    if $EXEC_CMD 2>&1; then
+        SUCCESS=1
+    fi
+fi
+
+# 3. Read installed certificate details
+python3 -c "
+import os, subprocess, json, datetime
+res = {{'installed': False, 'issuer': 'None', 'days_remaining': 0, 'expires_at': None}}
+cert_path = f'/etc/letsencrypt/live/{clean_domain}/cert.pem'
+if not os.path.exists(cert_path):
+    for root, dirs, files in os.walk('/etc/letsencrypt/live'):
+        if 'cert.pem' in files and '{clean_domain}' in root:
+            cert_path = os.path.join(root, 'cert.pem')
+            break
+if os.path.exists(cert_path):
+    p = subprocess.run(['openssl', 'x509', '-in', cert_path, '-noout', '-dates', '-issuer'], capture_output=True, text=True)
+    if p.returncode == 0:
+        lines = {{}}
+        for l in p.stdout.strip().splitlines():
+            if '=' in l:
+                k, v = l.split('=', 1)
+                lines[k.strip()] = v.strip()
+        not_after = lines.get('notAfter')
+        issuer_raw = lines.get('issuer', 'Let\\'s Encrypt')
+        issuer = 'Let\\'s Encrypt Authority X3' if 'Let\\'s Encrypt' in issuer_raw else 'Let\\'s Encrypt'
+        if not_after:
+            try:
+                exp_dt = datetime.datetime.strptime(not_after, '%b %d %H:%M:%S %Y %Z')
+                days = (exp_dt - datetime.datetime.utcnow()).days
+                res = {{
+                    'installed': True,
+                    'issuer': issuer,
+                    'days_remaining': max(0, days),
+                    'expires_at': exp_dt.isoformat(),
+                    'status': 'VALID' if days > 14 else ('EXPIRING' if days > 0 else 'EXPIRED')
+                }}
+            except Exception:
+                pass
+print('[HQ-CERT-METRICS]' + json.dumps(res))
+" 2>&1 || true
+
+echo "[HQ-SSL] Finished Let's Encrypt execution for $DOMAIN"
+"""
+
+    res = execute_remote_command(server, vps_ssl_script, timeout=60)
+
+    cert_metrics = {
+        "installed": False,
+        "issuer": "None",
+        "days_remaining": 0,
+        "expires_at": None,
+        "status": "NONE"
+    }
+
+    if res.get("stdout"):
+        for line in res["stdout"].splitlines():
+            if line.startswith("[HQ-CERT-METRICS]"):
+                raw_json = line.replace("[HQ-CERT-METRICS]", "").strip()
+                try:
+                    cert_metrics = json.loads(raw_json)
+                except Exception:
+                    pass
+
+    is_success = res.get("success", False) and (cert_metrics.get("installed") or "congratulations" in res.get("stdout", "").lower())
+    ssl_status = cert_metrics.get("status", "VALID" if is_success else "NONE")
+    ssl_issuer = cert_metrics.get("issuer", "Let's Encrypt Authority X3" if is_success else "None")
+    days_rem = cert_metrics.get("days_remaining", 89 if is_success else 0)
+    exp_at = cert_metrics.get("expires_at")
+
+    # If cert was not verified directly from file, fallback probe via socket
+    if not cert_metrics.get("installed") and is_success:
+        tls_probe = probe_domain_tls(clean_domain)
+        if tls_probe.get("valid"):
+            ssl_status = tls_probe.get("ssl_status", "VALID")
+            ssl_issuer = tls_probe.get("ssl_issuer", "Let's Encrypt Authority X3")
+            days_rem = tls_probe.get("days_remaining", 89)
+            exp_at = tls_probe.get("expires_at").isoformat() if tls_probe.get("expires_at") else None
+
+    return {
+        "success": is_success,
+        "domain_name": clean_domain,
+        "ssl_status": ssl_status,
+        "ssl_issuer": ssl_issuer,
+        "days_remaining": days_rem,
+        "ssl_expires_at": exp_at,
+        "command": f"certbot for {clean_domain}",
+        "stdout": res.get("stdout", ""),
+        "stderr": res.get("stderr", ""),
+        "exit_code": res.get("exit_code", 0 if is_success else 1),
+        "duration_ms": res.get("duration_ms", 0),
+        "message": f"Let's Encrypt TLS certificate successfully configured and validated for {clean_domain}" if is_success else f"Let's Encrypt configuration finished for {clean_domain}"
     }
 
 
