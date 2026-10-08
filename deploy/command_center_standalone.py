@@ -1,6 +1,5 @@
 """
 KKDES Central Software Command Center
-Standalone Licensing Authority Server
 Domain: https://hq.kkdes.co.ke/
 Owner & Authority: Metto Alex (KKDES Software Solutions)
 """
@@ -12,10 +11,11 @@ import base64
 import json
 import uuid
 import logging
+import asyncio
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any, List
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect, Response
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from cryptography.hazmat.primitives.asymmetric import ed25519
@@ -131,6 +131,7 @@ def get_or_create_keys():
             with open(KEY_FILE, "rb") as f:
                 priv = serialization.load_pem_private_key(f.read(), password=None)
                 pub = priv.public_key()
+                logger.info("Loaded master key from disk.")
                 return priv, pub
         except Exception as e:
             logger.error(f"Error loading existing key file: {e}")
@@ -144,6 +145,7 @@ def get_or_create_keys():
                 format=serialization.PrivateFormat.PKCS8,
                 encryption_algorithm=serialization.NoEncryption()
             ))
+        logger.info(f"Initialized official vendor private key at {KEY_FILE}")
         return priv, pub
     except Exception as e:
         logger.warning(f"Could not initialize master vendor key, generating fresh key: {e}")
@@ -159,12 +161,92 @@ spki_pub_bytes = pub_key.public_bytes(
 )
 spki_pub_b64 = base64.b64encode(spki_pub_bytes).decode('utf-8')
 
+raw_pub_bytes = pub_key.public_bytes(
+    encoding=serialization.Encoding.Raw,
+    format=serialization.PublicFormat.Raw
+)
+raw_pub_b64 = base64.b64encode(raw_pub_bytes).decode('utf-8')
+
+# Canonical deterministic JSON bytes
 def canonical_json_bytes(data: Dict[str, Any]) -> bytes:
     clean = {k: v for k, v in data.items() if not str(k).startswith("_")}
     return json.dumps(clean, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode('utf-8')
 
 # ==============================================================================
-# 3. Request & Response Schemas
+# 3. Real-Time WebSocket Connection Hub
+# ==============================================================================
+
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+        logger.info(f"WebSocket client connected. Total connected clients: {len(self.active_connections)}")
+
+    def disconnect(self, websocket: WebSocket):
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+            logger.info(f"WebSocket client disconnected. Remaining clients: {len(self.active_connections)}")
+
+    async def broadcast(self, message: dict):
+        for connection in list(self.active_connections):
+            try:
+                await connection.send_json(message)
+            except Exception:
+                self.disconnect(connection)
+
+ws_manager = ConnectionManager()
+
+def broadcast_sync(message: dict):
+    """Safely dispatches WebSocket broadcast even from synchronous endpoint threads."""
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            asyncio.create_task(ws_manager.broadcast(message))
+    except Exception as e:
+        logger.debug(f"Broadcast dispatch exception: {e}")
+
+@app.websocket("/ws")
+async def websocket_hub(websocket: WebSocket):
+    await ws_manager.connect(websocket)
+    try:
+        with get_db() as conn:
+            total_lic = conn.execute("SELECT COUNT(*) as c FROM licenses").fetchone()["c"]
+            total_act = conn.execute("SELECT COUNT(*) as c FROM activations WHERE status = 'ACTIVE'").fetchone()["c"]
+            total_alt = conn.execute("SELECT COUNT(*) as c FROM telemetry_alerts").fetchone()["c"]
+
+        await websocket.send_json({
+            "type": "INITIAL_SNAPSHOT",
+            "data": {
+                "total_licenses": total_lic,
+                "total_nodes": total_act,
+                "total_alerts": total_alt,
+                "authority": "https://hq.kkdes.co.ke",
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+        })
+
+        while True:
+            text = await websocket.receive_text()
+            if text == "ping":
+                await websocket.send_text("pong")
+            else:
+                try:
+                    payload = json.loads(text)
+                    if payload.get("type") == "ping":
+                        await websocket.send_json({"type": "pong", "time": datetime.now(timezone.utc).isoformat()})
+                except Exception:
+                    pass
+    except WebSocketDisconnect:
+        ws_manager.disconnect(websocket)
+    except Exception as e:
+        logger.debug(f"WebSocket lifecycle exception: {e}")
+        ws_manager.disconnect(websocket)
+
+# ==============================================================================
+# 4. Request & Response Schemas
 # ==============================================================================
 
 class ActivateRequest(BaseModel):
@@ -213,10 +295,11 @@ class RevokeRequest(BaseModel):
     action: Optional[str] = "revoke"
 
 # ==============================================================================
-# 4. Core API Endpoints
+# 5. Core API Endpoints
 # ==============================================================================
 
 @app.get("/health")
+@app.get("/api/health")
 @app.get("/api/v1/licenses/health")
 def health():
     return {
@@ -227,6 +310,27 @@ def health():
         "timestamp": datetime.now(timezone.utc).isoformat()
     }
 
+@app.get("/api/auth/me")
+def auth_me():
+    return {
+        "id": 1,
+        "username": "mettoalex",
+        "email": "mettoalex@gmail.com",
+        "full_name": "Metto Alex",
+        "role": "SUPER_ADMIN",
+        "is_active": True,
+        "is_superuser": True
+    }
+
+@app.get("/robots.txt", response_class=PlainTextResponse)
+def robots_txt():
+    return "User-agent: *\nDisallow: /api/\nDisallow: /ws\nAllow: /\n"
+
+@app.get("/favicon.ico")
+def favicon():
+    svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>'
+    return Response(content=svg, media_type="image/svg+xml")
+
 @app.post("/api/v1/licenses/activate")
 @app.post("/api/v1/client/activate")
 def client_activate(req: ActivateRequest, request: Request):
@@ -236,6 +340,7 @@ def client_activate(req: ActivateRequest, request: Request):
     with get_db() as conn:
         lic = conn.execute("SELECT * FROM licenses WHERE license_id = ?", (req.license_id,)).fetchone()
         if not lic:
+            # Auto-enroll license if missing from prior offline generation
             conn.execute("""
                 INSERT OR IGNORE INTO licenses (
                     license_id, customer, email, product, type, installation_limit, issued_at, expires_at
@@ -254,6 +359,7 @@ def client_activate(req: ActivateRequest, request: Request):
                 detail=f"License {req.license_id} has been revoked by vendor: {lic['revocation_reason'] or 'Revoked by authority'}"
             )
 
+        # Check existing machine activation
         existing = conn.execute(
             "SELECT * FROM activations WHERE license_id = ? AND machine_id = ?",
             (req.license_id, req.machine_id)
@@ -292,6 +398,21 @@ def client_activate(req: ActivateRequest, request: Request):
                 WHERE license_id = ? AND machine_id = ?
             """, (now_iso, client_ip, req.hostname, req.license_id, req.machine_id))
             conn.commit()
+
+    # Broadcast event via WebSocket
+    broadcast_sync({
+        "type": "ACTIVATION_UPDATE",
+        "data": {
+            "license_id": req.license_id,
+            "machine_id": req.machine_id,
+            "customer": req.customer or lic["customer"],
+            "hostname": req.hostname,
+            "ip_address": client_ip,
+            "installations_used": total_active,
+            "installation_limit": limit,
+            "timestamp": now_iso
+        }
+    })
 
     return {
         "status": "activated",
@@ -348,6 +469,20 @@ def client_telemetry_alert(req: TelemetryAlertRequest, request: Request):
         conn.commit()
 
     logger.warning(f"🚨 [TELEMETRY ALERT] {req.alert_type} from {client_ip} ({req.hostname}) - {req.reason}")
+
+    # Broadcast alert over WebSocket
+    broadcast_sync({
+        "type": "TELEMETRY_ALERT",
+        "data": {
+            "alert_type": req.alert_type,
+            "machine_id": req.machine_id,
+            "hostname": req.hostname,
+            "ip_address": client_ip,
+            "reason": req.reason,
+            "timestamp": now_iso
+        }
+    })
+
     return {"status": "recorded", "alert_type": req.alert_type}
 
 @app.post("/api/v1/licenses/generate")
@@ -399,6 +534,15 @@ def generate_license(req: GenerateLicenseRequest):
         ))
         conn.commit()
 
+    broadcast_sync({
+        "type": "LICENSE_GENERATED",
+        "data": {
+            "license_id": lic_id,
+            "customer": req.customer,
+            "limit": req.installation_limit
+        }
+    })
+
     return {
         "license_id": lic_id,
         "certificate": certificate_text,
@@ -421,6 +565,15 @@ def toggle_license_revoke(license_id: str, req: RevokeRequest):
         """, (new_status, req.reason if new_status == 1 else None, license_id))
         conn.commit()
 
+    broadcast_sync({
+        "type": "LICENSE_STATUS_CHANGED",
+        "data": {
+            "license_id": license_id,
+            "is_revoked": bool(new_status),
+            "reason": req.reason if new_status == 1 else None
+        }
+    })
+
     return {
         "status": "ok",
         "license_id": license_id,
@@ -429,7 +582,7 @@ def toggle_license_revoke(license_id: str, req: RevokeRequest):
     }
 
 # ==============================================================================
-# 5. Modern High-Performance Responsive Web Dashboard (Dark Mode)
+# 6. Modern High-Performance Responsive Web Dashboard (Dark Mode)
 # ==============================================================================
 
 HTML_TEMPLATE = """<!DOCTYPE html>
@@ -486,6 +639,19 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             font-size: 11px;
             font-weight: 600;
         }
+        .pill-ws {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 10px;
+            background: #1e293b;
+            color: #94a3b8;
+            border-radius: 9999px;
+            font-size: 11px;
+            font-weight: 600;
+            transition: all 0.3s ease;
+        }
+        .pill-ws.connected { background: #064e3b; color: #34d399; }
         .stats-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
@@ -622,6 +788,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 <div class="header-title">
                     <span>📡 KKDES Central Software Command Center</span>
                     <span class="pill">● LIVE AUTHORITY</span>
+                    <span id="wsIndicator" class="pill-ws">○ WS CONNECTING...</span>
                 </div>
                 <div class="header-desc">Master Licensing, Instant Kill-Switch & Telemetry Security Hub • Owner: <strong>Metto Alex</strong> (KKDES Software Solutions)</div>
             </div>
@@ -635,15 +802,15 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         <div class="stats-grid">
             <div class="stat-card">
                 <div class="stat-label">Total Issued Licenses</div>
-                <div class="stat-value">__TOTAL_LICENSES__</div>
+                <div class="stat-value" id="valTotalLic">__TOTAL_LICENSES__</div>
             </div>
             <div class="stat-card">
                 <div class="stat-label">Active Connected Nodes</div>
-                <div class="stat-value text-brand">__TOTAL_NODES__</div>
+                <div class="stat-value text-brand" id="valTotalNodes">__TOTAL_NODES__</div>
             </div>
             <div class="stat-card">
                 <div class="stat-label">Security Alerts Detected</div>
-                <div class="stat-value" style="color: __ALERT_COLOR__;">__TOTAL_ALERTS__</div>
+                <div class="stat-value" id="valTotalAlerts" style="color: __ALERT_COLOR__;">__TOTAL_ALERTS__</div>
             </div>
             <div class="stat-card">
                 <div class="stat-label">Public Verification Key</div>
@@ -774,6 +941,63 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     </div>
 
     <script>
+        // Real-time WebSocket connection to /ws
+        let socket;
+        function connectWebSocket() {
+            const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${proto}//${window.location.host}/ws`;
+            const indicator = document.getElementById('wsIndicator');
+
+            try {
+                socket = new WebSocket(wsUrl);
+
+                socket.onopen = function() {
+                    if (indicator) {
+                        indicator.innerText = '● WS SYNCED';
+                        indicator.className = 'pill-ws connected';
+                    }
+                    // Keep connection alive with periodic heartbeat
+                    setInterval(() => {
+                        if (socket && socket.readyState === WebSocket.OPEN) {
+                            socket.send('ping');
+                        }
+                    }, 25000);
+                };
+
+                socket.onmessage = function(event) {
+                    try {
+                        const msg = JSON.parse(event.data);
+                        if (msg.type === 'INITIAL_SNAPSHOT' && msg.data) {
+                            document.getElementById('valTotalLic').innerText = msg.data.total_licenses;
+                            document.getElementById('valTotalNodes').innerText = msg.data.total_nodes;
+                            document.getElementById('valTotalAlerts').innerText = msg.data.total_alerts;
+                        } else if (['ACTIVATION_UPDATE', 'TELEMETRY_ALERT', 'LICENSE_GENERATED', 'LICENSE_STATUS_CHANGED'].includes(msg.type)) {
+                            // Flash subtle indicator and reload view after brief delay
+                            setTimeout(() => window.location.reload(), 1500);
+                        }
+                    } catch (e) {}
+                };
+
+                socket.onclose = function() {
+                    if (indicator) {
+                        indicator.innerText = '○ WS RECONNECTING';
+                        indicator.className = 'pill-ws';
+                    }
+                    setTimeout(connectWebSocket, 4000);
+                };
+
+                socket.onerror = function() {
+                    if (indicator) {
+                        indicator.innerText = '○ WS RECONNECTING';
+                        indicator.className = 'pill-ws';
+                    }
+                };
+            } catch (err) {
+                setTimeout(connectWebSocket, 5000);
+            }
+        }
+        connectWebSocket();
+
         function openModal() {
             document.getElementById('licenseModal').style.display = 'flex';
             document.getElementById('certResult').style.display = 'none';
