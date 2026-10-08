@@ -10,7 +10,7 @@ from backend.app.schemas.api_schemas import (
     ServerCreate, ServerUpdate, ServerResponse, ServerCommandRequest, ServerMetricResponse,
     ServerConnectionConfig, ServerConnectionTestResponse, TerminalExecRequest,
     TerminalExecResponse, ServerTerminalLogResponse, ScheduledRebootRequest,
-    TroubleshootCommandRequest
+    TroubleshootCommandRequest, ServiceActionRequest
 )
 from backend.app.services.audit import log_audit_event
 from backend.app.services.websocket_manager import ws_manager
@@ -18,7 +18,8 @@ from backend.app.services.remote_executor import (
     test_server_connection, execute_remote_command, generate_agent_enrollment_script,
     get_remote_server_processes, discover_remote_server_hardware, scan_remote_server_websites,
     schedule_remote_reboot, cancel_remote_reboot, get_remote_reboot_status,
-    analyze_server_performance_and_spikes, execute_troubleshoot_command
+    analyze_server_performance_and_spikes, execute_troubleshoot_command,
+    detect_remote_databases, get_remote_docker_suite, execute_remote_service_action
 )
 
 router = APIRouter(prefix="/servers", tags=["Servers"])
@@ -581,6 +582,93 @@ async def run_troubleshoot_command_endpoint(
     )
     db.add(term_log)
     await db.commit()
+
+    return res
+
+@router.get("/{server_id}/databases")
+async def get_server_databases_endpoint(
+    server_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Auto-detects which database engines are running (PostgreSQL, MySQL, Redis, SQLite, MongoDB)
+    and which databases/schemas are used by hosted applications.
+    """
+    result = await db.execute(select(Server).where(Server.id == server_id, Server.deleted_at == None))
+    srv = result.scalar_one_or_none()
+    if not srv:
+        raise HTTPException(status_code=404, detail="Server not found.")
+
+    return detect_remote_databases(srv)
+
+@router.get("/{server_id}/docker/suite")
+async def get_server_docker_suite_endpoint(
+    server_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Retrieves complete Docker suite inventory: running/stopped containers,
+    images, reclaimable disk storage from docker system df.
+    """
+    result = await db.execute(select(Server).where(Server.id == server_id, Server.deleted_at == None))
+    srv = result.scalar_one_or_none()
+    if not srv:
+        raise HTTPException(status_code=404, detail="Server not found.")
+
+    return get_remote_docker_suite(srv)
+
+@router.post("/{server_id}/services/{service_name}/action")
+async def execute_service_action_endpoint(
+    server_id: str,
+    service_name: str,
+    payload: ServiceActionRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_roles(["SUPER_ADMIN", "INFRASTRUCTURE_ADMIN"]))
+):
+    """
+    Safely executes lifecycle actions (restart, reload, stop, start) against any
+    systemd daemon (Nginx, Apache, PostgreSQL, Redis, Docker) or container.
+    """
+    result = await db.execute(select(Server).where(Server.id == server_id, Server.deleted_at == None))
+    srv = result.scalar_one_or_none()
+    if not srv:
+        raise HTTPException(status_code=404, detail="Server not found.")
+
+    res = execute_remote_service_action(srv, service_name, payload.action)
+
+    # Save to ServerTerminalLog
+    term_log = ServerTerminalLog(
+        server_id=srv.id,
+        user_id=current_user.id,
+        username=current_user.username,
+        command=res.get("command", f"service {service_name} {payload.action}"),
+        output=res.get("stdout") or res.get("stderr") or res.get("message", ""),
+        exit_code=0 if res.get("success") else 1,
+        execution_duration_ms=120
+    )
+    db.add(term_log)
+
+    await log_audit_event(
+        db=db,
+        action=f"SERVICE_{payload.action.upper()}",
+        entity_type="server",
+        username=current_user.username,
+        user_id=current_user.id,
+        entity_id=srv.id,
+        details={"service": service_name, "action": payload.action, "command": res.get("command")},
+        result="SUCCESS" if res.get("success") else "FAILED"
+    )
+    await db.commit()
+
+    await ws_manager.broadcast({
+        "event": "service_action_executed",
+        "server_id": srv.id,
+        "service": service_name,
+        "action": payload.action,
+        "success": res.get("success")
+    })
 
     return res
 

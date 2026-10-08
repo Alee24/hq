@@ -472,4 +472,56 @@ async def test_web_config_backup_and_troubleshoot_management():
         assert "command" in tb_res.json()
 
 
+@pytest.mark.asyncio
+async def test_databases_docker_and_service_action():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        token = await get_admin_token(ac)
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # 1. Register test server
+        srv_res = await ac.post("/api/servers", json={
+            "public_ip": "173.249.37.206",
+            "name": "VPS-173.249.37.206",
+            "ssh_password": "TestPassword!2026"
+        }, headers=headers)
+        assert srv_res.status_code == 200
+        srv_id = srv_res.json()["id"]
+
+        # 2. Test auto-detect databases
+        db_res = await ac.get(f"/api/servers/{srv_id}/databases", headers=headers)
+        assert db_res.status_code == 200
+        db_data = db_res.json()
+        assert "engines" in db_data
+        assert "databases" in db_data
+        assert "app_connections" in db_data
+        assert len(db_data["engines"]) > 0
+        assert len(db_data["databases"]) > 0
+
+        # 3. Test Docker Suite
+        docker_res = await ac.get(f"/api/servers/{srv_id}/docker/suite", headers=headers)
+        assert docker_res.status_code == 200
+        docker_data = docker_res.json()
+        assert "containers" in docker_data
+        assert "disk_usage" in docker_data
+        assert len(docker_data["containers"]) > 0
+
+        # 4. Test Service Action (fast restart)
+        action_res = await ac.post(f"/api/servers/{srv_id}/services/nginx/action", json={
+            "action": "restart"
+        }, headers=headers)
+        assert action_res.status_code == 200
+        act_data = action_res.json()
+        assert act_data["service"] == "nginx"
+        assert act_data["action"] == "restart"
+
+        # 5. Test Troubleshoot Commands (Unmanaged VPS Suite)
+        for key in ["RESTART_NGINX", "DOCKER_PS", "UFW_STATUS"]:
+            t_res = await ac.post(f"/api/servers/{srv_id}/troubleshoot/run", json={
+                "command_key": key
+            }, headers=headers)
+            assert t_res.status_code == 200
+            assert t_res.json()["key"] == key
+
+
+
 

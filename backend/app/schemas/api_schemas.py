@@ -578,6 +578,9 @@ class ScheduledRebootRequest(BaseModel):
     reason: str = "Scheduled maintenance reboot"
     recurring: Optional[str] = None # NONE, DAILY, WEEKLY_SUNDAY
 
+class ServiceActionRequest(BaseModel):
+    action: str = "restart" # "restart", "reload", "stop", "start", "status"
+
 class TroubleshootCommandRequest(BaseModel):
     command_key: str # TOP_CPU, TOP_MEM, DISK_HOGS, DOCKER_PRUNE, DROP_CACHES, LISTENING_PORTS, FAILED_UNITS, JOURNAL_ERRORS, TEST_NGINX, TEST_APACHE, ZOMBIE_PROCS, CUSTOM
     custom_command: Optional[str] = None

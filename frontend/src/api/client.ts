@@ -401,6 +401,72 @@ class ApiClient {
     });
   }
 
+  async getServerDatabases(id: string) {
+    return this.request<{
+      engines: Array<{
+        name: string;
+        type: string;
+        version: string;
+        port: number;
+        status: string;
+        active_connections: number;
+        databases_count: number;
+        service_name: string;
+      }>;
+      databases: Array<{
+        name: string;
+        engine: string;
+        size: string;
+        port: number;
+        status: string;
+        used_by: string[];
+        path?: string;
+      }>;
+      app_connections: Array<{
+        app_name: string;
+        database_name: string;
+        engine: string;
+        config_source: string;
+      }>;
+    }>(`/servers/${id}/databases`);
+  }
+
+  async getServerDockerSuite(id: string) {
+    return this.request<{
+      containers: Array<{
+        id: string;
+        name: string;
+        image: string;
+        status: string;
+        state: string;
+        ports: string;
+        created: string;
+      }>;
+      disk_usage: Array<{
+        Type: string;
+        TotalCount: string;
+        Active: string;
+        Size: string;
+        Reclaimable: string;
+      }>;
+    }>(`/servers/${id}/docker/suite`);
+  }
+
+  async executeServiceAction(id: string, serviceName: string, action: string = 'restart') {
+    return this.request<{
+      success: boolean;
+      service: string;
+      action: string;
+      command: string;
+      stdout: string;
+      stderr: string;
+      message: string;
+    }>(`/servers/${id}/services/${serviceName}/action`, {
+      method: 'POST',
+      body: JSON.stringify({ action }),
+    });
+  }
+
   // ==========================================
   // Monitoring
   // ==========================================
