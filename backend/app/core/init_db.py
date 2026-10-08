@@ -284,7 +284,7 @@ async def init_db(seed_demo: bool = False):
             await db.commit()
             return
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
 
         # 2. Seed 3 VPS Servers
         servers_data = [

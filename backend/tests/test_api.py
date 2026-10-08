@@ -652,6 +652,30 @@ async def test_domain_ssl_update_and_verification():
         del_res = await ac.delete(f"/api/domains/{dom_id}", headers=headers)
         assert del_res.status_code == 200
 
+@pytest.mark.asyncio
+async def test_license_and_activate_alert():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        token = await get_admin_token(ac)
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # Test POST /api/licenses/alerts/{alert_id}/license-and-activate
+        alert_machine_id = "SC-TEST-ALERT-NODE-888"
+        act_res = await ac.post(f"/api/licenses/alerts/{alert_machine_id}/license-and-activate", json={
+            "customer": "Test Institute Node",
+            "product": "Smart Campus Access Suite",
+            "installation_limit": 3,
+            "expires_in_days": 180
+        }, headers=headers)
+        assert act_res.status_code == 200
+        data = act_res.json()
+        assert data["success"] is True
+        assert data["machine_id"] == alert_machine_id
+        assert data["customer"] == "Test Institute Node"
+        assert "license_id" in data
+        assert "certificate" in data
+        assert "-----BEGIN COMMAND CENTER LICENSE PAYLOAD-----" in data["certificate"]
+
+
 
 
 

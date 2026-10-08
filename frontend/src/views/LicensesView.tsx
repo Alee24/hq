@@ -19,8 +19,11 @@ import {
   Laptop,
   Check,
   Server,
-  Radio
+  Radio,
+  Zap,
+  Settings
 } from 'lucide-react';
+
 import { api } from '../api/client';
 
 export const LicensesView: React.FC = () => {
@@ -52,8 +55,11 @@ export const LicensesView: React.FC = () => {
   const [generatedCert, setGeneratedCert] = useState<string | null>(null);
   const [generatedLicId, setGeneratedLicId] = useState<string | null>(null);
   const [copiedCert, setCopiedCert] = useState(false);
+  const [activatingAlertId, setActivatingAlertId] = useState<string | number | null>(null);
+  const [targetAlertId, setTargetAlertId] = useState<string | number | null>(null);
 
   const socketRef = useRef<WebSocket | null>(null);
+
 
   const loadData = async (silent: boolean = false) => {
     if (!silent) setRefreshing(true);
@@ -142,18 +148,70 @@ export const LicensesView: React.FC = () => {
     setTimeout(() => setCopiedKey(false), 2000);
   };
 
+  const handleQuickLicenseAlert = async (alt: any) => {
+    const alertKey = alt.id || alt.machine_id;
+    const mid = alt.machine_id || 'Node';
+    const confirmMsg = `⚡ License & Activate Node\n\nMachine ID: ${mid}\nOrigin: ${alt.hostname || 'N/A'}\nViolation: ${alt.reason || 'Unlicensed'}\n\nGenerate an authentic Ed25519-signed Enterprise Master License and activate this node now?`;
+    if (!window.confirm(confirmMsg)) return;
+
+    setActivatingAlertId(alertKey);
+    try {
+      const res = await api.licenseAndActivateAlert(alertKey, {});
+      if (res.success) {
+        setGeneratedCert(res.certificate);
+        setGeneratedLicId(res.license_id);
+        setGenCustomer(res.customer);
+        setGenProduct(res.product);
+        setGenModalOpen(true);
+        loadData(true);
+      }
+    } catch (err: any) {
+      alert('Error activating node: ' + (err.message || 'Server error'));
+    } finally {
+      setActivatingAlertId(null);
+    }
+  };
+
+  const handleCustomizeAlert = (alt: any) => {
+    const alertKey = alt.id || alt.machine_id;
+    setTargetAlertId(alertKey);
+    const mid = alt.machine_id || '';
+    const suggested = (alt.hostname && alt.hostname !== 'N/A') ? `${alt.hostname} (${mid.slice(0, 8)})` : `Node-${mid.slice(0, 8)}`;
+    setGenCustomer(suggested);
+    setGenProduct(alt.app_name || 'Smart Campus GatePass & Access Suite');
+    setGenEmail('mettoalex@gmail.com');
+    setGenLimit(5);
+    setGenDays(365);
+    setGeneratedCert(null);
+    setGeneratedLicId(null);
+    setGenModalOpen(true);
+  };
+
   const handleGenerateLicense = async (e: React.FormEvent) => {
     e.preventDefault();
     setGenerating(true);
     try {
-      const res = await api.generateLicenseCertificate({
-        customer: genCustomer,
-        email: genEmail,
-        product: genProduct,
-        type: genTier,
-        installation_limit: Number(genLimit),
-        expires_in_days: Number(genDays),
-      });
+      let res;
+      if (targetAlertId) {
+        res = await api.licenseAndActivateAlert(targetAlertId, {
+          customer: genCustomer,
+          email: genEmail,
+          product: genProduct,
+          license_type: genTier,
+          installation_limit: Number(genLimit),
+          expires_in_days: Number(genDays),
+        });
+        setTargetAlertId(null);
+      } else {
+        res = await api.generateLicenseCertificate({
+          customer: genCustomer,
+          email: genEmail,
+          product: genProduct,
+          type: genTier,
+          installation_limit: Number(genLimit),
+          expires_in_days: Number(genDays),
+        });
+      }
 
       setGeneratedCert(res.certificate);
       setGeneratedLicId(res.license_id);
@@ -164,6 +222,7 @@ export const LicensesView: React.FC = () => {
       setGenerating(false);
     }
   };
+
 
   const handleCopyCert = () => {
     if (!generatedCert) return;
@@ -342,7 +401,8 @@ export const LicensesView: React.FC = () => {
                   <th className="py-2.5 px-4">Machine ID</th>
                   <th className="py-2.5 px-4">Origin Host / IP</th>
                   <th className="py-2.5 px-4">Violation Reason</th>
-                  <th className="py-2.5 px-4 text-right">Detected At</th>
+                  <th className="py-2.5 px-4">Detected At</th>
+                  <th className="py-2.5 px-4 text-right">Action</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800/60">
@@ -354,20 +414,39 @@ export const LicensesView: React.FC = () => {
                         <span>{alt.alert_type}</span>
                       </span>
                     </td>
-                    <td className="py-3 px-4 font-mono text-slate-300">
-                      {alt.machine_id ? alt.machine_id.slice(0, 20) : 'N/A'}
+                    <td className="py-3 px-4 font-mono font-medium text-white">
+                      {alt.machine_id || 'N/A'}
                     </td>
                     <td className="py-3 px-4 text-slate-300">
                       <div className="font-medium">{alt.hostname || 'N/A'}</div>
                       <div className="font-mono text-[11px] text-slate-400">{alt.ip_address}</div>
                     </td>
                     <td className="py-3 px-4 text-red-200 font-medium">{alt.reason}</td>
-                    <td className="py-3 px-4 text-right font-mono text-slate-400 text-[11px]">
+                    <td className="py-3 px-4 font-mono text-slate-400 text-[11px]">
                       {String(alt.detected_at || alt.created_at).replace('T', ' ').slice(0, 19)}
+                    </td>
+                    <td className="py-3 px-4 text-right whitespace-nowrap">
+                      <button
+                        onClick={() => handleQuickLicenseAlert(alt)}
+                        disabled={activatingAlertId === (alt.id || alt.machine_id)}
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-[11px] font-semibold transition-colors shadow-sm disabled:opacity-50"
+                        title="Instantly issue signed license & activate node"
+                      >
+                        <Zap size={12} className={activatingAlertId === (alt.id || alt.machine_id) ? "animate-spin" : ""} />
+                        <span>{activatingAlertId === (alt.id || alt.machine_id) ? "Activating..." : "License & Activate"}</span>
+                      </button>
+                      <button
+                        onClick={() => handleCustomizeAlert(alt)}
+                        className="inline-flex items-center gap-1 px-2 py-1 ml-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-[11px] transition-colors"
+                        title="Customize license parameters"
+                      >
+                        <Settings size={12} />
+                      </button>
                     </td>
                   </tr>
                 ))}
               </tbody>
+
             </table>
           )}
         </div>
@@ -558,15 +637,19 @@ export const LicensesView: React.FC = () => {
             <div className="flex items-center justify-between pb-3 border-b border-slate-800">
               <h3 className="text-base font-bold text-white flex items-center gap-2">
                 <Key size={16} className="text-emerald-400" />
-                <span>Generate Asymmetric Signed License</span>
+                <span>{targetAlertId ? 'License & Activate Alert Node' : 'Generate Asymmetric Signed License'}</span>
               </h3>
               <button
-                onClick={() => setGenModalOpen(false)}
+                onClick={() => {
+                  setGenModalOpen(false);
+                  setTargetAlertId(null);
+                }}
                 className="text-slate-400 hover:text-white text-sm"
               >
                 ✕
               </button>
             </div>
+
 
             {!generatedCert ? (
               <form onSubmit={handleGenerateLicense} className="space-y-4">
@@ -667,8 +750,13 @@ export const LicensesView: React.FC = () => {
                     disabled={generating}
                     className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-semibold shadow-md transition-colors disabled:opacity-60"
                   >
-                    {generating ? 'Cryptographically Signing...' : 'Sign & Issue Certificate'}
+                    {generating
+                      ? 'Cryptographically Signing...'
+                      : targetAlertId
+                      ? '⚡ Sign & Activate Node'
+                      : 'Sign & Issue Certificate'}
                   </button>
+
                 </div>
               </form>
             ) : (

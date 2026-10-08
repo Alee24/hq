@@ -417,7 +417,7 @@ async def renew_license(
     now = datetime.now(timezone.utc)
     current_exp = lic.expires_at.replace(tzinfo=timezone.utc if lic.expires_at.tzinfo is None else lic.expires_at.tzinfo)
     new_exp = max(now, current_exp) + timedelta(days=additional_days)
-    lic.expires_at = new_exp
+    lic.expires_at = new_exp.replace(tzinfo=None) if new_exp.tzinfo else new_exp
     lic.status = "ACTIVE"
 
     await log_audit_event(
@@ -433,3 +433,178 @@ async def renew_license(
     await db.commit()
 
     return {"success": True, "license_id": lic.id, "expires_at": new_exp.isoformat(), "status": "ACTIVE"}
+
+@router.post("/alerts/{alert_id}/license-and-activate")
+async def license_and_activate_alert_endpoint(
+    alert_id: str,
+    payload: Optional[dict] = Body(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_roles(["SUPER_ADMIN", "LICENSE_ADMIN"]))
+):
+    import sqlite3, os, json, uuid
+    req = payload or {}
+
+    db_path = "/opt/command_center/command_center.db" if os.path.exists("/opt/command_center/command_center.db") else ("./command_center.db" if os.path.exists("./command_center.db") else None)
+
+    customer = req.get("customer")
+    product = req.get("product") or "Smart Campus GatePass & Access Suite"
+    email = req.get("email") or current_user.email or "mettoalex@gmail.com"
+    limit = int(req.get("installation_limit") or 5)
+    exp_days = int(req.get("expires_in_days") or 365)
+    lic_type = req.get("license_type") or "Enterprise"
+
+    now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+    exp_utc = now_utc + timedelta(days=exp_days)
+    lic_key = f"LIC-{now_utc.year}-{uuid.uuid4().hex[:8].upper()}"
+
+    machine_id = alert_id
+    hostname = "N/A"
+    ip_address = "127.0.0.1"
+
+    if db_path:
+        try:
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            alt = conn.execute("SELECT * FROM telemetry_alerts WHERE id = ? OR machine_id = ? ORDER BY id DESC LIMIT 1", (alert_id, alert_id)).fetchone()
+            if alt:
+                machine_id = alt["machine_id"] or alert_id
+                hostname = alt["hostname"] or ""
+                ip_address = alt["ip_address"] or ""
+                product = req.get("product") or alt["app_name"] or product
+            if not customer:
+                customer = f"{hostname} ({machine_id[:8]})" if hostname and hostname != "N/A" else f"Node-{machine_id[:12]}"
+
+            # Generate digital certificate
+            priv_obj, pub_obj = get_master_license_keys()
+            features = {"all": True, "gatepass": True, "security": True, "telemetry": True, "api_access": True}
+            cert_payload = {
+                "license_id": lic_key,
+                "product": product,
+                "customer": customer,
+                "email": email,
+                "type": lic_type,
+                "installation_limit": limit,
+                "machine_id": machine_id,
+                "features": features,
+                "issued_at": now_utc.isoformat(),
+                "expires_at": exp_utc.isoformat()
+            }
+            canonical_bytes = json.dumps(cert_payload, sort_keys=True, separators=(',', ':')).encode('utf-8')
+            sig_bytes = priv_obj.sign(canonical_bytes)
+            import base64
+            from cryptography.hazmat.primitives import serialization
+            sig_b64 = base64.b64encode(sig_bytes).decode('utf-8')
+            payload_b64 = base64.b64encode(json.dumps(cert_payload, separators=(',', ':')).encode('utf-8')).decode('utf-8')
+            spki_pub_b64 = base64.b64encode(pub_obj.public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)).decode('utf-8')
+
+            certificate_text = (
+                "-----BEGIN COMMAND CENTER LICENSE PAYLOAD-----\n"
+                f"{payload_b64}\n"
+                "-----END COMMAND CENTER LICENSE PAYLOAD-----\n"
+                "-----BEGIN COMMAND CENTER DIGITAL SIGNATURE (ED25519)-----\n"
+                f"{sig_b64}\n"
+                "-----END COMMAND CENTER DIGITAL SIGNATURE (ED25519)-----\n"
+                "-----BEGIN COMMAND CENTER PUBLIC VERIFICATION KEY-----\n"
+                f"{spki_pub_b64}\n"
+                "-----END COMMAND CENTER PUBLIC VERIFICATION KEY-----\n"
+            )
+
+            conn.execute("""
+                INSERT INTO licenses (
+                    license_id, customer, email, product, type, installation_limit,
+                    issued_at, expires_at, features, is_revoked, revocation_reason, certificate
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?)
+            """, (
+                lic_key, customer, email, product, lic_type, limit,
+                now_utc.isoformat(), exp_utc.isoformat(), json.dumps(features), certificate_text
+            ))
+
+            conn.execute("""
+                INSERT OR REPLACE INTO activations (
+                    license_id, machine_id, customer, client_name, hostname,
+                    ip_address, app_name, app_version, activated_at, last_heartbeat, status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'v1.0.0', ?, ?, 'ACTIVE')
+            """, (
+                lic_key, machine_id, customer, customer, hostname,
+                ip_address, product, now_utc.isoformat(), now_utc.isoformat()
+            ))
+
+            conn.execute("DELETE FROM telemetry_alerts WHERE id = ? OR machine_id = ?", (alert_id, machine_id))
+            conn.commit()
+            conn.close()
+
+            # Auto-install to Smart Campus if present
+            for sc_dir in ["/var/www/smartcampus/data", "/var/www/smartcampus"]:
+                if os.path.isdir(sc_dir):
+                    try:
+                        with open(os.path.join(sc_dir, "license.lic"), "w", encoding="utf-8") as lf:
+                            lf.write(certificate_text.strip() + "\n")
+                        seal = os.path.join(sc_dir, ".license_lock_seal")
+                        if os.path.exists(seal):
+                            os.remove(seal)
+                        ledger = os.path.join(sc_dir, ".license_grace_ledger")
+                        if os.path.exists(ledger):
+                            os.remove(ledger)
+                    except Exception:
+                        pass
+
+            await log_audit_event(
+                db=db,
+                action="LICENSE_AND_ACTIVATE_ALERT",
+                entity_type="license",
+                username=current_user.username,
+                user_id=current_user.id,
+                entity_id=lic_key,
+                details={"alert_id": alert_id, "machine_id": machine_id, "license_key": lic_key},
+                result="SUCCESS"
+            )
+
+            return {
+                "success": True,
+                "message": f"Successfully licensed node {machine_id} with license {lic_key}.",
+                "license_id": lic_key,
+                "machine_id": machine_id,
+                "customer": customer,
+                "product": product,
+                "certificate": certificate_text,
+                "public_key": spki_pub_b64
+            }
+        except Exception as e:
+            pass
+
+    # Generic PostgreSQL fallback
+    customer = customer or f"Node-{machine_id[:12]}"
+    new_lic = await create_new_license(
+        db=db,
+        product_name=product,
+        customer_name=customer,
+        customer_email=email,
+        product_version="v1.0.0",
+        license_type=lic_type,
+        allowed_installations=limit,
+        expires_in_days=exp_days,
+        created_by=current_user.username
+    )
+
+    cert_text = format_offline_license_file(new_lic)
+    await activate_license_instance(
+        db=db,
+        license_key=new_lic.license_key,
+        product_name=product,
+        product_version="v1.0.0",
+        installation_fingerprint=machine_id,
+        hostname=hostname,
+        ip_address=ip_address
+    )
+
+    return {
+        "success": True,
+        "message": f"Successfully licensed node {machine_id} with license {new_lic.license_key}.",
+        "license_id": new_lic.license_key,
+        "machine_id": machine_id,
+        "customer": customer,
+        "product": product,
+        "certificate": cert_text,
+        "public_key": "MCowBQYDK2VwAyEAehbE7F+NH01lC10NO1JhD94O28oKvV24sv9juu5UJHw="
+    }
+

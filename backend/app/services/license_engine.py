@@ -30,7 +30,7 @@ async def create_new_license(
 ) -> License:
     """Creates and cryptographically signs an Ed25519 digital enterprise license."""
     license_key = generate_license_number()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
     expires_at = now + timedelta(days=expires_in_days)
     
     if features is None:
@@ -117,8 +117,9 @@ async def activate_license_instance(
     if lic.status in ["REVOKED", "SUSPENDED", "INVALID"]:
         return False, f"License is currently {lic.status}.", None
 
-    now = datetime.now(timezone.utc)
-    if lic.expires_at.replace(tzinfo=timezone.utc if lic.expires_at.tzinfo is None else lic.expires_at.tzinfo) < now:
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    exp_naive = lic.expires_at.replace(tzinfo=None) if lic.expires_at.tzinfo else lic.expires_at
+    if exp_naive < now:
         lic.status = "EXPIRED"
         await db.commit()
         return False, "License has expired.", None

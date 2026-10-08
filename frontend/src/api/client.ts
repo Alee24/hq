@@ -720,6 +720,30 @@ class ApiClient {
     return this.request<any>(`/licenses/${id}/renew?additional_days=${additionalDays}`, { method: 'POST' });
   }
 
+  async licenseAndActivateAlert(alertId: string | number, data: {
+    customer?: string;
+    email?: string;
+    product?: string;
+    license_type?: string;
+    installation_limit?: number;
+    expires_in_days?: number;
+  } = {}) {
+    return this.request<{
+      success: boolean;
+      message: string;
+      license_id: string;
+      machine_id: string;
+      customer: string;
+      product: string;
+      certificate: string;
+      public_key: string;
+    }>(`/licenses/alerts/${alertId}/license-and-activate`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+
   async downloadLicenseKey(id: string, filename: string = 'license.key') {
     const token = this.getToken();
     const url = `/api/licenses/${id}/download-key${token ? `?token=${encodeURIComponent(token)}` : ''}`;

@@ -102,8 +102,13 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         """)
+        try:
+            conn.execute("ALTER TABLE licenses ADD COLUMN certificate TEXT;")
+        except Exception:
+            pass
 
 init_db()
+
 
 # ==============================================================================
 # 2. Cryptographic Keys (Ed25519)
@@ -452,13 +457,16 @@ def client_heartbeat(req: HeartbeatRequest, request: Request):
             """, (now_iso, client_ip, req.hostname, lic_id, req.machine_id))
             conn.commit()
 
+            cert_val = lic["certificate"] if (lic and "certificate" in lic.keys() and lic["certificate"]) else None
             return {
                 "status": "ok",
                 "is_valid": True,
                 "is_revoked": False,
                 "reactivated": True,
-                "license_id": lic_id
+                "license_id": lic_id,
+                "certificate": cert_val
             }
+
 
     return {"status": "ok", "is_valid": True, "is_revoked": False, "reactivated": True}
 
@@ -539,14 +547,15 @@ def generate_license(req: GenerateLicenseRequest):
         conn.execute("""
             INSERT INTO licenses (
                 license_id, customer, email, product, type, installation_limit,
-                issued_at, expires_at, features, is_revoked, revocation_reason
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL)
+                issued_at, expires_at, features, is_revoked, revocation_reason, certificate
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?)
         """, (
             lic_id, req.customer, req.email, req.product, req.type,
             req.installation_limit, now_utc.isoformat(), exp_utc.isoformat(),
-            json.dumps(req.features or {})
+            json.dumps(req.features or {}), certificate_text
         ))
         conn.commit()
+
 
     broadcast_sync({
         "type": "LICENSE_GENERATED",
@@ -710,6 +719,176 @@ def generate_license_alias(req: GenerateLicenseRequest):
 @app.post("/api/licenses/{license_id}/revoke")
 def revoke_license_alias(license_id: str, req: RevokeRequest):
     return toggle_license_revoke(license_id, req)
+
+class LicenseAlertRequest(BaseModel):
+    customer: Optional[str] = None
+    email: Optional[str] = "mettoalex@gmail.com"
+    product: Optional[str] = None
+    installation_limit: Optional[int] = 5
+    expires_in_days: Optional[int] = 365
+    license_type: Optional[str] = "Enterprise"
+
+@app.post("/api/v1/licenses/alerts/{alert_id}/license-and-activate")
+@app.post("/api/licenses/alerts/{alert_id}/license-and-activate")
+def license_and_activate_alert(alert_id: str, req: Optional[LicenseAlertRequest] = None):
+    if req is None:
+        req = LicenseAlertRequest()
+
+    now_utc = datetime.now(timezone.utc)
+    with get_db() as conn:
+        alert = conn.execute(
+            "SELECT * FROM telemetry_alerts WHERE id = ? OR machine_id = ? ORDER BY id DESC LIMIT 1",
+            (alert_id, alert_id)
+        ).fetchone()
+        if not alert:
+            raise HTTPException(status_code=404, detail=f"Security alert '{alert_id}' not found.")
+
+        machine_id = alert["machine_id"] or alert_id
+        hostname = alert["hostname"] or ""
+        ip_address = alert["ip_address"] or ""
+        app_name = alert["app_name"] or "Smart Campus GatePass & Access Suite"
+
+    customer_name = (req.customer or "").strip()
+    if not customer_name:
+        if hostname and hostname != "N/A" and hostname != "test.local":
+            customer_name = f"{hostname} ({machine_id[:8]})"
+        else:
+            customer_name = f"Node-{machine_id[:12]}"
+
+    prod_name = (req.product or "").strip() or app_name or "Smart Campus GatePass & Access Suite"
+    admin_email = (req.email or "").strip() or "mettoalex@gmail.com"
+    inst_limit = int(req.installation_limit or 5)
+    exp_days = int(req.expires_in_days or 365)
+    exp_utc = now_utc + timedelta(days=exp_days)
+    lic_type = (req.license_type or "Enterprise").strip()
+
+    lic_id = f"LIC-{now_utc.year}-{uuid.uuid4().hex[:8].upper()}"
+
+    features = {
+        "all": True,
+        "gatepass": True,
+        "security": True,
+        "telemetry": True,
+        "api_access": True,
+        "unlimited_gates": True
+    }
+
+    payload = {
+        "license_id": lic_id,
+        "product": prod_name,
+        "customer": customer_name,
+        "email": admin_email,
+        "type": lic_type,
+        "installation_limit": inst_limit,
+        "machine_id": machine_id,
+        "features": features,
+        "issued_at": now_utc.isoformat(),
+        "expires_at": exp_utc.isoformat()
+    }
+
+    canonical_bytes = canonical_json_bytes(payload)
+    sig_bytes = priv_key.sign(canonical_bytes)
+    sig_b64 = base64.b64encode(sig_bytes).decode('utf-8')
+    payload_b64 = base64.b64encode(json.dumps(payload, separators=(',', ':')).encode('utf-8')).decode('utf-8')
+
+    certificate_text = (
+        "-----BEGIN COMMAND CENTER LICENSE PAYLOAD-----\n"
+        f"{payload_b64}\n"
+        "-----END COMMAND CENTER LICENSE PAYLOAD-----\n"
+        "-----BEGIN COMMAND CENTER DIGITAL SIGNATURE (ED25519)-----\n"
+        f"{sig_b64}\n"
+        "-----END COMMAND CENTER DIGITAL SIGNATURE (ED25519)-----\n"
+        "-----BEGIN COMMAND CENTER PUBLIC VERIFICATION KEY-----\n"
+        f"{spki_pub_b64}\n"
+        "-----END COMMAND CENTER PUBLIC VERIFICATION KEY-----\n"
+    )
+
+    with get_db() as conn:
+        # 1. Insert newly signed Master License
+        conn.execute("""
+            INSERT INTO licenses (
+                license_id, customer, email, product, type, installation_limit,
+                issued_at, expires_at, features, is_revoked, revocation_reason, certificate
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?)
+        """, (
+            lic_id, customer_name, admin_email, prod_name, lic_type, inst_limit,
+            now_utc.isoformat(), exp_utc.isoformat(), json.dumps(features), certificate_text
+        ))
+
+        # 2. Register Active Deployment Node immediately
+        conn.execute("""
+            INSERT OR REPLACE INTO activations (
+                license_id, machine_id, customer, client_name, hostname,
+                ip_address, app_name, app_version, activated_at, last_heartbeat, status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'v1.0.0', ?, ?, 'ACTIVE')
+        """, (
+            lic_id, machine_id, customer_name, customer_name, hostname,
+            ip_address, prod_name, now_utc.isoformat(), now_utc.isoformat()
+        ))
+
+        # 3. Clean up security alert(s) for this machine
+        conn.execute("DELETE FROM telemetry_alerts WHERE id = ? OR machine_id = ?", (alert["id"], machine_id))
+        conn.commit()
+
+    # 4. If this node is hosted locally on VPS (e.g. Smart Campus), auto-install certificate to disk
+    smartcampus_dirs = ["/var/www/smartcampus/data", "/var/www/smartcampus"]
+    for sc_dir in smartcampus_dirs:
+        if os.path.isdir(sc_dir):
+            try:
+                lic_file = os.path.join(sc_dir, "license.lic")
+                with open(lic_file, "w", encoding="utf-8") as lf:
+                    lf.write(certificate_text.strip() + "\n")
+                seal = os.path.join(sc_dir, ".license_lock_seal")
+                if os.path.exists(seal):
+                    os.remove(seal)
+                ledger = os.path.join(sc_dir, ".license_grace_ledger")
+                if os.path.exists(ledger):
+                    os.remove(ledger)
+                logger.info(f"✨ [AUTO-DEPLOY] Installed license {lic_id} directly to {lic_file}")
+            except Exception as ex_deploy:
+                logger.warning(f"Could not auto-deploy license to {sc_dir}: {ex_deploy}")
+
+    # 5. Broadcast live events to all connected operator dashboards
+    broadcast_sync({
+        "type": "LICENSE_GENERATED",
+        "data": {
+            "license_id": lic_id,
+            "customer": customer_name,
+            "limit": inst_limit
+        }
+    })
+    broadcast_sync({
+        "type": "ACTIVATION_UPDATE",
+        "data": {
+            "license_id": lic_id,
+            "machine_id": machine_id,
+            "customer": customer_name,
+            "hostname": hostname,
+            "ip_address": ip_address,
+            "status": "ACTIVE",
+            "timestamp": now_utc.isoformat()
+        }
+    })
+    broadcast_sync({
+        "type": "ALERT_RESOLVED",
+        "data": {
+            "alert_id": alert["id"],
+            "machine_id": machine_id,
+            "license_id": lic_id
+        }
+    })
+
+    return {
+        "success": True,
+        "message": f"Successfully licensed and activated node '{machine_id}'.",
+        "license_id": lic_id,
+        "machine_id": machine_id,
+        "customer": customer_name,
+        "product": prod_name,
+        "certificate": certificate_text,
+        "public_key": spki_pub_b64
+    }
+
 
 # ==============================================================================
 # 6. Modern High-Performance Responsive Web Dashboard (Dark Mode)
@@ -962,8 +1141,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                             <th>Origin Host / IP</th>
                             <th>Violation Reason</th>
                             <th>Detected At</th>
+                            <th class="text-right">Action</th>
                         </tr>
                     </thead>
+
                     <tbody>
                         __ALERT_ROWS__
                     </tbody>
@@ -1128,13 +1309,62 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         }
         connectWebSocket();
 
+        let pendingAlertId = null;
+
         function openModal() {
+            pendingAlertId = null;
             document.getElementById('licenseModal').style.display = 'flex';
             document.getElementById('certResult').style.display = 'none';
+            const btn = document.getElementById('genBtn');
+            btn.innerText = 'Sign & Issue Certificate';
+            btn.disabled = false;
         }
+
         function closeModal() {
+            pendingAlertId = null;
             document.getElementById('licenseModal').style.display = 'none';
         }
+
+        function openModalWithAlert(alertId, machineId, hostname, appName) {
+            pendingAlertId = alertId;
+            document.getElementById('licenseModal').style.display = 'flex';
+            document.getElementById('certResult').style.display = 'none';
+            const btn = document.getElementById('genBtn');
+            btn.innerText = 'Sign & Activate Node';
+            btn.disabled = false;
+
+            const suggestedName = (hostname && hostname !== 'N/A') ? (hostname + ' (' + machineId.slice(0, 8) + ')') : ('Licensed Node (' + machineId.slice(0, 8) + ')');
+            document.getElementById('custName').value = suggestedName;
+            document.getElementById('prodName').value = appName || 'Smart Campus GatePass & Access Suite';
+        }
+
+        async function quickLicenseAlert(alertId, machineId, hostname, appName) {
+            const confirmMsg = '⚡ License & Activate Node\n\nMachine ID: ' + machineId + '\nOrigin: ' + (hostname || 'N/A') + '\nApplication: ' + (appName || 'Smart Campus GatePass Suite') + '\n\nGenerate an authentic Ed25519-signed Enterprise Master License and activate this node now?';
+            if (!confirm(confirmMsg)) return;
+
+            try {
+                const res = await fetch('/api/v1/licenses/alerts/' + alertId + '/license-and-activate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({})
+                });
+                const data = await res.json();
+                if (res.ok && data.success) {
+                    openModal();
+                    document.getElementById('custName').value = data.customer;
+                    document.getElementById('prodName').value = data.product;
+                    document.getElementById('certText').value = data.certificate;
+                    document.getElementById('certResult').style.display = 'block';
+                    alert('🎉 Node ' + machineId + ' successfully licensed & activated with ' + data.license_id + '!');
+                    setTimeout(() => window.location.reload(), 1200);
+                } else {
+                    alert('Error: ' + (data.detail || data.message || 'Could not activate node.'));
+                }
+            } catch (err) {
+                alert('Connection error: ' + err.message);
+            }
+        }
+
         async function handleGenerate(e) {
             e.preventDefault();
             const btn = document.getElementById('genBtn');
@@ -1149,8 +1379,12 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 expires_in_days: parseInt(document.getElementById('validDays').value)
             };
 
+            const endpoint = pendingAlertId 
+                ? ('/api/v1/licenses/alerts/' + pendingAlertId + '/license-and-activate')
+                : '/api/v1/licenses/generate';
+
             try {
-                const res = await fetch('/api/v1/licenses/generate', {
+                const res = await fetch(endpoint, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload)
@@ -1159,9 +1393,13 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 if (res.ok) {
                     document.getElementById('certText').value = data.certificate;
                     document.getElementById('certResult').style.display = 'block';
-                    btn.innerText = 'Generated!';
+                    btn.innerText = pendingAlertId ? 'Activated & Issued!' : 'Generated!';
+                    if (pendingAlertId) {
+                        alert('🎉 Node successfully licensed and activated with ' + data.license_id + '!');
+                        setTimeout(() => window.location.reload(), 1500);
+                    }
                 } else {
-                    alert('Error generating license: ' + (data.detail || 'Server error'));
+                    alert('Error generating license: ' + (data.detail || data.message || 'Server error'));
                     btn.innerText = 'Sign & Issue Certificate';
                     btn.disabled = false;
                 }
@@ -1171,6 +1409,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 btn.disabled = false;
             }
         }
+
 
         function copyCert() {
             const t = document.getElementById('certText');
@@ -1262,12 +1501,23 @@ def admin_dashboard():
     # Security alert rows
     alert_rows = ""
     for alt in alerts:
+        mid = alt['machine_id'] or ''
+        hname = (alt['hostname'] or '').replace("'", "\\'")
+        aname = (alt['app_name'] or '').replace("'", "\\'")
         alert_rows += f"""<tr class="row-alert">
             <td><span class="badge badge-danger">⚠️ {alt['alert_type']}</span></td>
-            <td class="mono text-xs">{alt['machine_id'][:16] if alt['machine_id'] else 'N/A'}</td>
+            <td class="mono font-bold text-white">{mid}</td>
             <td>{alt['hostname'] or 'N/A'}<br><small class="mono text-muted">{alt['ip_address']}</small></td>
             <td class="text-sm font-medium">{alt['reason'] or 'Security Violation'}</td>
             <td class="mono text-xs text-muted">{str(alt['created_at'])[:19]}</td>
+            <td class="text-right" style="white-space:nowrap;">
+                <button onclick="quickLicenseAlert('{alt['id']}', '{mid}', '{hname}', '{aname}')" class="btn btn-sm btn-primary" title="Instantly issue signed license & activate node">
+                    ⚡ License & Activate
+                </button>
+                <button onclick="openModalWithAlert('{alt['id']}', '{mid}', '{hname}', '{aname}')" class="btn btn-sm" style="background:#1e293b; color:#94a3b8; margin-left:4px;" title="Customize license details">
+                    ⚙️
+                </button>
+            </td>
         </tr>"""
 
     html = HTML_TEMPLATE.replace("__TOTAL_LICENSES__", str(total_licenses))
@@ -1277,7 +1527,8 @@ def admin_dashboard():
     html = html.replace("__PUBKEY_PREVIEW__", f"{spki_pub_b64[:30]}...")
     html = html.replace("__LIC_ROWS__", lic_rows or '<tr><td colspan="7" class="text-muted text-center" style="padding:24px;">No licenses issued yet. Click "Generate New License" to create one.</td></tr>')
     html = html.replace("__ACT_ROWS__", act_rows or '<tr><td colspan="7" class="text-muted text-center" style="padding:24px;">No active client installations registered yet. When a client activates a license, it will appear here instantly.</td></tr>')
-    html = html.replace("__ALERT_ROWS__", alert_rows or '<tr><td colspan="5" class="text-muted text-center" style="padding:24px;">No security alerts recorded. All connected instances are running within authorized limits.</td></tr>')
+    html = html.replace("__ALERT_ROWS__", alert_rows or '<tr><td colspan="6" class="text-muted text-center" style="padding:24px;">No security alerts recorded. All connected instances are running within authorized limits.</td></tr>')
+
 
     return HTMLResponse(content=html)
 
