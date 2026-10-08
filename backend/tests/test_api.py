@@ -523,5 +523,74 @@ async def test_databases_docker_and_service_action():
             assert t_res.json()["key"] == key
 
 
+@pytest.mark.asyncio
+async def test_git_status_actions_and_batch_scan():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        token = await get_admin_token(ac)
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # 1. Register test server
+        srv_res = await ac.post("/api/servers", json={
+            "public_ip": "173.249.37.206",
+            "name": "Git-Test-Server",
+            "ssh_password": "TestPassword!2026"
+        }, headers=headers)
+        assert srv_res.status_code == 200
+        srv_id = srv_res.json()["id"]
+
+        # 2. Register test application
+        app_res = await ac.post("/api/applications", json={
+            "name": "MClinic-Git-App",
+            "domain": "app.mclinic.co.ke",
+            "server_id": srv_id,
+            "port": 8080,
+            "app_type": "Web Application",
+            "framework": "FastAPI / React",
+            "git_branch": "master",
+            "current_version": "v1.2.0",
+            "service_name": "mclinic-git-svc"
+        }, headers=headers)
+        assert app_res.status_code == 200
+        app_id = app_res.json()["id"]
+
+        # 3. Test GET /api/git/status/{app_id}
+        git_res = await ac.get(f"/api/git/status/{app_id}", headers=headers)
+        assert git_res.status_code == 200
+        git_data = git_res.json()
+        assert "branch" in git_data
+        assert "current_server_commit" in git_data
+        assert "latest_remote_commit" in git_data
+        assert "version" in git_data
+        assert git_data["is_git_repo"] is True
+
+        # 4. Test POST /api/git/action/{app_id} (pull)
+        pull_res = await ac.post(f"/api/git/action/{app_id}", json={
+            "action": "pull",
+            "branch": "master"
+        }, headers=headers)
+        assert pull_res.status_code == 200
+        pull_data = pull_res.json()
+        assert pull_data["action"] == "pull"
+        assert "command" in pull_data
+        assert "new_commit" in pull_data
+
+        # 5. Test POST /api/git/action/{app_id} (status)
+        stat_res = await ac.post(f"/api/git/action/{app_id}", json={
+            "action": "status"
+        }, headers=headers)
+        assert stat_res.status_code == 200
+        stat_data = stat_res.json()
+        assert stat_data["action"] == "status"
+
+        # 6. Test POST /api/git/scan-all
+        scan_res = await ac.post("/api/git/scan-all", headers=headers)
+        assert scan_res.status_code == 200
+        scan_data = scan_res.json()
+        assert scan_data["success"] is True
+        assert "total_scanned" in scan_data
+        assert "updated_apps" in scan_data
+
+
+
 
 

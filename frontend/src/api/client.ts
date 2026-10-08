@@ -534,7 +534,91 @@ class ApiClient {
   }
 
   async getGitStatus(appId: string) {
-    return this.request<any>(`/git/status/${appId}`);
+    return this.request<{
+      repo_url: string;
+      branch: string;
+      repo_dir?: string;
+      version?: string;
+      is_git_repo: boolean;
+      current_server_commit: {
+        commit_hash: string;
+        short_hash: string;
+        author: string;
+        message: string;
+        date: string;
+      };
+      latest_remote_commit: {
+        commit_hash: string;
+        short_hash: string;
+        author: string;
+        message: string;
+        date: string;
+      };
+      update_available: boolean;
+      commits_behind: number;
+      recent_commits: Array<{
+        commit_hash: string;
+        short_hash: string;
+        author: string;
+        message: string;
+        date: string;
+      }>;
+      incoming_commits: Array<{
+        commit_hash: string;
+        short_hash: string;
+        author: string;
+        message: string;
+        date: string;
+      }>;
+      status_summary?: string;
+      server_name?: string;
+      server_ip?: string;
+    }>(`/git/status/${appId}`);
+  }
+
+  async executeGitAction(appId: string, data: {
+    action: 'pull' | 'fetch' | 'reset_hard' | 'status' | 'diff' | 'log' | 'custom';
+    branch?: string;
+    custom_command?: string;
+  }) {
+    return this.request<{
+      success: boolean;
+      application_id: string;
+      action: string;
+      command: string;
+      stdout: string;
+      stderr: string;
+      exit_code: number;
+      duration_ms: number;
+      new_commit?: string;
+      new_version?: string;
+      update_available: boolean;
+      message: string;
+    }>(`/git/action/${appId}`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async scanAllGitRepos() {
+    return this.request<{
+      success: boolean;
+      total_scanned: number;
+      updated_apps: number;
+      updates_available_count: number;
+      message: string;
+      results: Array<{
+        application_id: string;
+        application_name: string;
+        server_name: string;
+        repo_dir?: string;
+        branch?: string;
+        commit?: string;
+        version?: string;
+        commits_behind: number;
+        update_available: boolean;
+      }>;
+    }>('/git/scan-all', { method: 'POST' });
   }
 
   async pullGitChanges(appId: string) {

@@ -343,11 +343,45 @@ class GitCommitInfo(BaseModel):
 class GitRepoStatusResponse(BaseModel):
     repo_url: str
     branch: str
+    repo_dir: Optional[str] = None
+    version: Optional[str] = "v1.0.0"
+    is_git_repo: bool = True
     current_server_commit: GitCommitInfo
     latest_remote_commit: GitCommitInfo
-    update_available: bool
-    commits_behind: int
-    recent_commits: List[GitCommitInfo]
+    update_available: bool = False
+    commits_behind: int = 0
+    recent_commits: List[GitCommitInfo] = []
+    incoming_commits: List[GitCommitInfo] = []
+    status_summary: Optional[str] = None
+    server_name: Optional[str] = None
+    server_ip: Optional[str] = None
+
+class GitActionRequest(BaseModel):
+    action: str = "pull" # "pull", "fetch", "reset_hard", "status", "diff", "log", "custom"
+    branch: Optional[str] = None
+    custom_command: Optional[str] = None
+
+class GitActionResponse(BaseModel):
+    success: bool
+    application_id: str
+    action: str
+    command: str
+    stdout: str
+    stderr: str
+    exit_code: int
+    duration_ms: int
+    new_commit: Optional[str] = None
+    new_version: Optional[str] = None
+    update_available: bool = False
+    message: str
+
+class GitBatchScanResponse(BaseModel):
+    success: bool
+    total_scanned: int
+    updated_apps: int
+    updates_available_count: int
+    message: str
+    results: List[Dict[str, Any]] = []
 
 class DeploymentTriggerRequest(BaseModel):
     application_id: str

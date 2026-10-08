@@ -30,7 +30,8 @@ import {
   Layers,
   Sparkles,
   Copy,
-  Check
+  Check,
+  RotateCcw
 } from 'lucide-react';
 import { api } from '../api/client';
 
@@ -100,6 +101,44 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
   const [editDomain, setEditDomain] = useState('');
   const [savingConfig, setSavingConfig] = useState(false);
   const [configSuccess, setConfigSuccess] = useState(false);
+
+  // Git Operations State
+  const [gitActionLoading, setGitActionLoading] = useState<string | null>(null);
+  const [gitTerminalOutput, setGitTerminalOutput] = useState<any>(null);
+
+  const handleExecuteGitAction = async (
+    action: 'pull' | 'fetch' | 'reset_hard' | 'status' | 'diff' | 'log' | 'custom',
+    customCmd?: string
+  ) => {
+    if (!app) return;
+    setGitActionLoading(action);
+    try {
+      const res = await api.executeGitAction(app.id, {
+        action,
+        branch: app.git_branch,
+        custom_command: customCmd,
+      });
+      setGitTerminalOutput(res);
+      setActionSuccessMessage(res.message);
+      setTimeout(() => setActionSuccessMessage(null), 5000);
+      const newStatus = await api.getGitStatus(app.id);
+      setGitStatus(newStatus);
+      const freshApp = await api.getApplication(app.id);
+      setApp(freshApp);
+      const freshDeps = await api.listDeployments(app.id);
+      setDeployments(freshDeps);
+    } catch (err: any) {
+      setGitTerminalOutput({
+        command: customCmd || `git ${action}`,
+        stdout: '',
+        stderr: err.message || 'Execution failed',
+        exit_code: 1,
+        duration_ms: 0,
+      });
+    } finally {
+      setGitActionLoading(null);
+    }
+  };
 
   const loadDockerInfo = async (targetAppId: string) => {
     setDockerLoading(true);
@@ -972,45 +1011,317 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
 
         {/* Tab 4: Git Integration */}
         {activeTab === 'git' && (
-          <div className="p-6 rounded-xl bg-slate-900 border border-slate-800 space-y-4">
-            <h3 className="text-sm font-semibold text-white">Repository Synchronization Status</h3>
+          <div className="space-y-6">
             {gitStatus ? (
-              <div className="space-y-4 text-xs">
-                <div className="p-4 bg-slate-950 rounded-lg border border-slate-800 flex items-center justify-between">
-                  <div>
-                    <span className="text-slate-500">Tracking Branch:</span>
-                    <div className="text-sm font-semibold text-white mono mt-0.5">{gitStatus.branch}</div>
-                    <div className="text-slate-400 mt-1">{gitStatus.repo_url}</div>
+              <>
+                {/* Repository Header Card */}
+                <div className="p-6 rounded-xl bg-slate-900 border border-slate-800 space-y-4">
+                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-slate-800">
+                    <div>
+                      <div className="flex items-center gap-2.5">
+                        <h3 className="text-base font-bold text-white tracking-tight">
+                          Git Repository: {app.name}
+                        </h3>
+                        <span className="px-2 py-0.5 rounded-full text-[11px] font-mono font-semibold bg-brand-950 text-brand-300 border border-brand-800/80">
+                          {gitStatus.version || app.current_version || 'v1.0.0'}
+                        </span>
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-slate-950 text-slate-400 border border-slate-800">
+                          {gitStatus.branch || app.git_branch || 'main'}
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-3 text-xs text-slate-400 mt-1.5 font-mono">
+                        <span className="text-slate-300">
+                          Dir: <code>{gitStatus.repo_dir || `/var/www/${app.name.toLowerCase()}`}</code>
+                        </span>
+                        <span>•</span>
+                        <span>Host: {gitStatus.server_name || app.server_name} ({gitStatus.server_ip || app.server_ip})</span>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs bg-emerald-950/60 text-emerald-400 border border-emerald-800/80 font-mono">
+                        <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+                        <span>SSH Root Active</span>
+                      </span>
+                      <button
+                        onClick={async () => {
+                          const s = await api.getGitStatus(app.id);
+                          setGitStatus(s);
+                        }}
+                        disabled={Boolean(gitActionLoading)}
+                        className="p-2 bg-slate-950 hover:bg-slate-800 text-slate-300 rounded-lg border border-slate-800 transition-colors"
+                        title="Refresh Git Status"
+                      >
+                        <RefreshCw size={13} className={gitActionLoading ? 'animate-spin text-brand-400' : ''} />
+                      </button>
+                    </div>
                   </div>
-                  <button
-                    onClick={async () => {
-                      await api.pullGitChanges(app.id);
-                      alert('Pulled remote updates successfully.');
-                      loadAll();
-                    }}
-                    className="flex items-center gap-1.5 px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg border border-slate-700 font-semibold"
-                  >
-                    <GitPullRequest size={14} />
-                    <span>Pull Origin</span>
-                  </button>
+
+                  <div className="p-2.5 bg-slate-950 rounded-lg border border-slate-800 flex items-center justify-between text-xs font-mono">
+                    <div className="flex items-center gap-2 text-slate-300 truncate">
+                      <GitPullRequest size={13} className="text-slate-500 shrink-0" />
+                      <span className="text-slate-500">Origin:</span>
+                      <span className="text-brand-300 truncate">{gitStatus.repo_url || app.repo_url || 'git@github.com:Alee24/hq.git'}</span>
+                    </div>
+                    {gitStatus.repo_url && gitStatus.repo_url.startsWith('http') && (
+                      <a
+                        href={gitStatus.repo_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-slate-400 hover:text-white flex items-center gap-1 text-[11px] shrink-0 ml-2"
+                      >
+                        <span>Open</span>
+                        <ExternalLink size={11} />
+                      </a>
+                    )}
+                  </div>
                 </div>
 
+                {/* Update Available Hero Alert */}
+                {gitStatus.update_available ? (
+                  <div className="p-5 rounded-xl bg-gradient-to-r from-amber-950/70 via-slate-900 to-amber-950/40 border border-amber-600/80 shadow-lg space-y-4 animate-in fade-in">
+                    <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+                      <div className="flex items-center gap-3">
+                        <div className="p-2.5 bg-amber-500/20 border border-amber-500/40 rounded-xl text-amber-400 animate-bounce">
+                          <Download size={22} />
+                        </div>
+                        <div>
+                          <h4 className="text-base font-bold text-white flex items-center gap-2">
+                            <span>Update Available:</span>
+                            <span className="text-amber-400">{gitStatus.commits_behind || 1} Commit{gitStatus.commits_behind !== 1 ? 's' : ''} Behind Origin</span>
+                          </h4>
+                          <p className="text-xs text-amber-200/90 mt-0.5">
+                            New changes published on <code className="text-white">origin/{gitStatus.branch}</code>. Pull live commits directly over SSH.
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          onClick={() => handleExecuteGitAction('pull')}
+                          disabled={Boolean(gitActionLoading)}
+                          className="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white rounded-lg text-xs font-bold shadow-md transition-all active:scale-95"
+                        >
+                          <Download size={14} className={gitActionLoading === 'pull' ? 'animate-spin' : ''} />
+                          <span>{gitActionLoading === 'pull' ? 'Pulling...' : 'Pull Latest Changes'}</span>
+                        </button>
+                        <button
+                          onClick={() => handleExecuteGitAction('reset_hard')}
+                          disabled={Boolean(gitActionLoading)}
+                          className="flex items-center gap-1.5 px-3 py-2.5 bg-rose-950/80 hover:bg-rose-900 text-rose-300 border border-rose-800 rounded-lg text-xs font-semibold transition-colors"
+                        >
+                          <RotateCcw size={13} className={gitActionLoading === 'reset_hard' ? 'animate-spin' : ''} />
+                          <span>Force Reset</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    {gitStatus.incoming_commits && gitStatus.incoming_commits.length > 0 && (
+                      <div className="p-3 bg-black/40 rounded-lg border border-amber-800/40 space-y-1.5">
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-amber-400">
+                          Pending Remote Commits:
+                        </span>
+                        {gitStatus.incoming_commits.map((c: any, i: number) => (
+                          <div key={i} className="flex items-center justify-between text-xs font-mono">
+                            <div className="flex items-center gap-2 text-slate-200 truncate">
+                              <span className="text-amber-400 font-bold">{c.short_hash}</span>
+                              <span className="text-slate-300 truncate">{c.message}</span>
+                            </div>
+                            <span className="text-[10px] text-slate-400 shrink-0 ml-2">{c.author} • {c.date}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="p-3.5 rounded-xl bg-emerald-950/30 border border-emerald-800/40 flex items-center justify-between text-xs text-emerald-300">
+                    <div className="flex items-center gap-2">
+                      <CheckCircle2 size={16} className="text-emerald-400" />
+                      <span>Working copy is fully synchronized with origin/{gitStatus.branch}. No updates pending.</span>
+                    </div>
+                    <button
+                      onClick={() => handleExecuteGitAction('fetch')}
+                      disabled={Boolean(gitActionLoading)}
+                      className="px-2.5 py-1 bg-emerald-900/60 hover:bg-emerald-800 text-emerald-200 rounded text-[11px] font-semibold border border-emerald-700/60 transition-colors"
+                    >
+                      {gitActionLoading === 'fetch' ? 'Checking Origin...' : 'Check Origin'}
+                    </button>
+                  </div>
+                )}
+
+                {/* 1-Click Operations Toolbar */}
+                <div className="p-5 rounded-xl bg-slate-900 border border-slate-800 space-y-3.5">
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
+                    <Terminal size={14} className="text-brand-400" />
+                    <span>1-Click SSH Git Operations</span>
+                  </h4>
+
+                  <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2">
+                    <button
+                      onClick={() => handleExecuteGitAction('pull')}
+                      disabled={Boolean(gitActionLoading)}
+                      className="flex flex-col items-center justify-center p-3 rounded-lg bg-slate-950 hover:bg-slate-800 border border-slate-800 hover:border-brand-500 text-slate-200 transition-all text-center gap-1"
+                    >
+                      <Download size={15} className={gitActionLoading === 'pull' ? 'animate-spin text-brand-400' : 'text-brand-400'} />
+                      <span className="text-xs font-semibold">Pull Origin</span>
+                      <span className="text-[10px] text-slate-500 font-mono">Fast-forward</span>
+                    </button>
+
+                    <button
+                      onClick={() => handleExecuteGitAction('fetch')}
+                      disabled={Boolean(gitActionLoading)}
+                      className="flex flex-col items-center justify-center p-3 rounded-lg bg-slate-950 hover:bg-slate-800 border border-slate-800 hover:border-indigo-500 text-slate-200 transition-all text-center gap-1"
+                    >
+                      <RefreshCw size={15} className={gitActionLoading === 'fetch' ? 'animate-spin text-indigo-400' : 'text-indigo-400'} />
+                      <span className="text-xs font-semibold">Fetch Remote</span>
+                      <span className="text-[10px] text-slate-500 font-mono">Check origin</span>
+                    </button>
+
+                    <button
+                      onClick={() => handleExecuteGitAction('status')}
+                      disabled={Boolean(gitActionLoading)}
+                      className="flex flex-col items-center justify-center p-3 rounded-lg bg-slate-950 hover:bg-slate-800 border border-slate-800 hover:border-emerald-500 text-slate-200 transition-all text-center gap-1"
+                    >
+                      <CheckCircle2 size={15} className={gitActionLoading === 'status' ? 'animate-spin text-emerald-400' : 'text-emerald-400'} />
+                      <span className="text-xs font-semibold">Git Status</span>
+                      <span className="text-[10px] text-slate-500 font-mono">Tree state</span>
+                    </button>
+
+                    <button
+                      onClick={() => handleExecuteGitAction('diff')}
+                      disabled={Boolean(gitActionLoading)}
+                      className="flex flex-col items-center justify-center p-3 rounded-lg bg-slate-950 hover:bg-slate-800 border border-slate-800 hover:border-cyan-500 text-slate-200 transition-all text-center gap-1"
+                    >
+                      <GitPullRequest size={15} className={gitActionLoading === 'diff' ? 'animate-spin text-cyan-400' : 'text-cyan-400'} />
+                      <span className="text-xs font-semibold">Inspect Diff</span>
+                      <span className="text-[10px] text-slate-500 font-mono">Diff origin</span>
+                    </button>
+
+                    <button
+                      onClick={() => handleExecuteGitAction('log')}
+                      disabled={Boolean(gitActionLoading)}
+                      className="flex flex-col items-center justify-center p-3 rounded-lg bg-slate-950 hover:bg-slate-800 border border-slate-800 hover:border-purple-500 text-slate-200 transition-all text-center gap-1"
+                    >
+                      <Clock size={15} className={gitActionLoading === 'log' ? 'animate-spin text-purple-400' : 'text-purple-400'} />
+                      <span className="text-xs font-semibold">Commit Log</span>
+                      <span className="text-[10px] text-slate-500 font-mono">Graph view</span>
+                    </button>
+
+                    <button
+                      onClick={() => handleExecuteGitAction('reset_hard')}
+                      disabled={Boolean(gitActionLoading)}
+                      className="flex flex-col items-center justify-center p-3 rounded-lg bg-slate-950 hover:bg-rose-950/40 border border-slate-800 hover:border-rose-600 text-slate-200 transition-all text-center gap-1"
+                    >
+                      <RotateCcw size={15} className={gitActionLoading === 'reset_hard' ? 'animate-spin text-rose-400' : 'text-rose-400'} />
+                      <span className="text-xs font-semibold text-rose-300">Hard Reset</span>
+                      <span className="text-[10px] text-rose-500 font-mono">Clean origin</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Server vs Remote Commit Comparison */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="p-4 bg-slate-950 rounded-lg border border-slate-800 space-y-1">
-                    <span className="text-slate-500 font-semibold uppercase text-[10px]">Current Server Commit</span>
-                    <div className="text-sm font-bold text-brand-400 mono">{gitStatus.current_server_commit.short_hash}</div>
-                    <p className="text-slate-300 mt-1">{gitStatus.current_server_commit.message}</p>
-                    <div className="text-slate-500 text-[11px]">Author: {gitStatus.current_server_commit.author}</div>
+                  <div className="p-4 bg-slate-950 rounded-xl border border-slate-800 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-slate-400 font-semibold uppercase text-[10px]">Current Server Commit</span>
+                      <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-brand-950 text-brand-400 border border-brand-800/80">
+                        LOCAL
+                      </span>
+                    </div>
+                    <div className="text-base font-bold text-brand-400 mono">{gitStatus.current_server_commit.short_hash}</div>
+                    <p className="text-xs text-slate-300">{gitStatus.current_server_commit.message}</p>
+                    <div className="text-slate-500 text-[11px] font-mono pt-1 border-t border-slate-800/80 flex items-center justify-between">
+                      <span>{gitStatus.current_server_commit.author}</span>
+                      <span>{gitStatus.current_server_commit.date}</span>
+                    </div>
                   </div>
 
-                  <div className="p-4 bg-slate-950 rounded-lg border border-slate-800 space-y-1">
-                    <span className="text-slate-500 font-semibold uppercase text-[10px]">Latest Remote Commit</span>
-                    <div className="text-sm font-bold text-emerald-400 mono">{gitStatus.latest_remote_commit.short_hash}</div>
-                    <p className="text-slate-300 mt-1">{gitStatus.latest_remote_commit.message}</p>
-                    <div className="text-slate-500 text-[11px]">Author: {gitStatus.latest_remote_commit.author}</div>
+                  <div className="p-4 bg-slate-950 rounded-xl border border-slate-800 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-slate-400 font-semibold uppercase text-[10px]">Latest Remote Head</span>
+                      <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase ${
+                        gitStatus.update_available
+                          ? 'bg-amber-950 text-amber-400 border border-amber-800'
+                          : 'bg-emerald-950 text-emerald-400 border border-emerald-800'
+                      }`}>
+                        {gitStatus.update_available ? 'UPDATE AVAILABLE' : 'SYNCHRONIZED'}
+                      </span>
+                    </div>
+                    <div className="text-base font-bold text-emerald-400 mono">{gitStatus.latest_remote_commit.short_hash}</div>
+                    <p className="text-xs text-slate-300">{gitStatus.latest_remote_commit.message}</p>
+                    <div className="text-slate-500 text-[11px] font-mono pt-1 border-t border-slate-800/80 flex items-center justify-between">
+                      <span>{gitStatus.latest_remote_commit.author}</span>
+                      <span>{gitStatus.latest_remote_commit.date}</span>
+                    </div>
                   </div>
                 </div>
-              </div>
+
+                {/* Live Terminal Output Console */}
+                {gitTerminalOutput && (
+                  <div className="rounded-xl bg-black border border-slate-800 overflow-hidden shadow-2xl animate-in fade-in">
+                    <div className="px-4 py-2 bg-slate-900 border-b border-slate-800 flex items-center justify-between">
+                      <span className="text-xs font-mono text-slate-300">
+                        root@{app.server_name}:{gitStatus.repo_dir || `/var/www/${app.name.toLowerCase()}`}#
+                      </span>
+                      <div className="flex items-center gap-2">
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
+                          gitTerminalOutput.exit_code === 0
+                            ? 'bg-emerald-950 text-emerald-400 border border-emerald-800'
+                            : 'bg-rose-950 text-rose-400 border border-rose-800'
+                        }`}>
+                          Exit: {gitTerminalOutput.exit_code} ({gitTerminalOutput.duration_ms}ms)
+                        </span>
+                        <button
+                          onClick={() => setGitTerminalOutput(null)}
+                          className="text-slate-500 hover:text-slate-300 text-xs px-1"
+                        >
+                          ×
+                        </button>
+                      </div>
+                    </div>
+                    <div className="p-4 font-mono text-xs max-h-72 overflow-y-auto space-y-2 bg-[#090d16] text-slate-200">
+                      <div className="text-brand-400 font-bold">$ {gitTerminalOutput.command}</div>
+                      {gitTerminalOutput.stdout && (
+                        <pre className="text-slate-300 whitespace-pre-wrap leading-relaxed font-mono">
+                          {gitTerminalOutput.stdout}
+                        </pre>
+                      )}
+                      {gitTerminalOutput.stderr && (
+                        <pre className="text-rose-400 whitespace-pre-wrap leading-relaxed font-mono">
+                          {gitTerminalOutput.stderr}
+                        </pre>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Recent Commit History Log */}
+                {gitStatus.recent_commits && gitStatus.recent_commits.length > 0 && (
+                  <div className="p-5 rounded-xl bg-slate-900 border border-slate-800 space-y-3">
+                    <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400">
+                      Recent Commits ({gitStatus.recent_commits.length})
+                    </h4>
+                    <div className="space-y-2">
+                      {gitStatus.recent_commits.map((c: any) => (
+                        <div
+                          key={c.commit_hash}
+                          className="p-3 bg-slate-950 border border-slate-800 rounded-lg flex items-center justify-between text-xs"
+                        >
+                          <div className="space-y-0.5">
+                            <div className="flex items-center gap-2 font-mono">
+                              <span className="text-brand-400 font-semibold">{c.short_hash}</span>
+                              <span className="text-slate-200 font-medium">{c.message}</span>
+                            </div>
+                            <div className="text-[11px] text-slate-500 font-mono">
+                              {c.author} • {c.date}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </>
             ) : (
               <p className="text-xs text-slate-500">Git repository information unavailable.</p>
             )}
