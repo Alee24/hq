@@ -103,21 +103,6 @@ def init_db():
         );
         """)
 
-        # Pre-seed sample enterprise license: LIC-2026-190548
-        sample_lic = conn.execute("SELECT * FROM licenses WHERE license_id = 'LIC-2026-190548'").fetchone()
-        if not sample_lic:
-            conn.execute("""
-                INSERT INTO licenses (
-                    license_id, customer, email, product, type, installation_limit,
-                    issued_at, expires_at, features, is_revoked, revocation_reason
-                ) VALUES (
-                    'LIC-2026-190548', 'RU Smart Campus', 'ametto@ru.ac.ke', 'Enterprise Software Suite',
-                    'Enterprise', 5, '2026-10-08T14:54:00Z', '2027-10-08T14:54:00Z', '{}', 0, NULL
-                )
-            """)
-            conn.commit()
-            logger.info("Pre-seeded master sample license LIC-2026-190548.")
-
 init_db()
 
 # ==============================================================================
@@ -580,6 +565,98 @@ def toggle_license_revoke(license_id: str, req: RevokeRequest):
         "is_revoked": bool(new_status),
         "reason": req.reason if new_status == 1 else None
     }
+
+# ==============================================================================
+# 5b. JSON API Endpoints for Dashboard Licensing Module
+# ==============================================================================
+
+@app.get("/api/licenses/summary")
+@app.get("/api/v1/licenses/summary")
+def get_licensing_summary():
+    with get_db() as conn:
+        total_licenses = conn.execute("SELECT COUNT(*) FROM licenses").fetchone()[0]
+        total_nodes = conn.execute("SELECT COUNT(*) FROM activations WHERE status = 'ACTIVE'").fetchone()[0]
+        total_alerts = conn.execute("SELECT COUNT(*) FROM telemetry_alerts").fetchone()[0]
+
+        alerts_raw = conn.execute("SELECT * FROM telemetry_alerts ORDER BY id DESC LIMIT 50").fetchall()
+        activations_raw = conn.execute("SELECT * FROM activations ORDER BY last_heartbeat DESC LIMIT 50").fetchall()
+        licenses_raw = conn.execute("SELECT * FROM licenses ORDER BY created_at DESC").fetchall()
+
+        usage_counts = {
+            r["license_id"]: r["c"]
+            for r in conn.execute("SELECT license_id, COUNT(*) as c FROM activations WHERE status = 'ACTIVE' GROUP BY license_id").fetchall()
+        }
+
+        alerts = [dict(r) for r in alerts_raw]
+        activations = [dict(r) for r in activations_raw]
+        licenses = []
+        for r in licenses_raw:
+            d = dict(r)
+            d["active_nodes"] = usage_counts.get(d["license_id"], 0)
+            licenses.append(d)
+
+    return {
+        "status": "ok",
+        "total_licenses": total_licenses,
+        "total_nodes": total_nodes,
+        "total_alerts": total_alerts,
+        "public_key_b64": spki_pub_b64,
+        "raw_public_key_b64": raw_pub_b64,
+        "alerts": alerts,
+        "activations": activations,
+        "licenses": licenses
+    }
+
+@app.get("/api/licenses")
+@app.get("/api/v1/licenses/list")
+def list_licenses_json():
+    with get_db() as conn:
+        licenses_raw = conn.execute("SELECT * FROM licenses ORDER BY created_at DESC").fetchall()
+        usage_counts = {
+            r["license_id"]: r["c"]
+            for r in conn.execute("SELECT license_id, COUNT(*) as c FROM activations WHERE status = 'ACTIVE' GROUP BY license_id").fetchall()
+        }
+        licenses = []
+        for r in licenses_raw:
+            d = dict(r)
+            d["active_nodes"] = usage_counts.get(d["license_id"], 0)
+            licenses.append(d)
+    return licenses
+
+@app.get("/api/licenses/telemetry")
+@app.get("/api/v1/licenses/nodes")
+def list_activations_json():
+    with get_db() as conn:
+        activations = conn.execute("SELECT * FROM activations ORDER BY last_heartbeat DESC").fetchall()
+        return [dict(r) for r in activations]
+
+@app.get("/api/licenses/alerts")
+@app.get("/api/v1/licenses/alerts")
+def list_alerts_json():
+    with get_db() as conn:
+        alerts = conn.execute("SELECT * FROM telemetry_alerts ORDER BY id DESC").fetchall()
+        return [dict(r) for r in alerts]
+
+@app.get("/api/licenses/public-key")
+@app.get("/api/v1/licenses/public-key")
+def get_public_key_json():
+    pem = pub_key.public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo
+    ).decode('utf-8')
+    return {
+        "public_key_pem": pem,
+        "public_key_b64": spki_pub_b64,
+        "raw_public_key_b64": raw_pub_b64
+    }
+
+@app.post("/api/licenses/generate")
+def generate_license_alias(req: GenerateLicenseRequest):
+    return generate_license(req)
+
+@app.post("/api/licenses/{license_id}/revoke")
+def revoke_license_alias(license_id: str, req: RevokeRequest):
+    return toggle_license_revoke(license_id, req)
 
 # ==============================================================================
 # 6. Modern High-Performance Responsive Web Dashboard (Dark Mode)
@@ -1086,6 +1163,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 </html>"""
 
 @app.get("/", response_class=HTMLResponse)
+@app.get("/licensing-hub", response_class=HTMLResponse)
 def admin_dashboard():
     with get_db() as conn:
         licenses = conn.execute("SELECT * FROM licenses ORDER BY created_at DESC").fetchall()

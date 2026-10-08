@@ -117,6 +117,98 @@ async def get_public_verification_key():
     _, pub_pem = get_master_license_keys()
     return {"public_key_pem": pub_pem}
 
+@router.get("/summary")
+async def get_licensing_summary(db: AsyncSession = Depends(get_db)):
+    """Returns complete licensing summary, connected nodes telemetry, and alerts."""
+    import sqlite3, os
+    db_path = "/opt/command_center/command_center.db"
+    if os.path.exists(db_path):
+        try:
+            conn = sqlite3.connect(db_path, timeout=5)
+            conn.row_factory = sqlite3.Row
+            total_licenses = conn.execute("SELECT COUNT(*) FROM licenses").fetchone()[0]
+            total_nodes = conn.execute("SELECT COUNT(*) FROM activations WHERE status = 'ACTIVE'").fetchone()[0]
+            total_alerts = conn.execute("SELECT COUNT(*) FROM telemetry_alerts").fetchone()[0]
+
+            alerts = [dict(r) for r in conn.execute("SELECT * FROM telemetry_alerts ORDER BY id DESC LIMIT 50").fetchall()]
+            activations = [dict(r) for r in conn.execute("SELECT * FROM activations ORDER BY last_heartbeat DESC LIMIT 50").fetchall()]
+            licenses_raw = conn.execute("SELECT * FROM licenses ORDER BY created_at DESC").fetchall()
+
+            usage_counts = {
+                r["license_id"]: r["c"]
+                for r in conn.execute("SELECT license_id, COUNT(*) as c FROM activations WHERE status = 'ACTIVE' GROUP BY license_id").fetchall()
+            }
+            licenses = []
+            for r in licenses_raw:
+                d = dict(r)
+                d["active_nodes"] = usage_counts.get(d["license_id"], 0)
+                licenses.append(d)
+            conn.close()
+
+            _, pub_pem = get_master_license_keys()
+            import base64
+            from cryptography.hazmat.primitives import serialization
+            priv_obj, pub_obj = get_master_license_keys()
+            spki_b64 = "MCowBQYDK2VwAyEAehbE7F+NH01lC10NO1JhD94O28oKvV24sv9juu5UJHw="
+
+            return {
+                "status": "ok",
+                "total_licenses": total_licenses,
+                "total_nodes": total_nodes,
+                "total_alerts": total_alerts,
+                "public_key_b64": spki_b64,
+                "alerts": alerts,
+                "activations": activations,
+                "licenses": licenses
+            }
+        except Exception:
+            pass
+
+    # PostgreSQL fallback
+    result = await db.execute(select(License).where(License.deleted_at == None))
+    all_lics = result.scalars().all()
+    act_res = await db.execute(select(LicenseActivation))
+    all_acts = act_res.scalars().all()
+    _, pub_pem = get_master_license_keys()
+
+    return {
+        "status": "ok",
+        "total_licenses": len(all_lics),
+        "total_nodes": len([a for a in all_acts if a.is_active]),
+        "total_alerts": 0,
+        "public_key_b64": "MCowBQYDK2VwAyEAehbE7F+NH01lC10NO1JhD94O28oKvV24sv9juu5UJHw=",
+        "alerts": [],
+        "activations": [
+            {
+                "license_id": a.license_id,
+                "customer": "Client Node",
+                "machine_id": a.installation_fingerprint,
+                "hostname": a.hostname,
+                "ip_address": a.ip_address,
+                "app_name": a.product_name,
+                "app_version": a.product_version,
+                "last_heartbeat": a.last_validated_at.isoformat() if a.last_validated_at else a.created_at.isoformat(),
+                "status": "ACTIVE" if a.is_active else "INACTIVE"
+            }
+            for a in all_acts
+        ],
+        "licenses": [
+            {
+                "license_id": l.license_key,
+                "customer": l.customer_name,
+                "email": l.customer_email,
+                "product": l.product_name,
+                "type": l.license_type,
+                "installation_limit": l.allowed_installations,
+                "active_nodes": l.active_installations,
+                "status": l.status,
+                "expires_at": l.expires_at.isoformat() if l.expires_at else None,
+                "is_revoked": l.status == "REVOKED"
+            }
+            for l in all_lics
+        ]
+    }
+
 @router.get("/{license_id}", response_model=LicenseResponse)
 async def get_license(
     license_id: str,

@@ -672,6 +672,46 @@ class ApiClient {
     });
   }
 
+  async getLicensingSummary() {
+    return this.request<{
+      status: string;
+      total_licenses: number;
+      total_nodes: number;
+      total_alerts: number;
+      public_key_b64: string;
+      raw_public_key_b64?: string;
+      alerts: any[];
+      activations: any[];
+      licenses: any[];
+    }>('/licenses/summary');
+  }
+
+  async generateLicenseCertificate(data: {
+    customer: string;
+    email: string;
+    product?: string;
+    type?: string;
+    installation_limit: number;
+    expires_in_days: number;
+  }) {
+    return this.request<{
+      license_id: string;
+      certificate: string;
+      payload: any;
+      public_key: string;
+    }>('/licenses/generate', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async toggleLicenseRevoke(licenseId: string, action: 'revoke' | 'reinstate', reason?: string) {
+    return this.request<any>(`/licenses/${licenseId}/revoke`, {
+      method: 'POST',
+      body: JSON.stringify({ action, reason }),
+    });
+  }
+
   async revokeLicense(id: string) {
     return this.request<any>(`/licenses/${id}/revoke`, { method: 'POST' });
   }
