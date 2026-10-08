@@ -2098,7 +2098,7 @@ def execute_remote_git_action(
     full_cmd = (
         f"bash -c '"
         f"TARGET_DIR=\"\"; "
-        f"for cand in \"/var/www/{app_slug}\" \"/var/www/{app_dom}\" \"/var/www/html/{app_slug}\" \"/var/www/html/{app_dom}\" $(find /var/www -maxdepth 2 -type d -name \".git\" 2>/dev/null | sed \"s/\\/\\.git$//\"); do "
+        f"for cand in \"/var/www/{app_slug}/{app_slug}\" \"/var/www/{app_slug}\" \"/var/www/{app_dom}\" \"/var/www/html/{app_slug}\" \"/var/www/html/{app_dom}\" $(find /var/www -maxdepth 3 -type d -name \".git\" 2>/dev/null | sed \"s/\\/\\.git$//\"); do "
         f"  if [ -d \"$cand/.git\" ]; then "
         f"    b=$(basename \"$cand\" | tr \"[:upper:]\" \"[:lower:]\"); "
         f"    if [ \"$b\" = \"{app_slug}\" ] || [ \"$b\" = \"{app_dom}\" ] || [[ \"{app_slug}\" == *\"$b\"* ]] || [[ \"$b\" == *\"{app_slug}\"* ]]; then "
