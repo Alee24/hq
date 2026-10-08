@@ -1343,172 +1343,200 @@ export const ServerDetailView: React.FC<ServerDetailViewProps> = ({
             </div>
           </div>
 
-          {/* Database Engines Grid */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {(databasesData?.engines || [
-              { name: 'PostgreSQL Cluster', type: 'POSTGRESQL', version: 'PostgreSQL 16.2', port: 5432, status: 'ONLINE', active_connections: 8, databases_count: 3, service_name: 'postgresql' },
-              { name: 'Redis In-Memory Store', type: 'REDIS', version: 'Redis 7.0.15', port: 6379, status: 'ONLINE', active_connections: 14, databases_count: 1, service_name: 'redis-server' }
-            ]).map((eng: any, idx: number) => {
-              const isRestarting = serviceActionLoading === `${eng.service_name}:restart`;
-              return (
-                <div key={idx} className="p-4 bg-slate-900/80 border border-slate-800 rounded-xl space-y-3">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <div className="p-1.5 bg-emerald-950/60 border border-emerald-800/80 rounded-lg text-emerald-400">
-                        <Database size={16} />
-                      </div>
-                      <div>
-                        <div className="font-semibold text-xs text-white">{eng.name}</div>
-                        <div className="text-[10px] text-slate-400 font-mono">{eng.version}</div>
-                      </div>
-                    </div>
-                    <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-950 text-emerald-400 border border-emerald-800">
-                      {eng.status}
-                    </span>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-2 text-[11px] pt-1 border-t border-slate-800/80 font-mono">
-                    <div className="text-slate-400">
-                      Port: <span className="text-white font-semibold">:{eng.port}</span>
-                    </div>
-                    <div className="text-slate-400">
-                      Active Conns: <span className="text-emerald-400 font-semibold">{eng.active_connections}</span>
-                    </div>
-                    <div className="text-slate-400">
-                      Databases: <span className="text-white font-semibold">{eng.databases_count}</span>
-                    </div>
-                    <div className="text-slate-400">
-                      Service: <span className="text-slate-300 font-semibold">{eng.service_name}</span>
-                    </div>
-                  </div>
-
-                  <div className="pt-2 border-t border-slate-800/80">
-                    <button
-                      onClick={() => handleServiceAction(eng.service_name, 'restart')}
-                      disabled={isRestarting}
-                      className="w-full py-1.5 bg-slate-950 hover:bg-slate-800 border border-slate-800 hover:border-slate-700 text-slate-200 rounded-lg text-xs font-medium transition-colors flex items-center justify-center gap-1.5 disabled:opacity-50"
-                    >
-                      <RotateCw size={12} className={isRestarting ? 'animate-spin text-emerald-400' : ''} />
-                      <span>{isRestarting ? 'Restarting Engine...' : `Fast Restart ${eng.service_name}`}</span>
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-
-          {/* Discovered Databases & Schemas Table */}
-          <div className="p-5 bg-slate-900/80 border border-slate-800 rounded-xl space-y-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <h3 className="text-sm font-semibold text-white">Discovered Databases & Schemas</h3>
-                <p className="text-xs text-slate-400">Live storage size, listening port, and application dependencies</p>
+          {/* Databases Content or Clean Empty State */}
+          {((databasesData?.engines?.length || 0) === 0 && (databasesData?.databases?.length || 0) === 0) ? (
+            <div className="p-12 text-center bg-slate-900/60 border border-slate-800 rounded-xl space-y-4">
+              <div className="w-12 h-12 rounded-full bg-slate-800 flex items-center justify-center mx-auto text-emerald-400">
+                <Database size={24} />
+              </div>
+              <div className="space-y-1">
+                <h3 className="text-base font-semibold text-white">No Database Engines Detected</h3>
+                <p className="text-xs text-slate-400 max-w-md mx-auto">
+                  No active PostgreSQL, MySQL/MariaDB, Redis, or SQLite instances were detected running on {server.name} ({server.public_ip}).
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center justify-center gap-2 pt-2">
+                <button
+                  onClick={loadDatabases}
+                  disabled={databasesLoading}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-semibold shadow-sm transition-colors disabled:opacity-50"
+                >
+                  <RefreshCw size={13} className={databasesLoading ? 'animate-spin' : ''} />
+                  <span>{databasesLoading ? 'Rescanning VPS...' : 'Rescan Databases'}</span>
+                </button>
+                <button
+                  onClick={() => handleRunTroubleshoot('LISTENING_PORTS')}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-medium border border-slate-700 transition-colors"
+                >
+                  <Play size={12} />
+                  <span>Inspect Listening Ports (ss -tulpn)</span>
+                </button>
               </div>
             </div>
-
-            <div className="overflow-x-auto rounded-lg border border-slate-800">
-              <table className="w-full text-left text-xs">
-                <thead className="bg-slate-950 text-slate-400 font-mono text-[11px] border-b border-slate-800">
-                  <tr>
-                    <th className="py-2.5 px-3">Database Name</th>
-                    <th className="py-2.5 px-3">Engine</th>
-                    <th className="py-2.5 px-3">Size on Disk</th>
-                    <th className="py-2.5 px-3">Port / Location</th>
-                    <th className="py-2.5 px-3">Used By Application(s)</th>
-                    <th className="py-2.5 px-3 text-center">Status</th>
-                    <th className="py-2.5 px-3 text-right">Action</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-800/60 font-mono">
-                  {(databasesData?.databases || [
-                    { name: 'production_hq', engine: 'PostgreSQL', size: '48.2 MB', port: 5432, status: 'ACTIVE', used_by: ['HQ Command Center', 'hq.kkdes.co.ke'] },
-                    { name: 'mclinic_db', engine: 'PostgreSQL', size: '142.8 MB', port: 5432, status: 'ACTIVE', used_by: ['mclinic', 'mclinic.co.ke'] },
-                    { name: 'somesha_app_db', engine: 'PostgreSQL', size: '89.4 MB', port: 5432, status: 'ACTIVE', used_by: ['Somesha App', 'somesha.kkdes.co.ke'] },
-                    { name: 'db0 (Cache Keyspace)', engine: 'Redis', size: '18.4 MB', port: 6379, status: 'ACTIVE', used_by: ['FastAPI Sessions', 'Rate Limiter'] }
-                  ]).map((db: any, idx: number) => (
-                    <tr key={idx} className="hover:bg-slate-800/40">
-                      <td className="py-2.5 px-3 font-semibold text-white flex items-center gap-2">
-                        <Database size={13} className="text-emerald-400 shrink-0" />
-                        <span>{db.name}</span>
-                      </td>
-                      <td className="py-2.5 px-3">
-                        <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-950 text-slate-300 border border-slate-800">
-                          {db.engine}
-                        </span>
-                      </td>
-                      <td className="py-2.5 px-3 font-semibold text-emerald-400">{db.size}</td>
-                      <td className="py-2.5 px-3 text-slate-400">{db.path || `:${db.port}`}</td>
-                      <td className="py-2.5 px-3">
-                        <div className="flex flex-wrap gap-1">
-                          {db.used_by && db.used_by.length > 0 ? (
-                            db.used_by.map((app: string, aIdx: number) => (
-                              <span key={aIdx} className="px-1.5 py-0.5 rounded text-[10px] bg-brand-950 text-brand-300 border border-brand-800 font-sans">
-                                {app}
-                              </span>
-                            ))
-                          ) : (
-                            <span className="text-slate-500 text-[10px]">Unassigned</span>
-                          )}
+          ) : (
+            <>
+              {/* Database Engines Grid */}
+              {databasesData?.engines && databasesData.engines.length > 0 && (
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  {databasesData.engines.map((eng: any, idx: number) => {
+                    const isRestarting = serviceActionLoading === `${eng.service_name}:restart`;
+                    return (
+                      <div key={idx} className="p-4 bg-slate-900/80 border border-slate-800 rounded-xl space-y-3">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <div className="p-1.5 bg-emerald-950/60 border border-emerald-800/80 rounded-lg text-emerald-400">
+                              <Database size={16} />
+                            </div>
+                            <div>
+                              <div className="font-semibold text-xs text-white">{eng.name}</div>
+                              <div className="text-[10px] text-slate-400 font-mono">{eng.version}</div>
+                            </div>
+                          </div>
+                          <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-950 text-emerald-400 border border-emerald-800">
+                            {eng.status}
+                          </span>
                         </div>
-                      </td>
-                      <td className="py-2.5 px-3 text-center">
-                        <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-950 text-emerald-400 border border-emerald-800">
-                          {db.status || 'ACTIVE'}
-                        </span>
-                      </td>
-                      <td className="py-2.5 px-3 text-right">
-                        <button
-                          onClick={() => {
-                            setDbType(db.engine ? db.engine.toUpperCase() : 'POSTGRESQL');
-                            setDbName(db.name);
-                            setActiveTab('backups');
-                            showToast(`Selected database '${db.name}' for snapshot`, 'info');
-                          }}
-                          className="inline-flex items-center gap-1 px-2.5 py-1 bg-emerald-950/70 hover:bg-emerald-900 text-emerald-300 border border-emerald-800 rounded text-xs transition-colors"
-                        >
-                          <Download size={11} />
-                          <span>Snapshot</span>
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
 
-          {/* App-to-Database Mapping Cards */}
-          <div className="p-5 bg-slate-900/80 border border-slate-800 rounded-xl space-y-4">
-            <div>
-              <h3 className="text-sm font-semibold text-white">Application to Database Linkages</h3>
-              <p className="text-xs text-slate-400">Scanned from application environment configurations (.env, configs)</p>
-            </div>
+                        <div className="grid grid-cols-2 gap-2 text-[11px] pt-1 border-t border-slate-800/80 font-mono">
+                          <div className="text-slate-400">
+                            Port: <span className="text-white font-semibold">:{eng.port}</span>
+                          </div>
+                          <div className="text-slate-400">
+                            Active Conns: <span className="text-emerald-400 font-semibold">{eng.active_connections}</span>
+                          </div>
+                          <div className="text-slate-400">
+                            Databases: <span className="text-white font-semibold">{eng.databases_count}</span>
+                          </div>
+                          <div className="text-slate-400">
+                            Service: <span className="text-slate-300 font-semibold">{eng.service_name}</span>
+                          </div>
+                        </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-              {(databasesData?.app_connections || [
-                { app_name: 'mclinic', database_name: 'mclinic_db', engine: 'PostgreSQL', config_source: '/var/www/mclinic/.env' },
-                { app_name: 'Somesha App', database_name: 'somesha_app_db', engine: 'PostgreSQL', config_source: '/var/www/somesha/.env' },
-                { app_name: 'HQ Command Center', database_name: 'production_hq', engine: 'PostgreSQL', config_source: '/var/www/hq/.env' }
-              ]).map((c: any, idx: number) => (
-                <div key={idx} className="p-3.5 bg-slate-950 border border-slate-800 rounded-xl space-y-2">
+                        <div className="pt-2 border-t border-slate-800/80">
+                          <button
+                            onClick={() => handleServiceAction(eng.service_name, 'restart')}
+                            disabled={isRestarting}
+                            className="w-full py-1.5 bg-slate-950 hover:bg-slate-800 border border-slate-800 hover:border-slate-700 text-slate-200 rounded-lg text-xs font-medium transition-colors flex items-center justify-center gap-1.5 disabled:opacity-50"
+                          >
+                            <RotateCw size={12} className={isRestarting ? 'animate-spin text-emerald-400' : ''} />
+                            <span>{isRestarting ? 'Restarting Engine...' : `Fast Restart ${eng.service_name}`}</span>
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* Discovered Databases & Schemas Table */}
+              {databasesData?.databases && databasesData.databases.length > 0 && (
+                <div className="p-5 bg-slate-900/80 border border-slate-800 rounded-xl space-y-4">
                   <div className="flex items-center justify-between">
-                    <span className="font-semibold text-xs text-white">{c.app_name}</span>
-                    <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-brand-950 text-brand-300 border border-brand-800">
-                      {c.engine}
-                    </span>
+                    <div>
+                      <h3 className="text-sm font-semibold text-white">Discovered Databases & Schemas</h3>
+                      <p className="text-xs text-slate-400">Live storage size, listening port, and application dependencies</p>
+                    </div>
                   </div>
-                  <div className="text-[11px] text-slate-400 space-y-0.5 font-mono">
-                    <div>Database: <span className="text-emerald-400 font-semibold">{c.database_name}</span></div>
-                    <div className="text-[10px] text-slate-500 truncate" title={c.config_source}>Config: {c.config_source}</div>
-                  </div>
-                  <div className="text-[10px] text-emerald-400 flex items-center gap-1 pt-1">
-                    <CheckCircle2 size={11} />
-                    <span>Active Connection Verified</span>
+
+                  <div className="overflow-x-auto rounded-lg border border-slate-800">
+                    <table className="w-full text-left text-xs">
+                      <thead className="bg-slate-950 text-slate-400 font-mono text-[11px] border-b border-slate-800">
+                        <tr>
+                          <th className="py-2.5 px-3">Database Name</th>
+                          <th className="py-2.5 px-3">Engine</th>
+                          <th className="py-2.5 px-3">Size on Disk</th>
+                          <th className="py-2.5 px-3">Port / Location</th>
+                          <th className="py-2.5 px-3">Used By Application(s)</th>
+                          <th className="py-2.5 px-3 text-center">Status</th>
+                          <th className="py-2.5 px-3 text-right">Action</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800/60 font-mono">
+                        {databasesData.databases.map((db: any, idx: number) => (
+                          <tr key={idx} className="hover:bg-slate-800/40">
+                            <td className="py-2.5 px-3 font-semibold text-white flex items-center gap-2">
+                              <Database size={13} className="text-emerald-400 shrink-0" />
+                              <span>{db.name}</span>
+                            </td>
+                            <td className="py-2.5 px-3">
+                              <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-950 text-slate-300 border border-slate-800">
+                                {db.engine}
+                              </span>
+                            </td>
+                            <td className="py-2.5 px-3 font-semibold text-emerald-400">{db.size}</td>
+                            <td className="py-2.5 px-3 text-slate-400">{db.path || `:${db.port}`}</td>
+                            <td className="py-2.5 px-3">
+                              <div className="flex flex-wrap gap-1">
+                                {db.used_by && db.used_by.length > 0 ? (
+                                  db.used_by.map((app: string, aIdx: number) => (
+                                    <span key={aIdx} className="px-1.5 py-0.5 rounded text-[10px] bg-brand-950 text-brand-300 border border-brand-800 font-sans">
+                                      {app}
+                                    </span>
+                                  ))
+                                ) : (
+                                  <span className="text-slate-500 text-[10px]">Unassigned</span>
+                                )}
+                              </div>
+                            </td>
+                            <td className="py-2.5 px-3 text-center">
+                              <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-950 text-emerald-400 border border-emerald-800">
+                                {db.status || 'ACTIVE'}
+                              </span>
+                            </td>
+                            <td className="py-2.5 px-3 text-right">
+                              <button
+                                onClick={() => {
+                                  setDbType(db.engine ? db.engine.toUpperCase() : 'POSTGRESQL');
+                                  setDbName(db.name);
+                                  setActiveTab('backups');
+                                  showToast(`Selected database '${db.name}' for snapshot`, 'info');
+                                }}
+                                className="inline-flex items-center gap-1 px-2.5 py-1 bg-emerald-950/70 hover:bg-emerald-900 text-emerald-300 border border-emerald-800 rounded text-xs transition-colors"
+                              >
+                                <Download size={11} />
+                                <span>Snapshot</span>
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
                   </div>
                 </div>
-              ))}
-            </div>
-          </div>
+              )}
+
+              {/* App-to-Database Mapping Cards */}
+              {databasesData?.app_connections && databasesData.app_connections.length > 0 && (
+                <div className="p-5 bg-slate-900/80 border border-slate-800 rounded-xl space-y-4">
+                  <div>
+                    <h3 className="text-sm font-semibold text-white">Application to Database Linkages</h3>
+                    <p className="text-xs text-slate-400">Scanned from application environment configurations (.env, configs)</p>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    {databasesData.app_connections.map((c: any, idx: number) => (
+                      <div key={idx} className="p-3.5 bg-slate-950 border border-slate-800 rounded-xl space-y-2">
+                        <div className="flex items-center justify-between">
+                          <span className="font-semibold text-xs text-white">{c.app_name}</span>
+                          <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-brand-950 text-brand-300 border border-brand-800">
+                            {c.engine}
+                          </span>
+                        </div>
+                        <div className="text-[11px] text-slate-400 space-y-0.5 font-mono">
+                          <div>Database: <span className="text-emerald-400 font-semibold">{c.database_name}</span></div>
+                          <div className="text-[10px] text-slate-500 truncate" title={c.config_source}>Config: {c.config_source}</div>
+                        </div>
+                        <div className="text-[10px] text-emerald-400 flex items-center gap-1 pt-1">
+                          <CheckCircle2 size={11} />
+                          <span>Active Connection Verified</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </>
+          )}
         </div>
       )}
 
@@ -1602,124 +1630,150 @@ export const ServerDetailView: React.FC<ServerDetailViewProps> = ({
             </div>
           </div>
 
-          {/* Docker Storage Overview Cards */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            {(dockerData?.disk_usage || [
-              { Type: 'Images', TotalCount: '8', Active: '4', Size: '2.4GB', Reclaimable: '1.1GB (45%)' },
-              { Type: 'Containers', TotalCount: '6', Active: '4', Size: '142MB', Reclaimable: '38MB (26%)' },
-              { Type: 'Local Volumes', TotalCount: '4', Active: '4', Size: '1.2GB', Reclaimable: '0B (0%)' },
-              { Type: 'Build Cache', TotalCount: '12', Active: '0', Size: '840MB', Reclaimable: '840MB (100%)' }
-            ]).map((du: any, idx: number) => (
-              <div key={idx} className="p-4 bg-slate-900/80 border border-slate-800 rounded-xl space-y-1.5 font-mono">
-                <div className="text-xs font-semibold text-slate-300 font-sans">{du.Type}</div>
-                <div className="text-xl font-extrabold text-white">{du.Size}</div>
-                <div className="text-[11px] text-slate-400 flex justify-between">
-                  <span>Total: {du.TotalCount} (Active: {du.Active})</span>
-                </div>
-                <div className="text-[10px] text-emerald-400">
-                  Reclaimable: {du.Reclaimable}
-                </div>
+          {/* Containers Content or Clean Empty State */}
+          {((dockerData?.containers?.length || 0) === 0) ? (
+            <div className="p-12 text-center bg-slate-900/60 border border-slate-800 rounded-xl space-y-4">
+              <div className="w-12 h-12 rounded-full bg-slate-800 flex items-center justify-center mx-auto text-sky-400">
+                <Box size={24} />
               </div>
-            ))}
-          </div>
-
-          {/* Running & Detected Containers Table */}
-          <div className="p-5 bg-slate-900/80 border border-slate-800 rounded-xl space-y-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <h3 className="text-sm font-semibold text-white">Active & Detected Docker Containers</h3>
-                <p className="text-xs text-slate-400">Direct container inspection, log stream, and lifecycle control</p>
+              <div className="space-y-1">
+                <h3 className="text-base font-semibold text-white">No Docker Containers Found</h3>
+                <p className="text-xs text-slate-400 max-w-md mx-auto">
+                  No active or stopped Docker containers were detected running on {server.name} ({server.public_ip}).
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center justify-center gap-2 pt-2">
+                <button
+                  onClick={loadDockerSuite}
+                  disabled={dockerLoading}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-lg text-xs font-semibold shadow-sm transition-colors disabled:opacity-50"
+                >
+                  <RefreshCw size={13} className={dockerLoading ? 'animate-spin' : ''} />
+                  <span>{dockerLoading ? 'Probing Host...' : 'Refresh Suite'}</span>
+                </button>
+                <button
+                  onClick={() => handleRunTroubleshoot('DOCKER_PS')}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-medium border border-slate-700 transition-colors"
+                >
+                  <Play size={12} />
+                  <span>Run `docker ps` on VPS</span>
+                </button>
               </div>
             </div>
+          ) : (
+            <>
+              {/* Docker Storage Overview Cards */}
+              {dockerData?.disk_usage && dockerData.disk_usage.length > 0 && (
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  {dockerData.disk_usage.map((du: any, idx: number) => (
+                    <div key={idx} className="p-4 bg-slate-900/80 border border-slate-800 rounded-xl space-y-1.5 font-mono">
+                      <div className="text-xs font-semibold text-slate-300 font-sans">{du.Type}</div>
+                      <div className="text-xl font-extrabold text-white">{du.Size}</div>
+                      <div className="text-[11px] text-slate-400 flex justify-between">
+                        <span>Total: {du.TotalCount} (Active: {du.Active})</span>
+                      </div>
+                      <div className="text-[10px] text-emerald-400">
+                        Reclaimable: {du.Reclaimable}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
 
-            <div className="overflow-x-auto rounded-lg border border-slate-800">
-              <table className="w-full text-left text-xs">
-                <thead className="bg-slate-950 text-slate-400 font-mono text-[11px] border-b border-slate-800">
-                  <tr>
-                    <th className="py-2.5 px-3">Container ID</th>
-                    <th className="py-2.5 px-3">Name</th>
-                    <th className="py-2.5 px-3">Image</th>
-                    <th className="py-2.5 px-3">Status</th>
-                    <th className="py-2.5 px-3">Ports</th>
-                    <th className="py-2.5 px-3 text-center">State</th>
-                    <th className="py-2.5 px-3 text-right">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-800/60 font-mono">
-                  {(dockerData?.containers || [
-                    { id: 'a1b2c3d4e5f6', name: 'hq-backend', image: 'hq-backend:latest', status: 'Up 2 days', state: 'running', ports: '0.0.0.0:8000->8000/tcp', created: '2 days ago' },
-                    { id: 'f6e5d4c3b2a1', name: 'hq-frontend', image: 'hq-frontend:latest', status: 'Up 2 days', state: 'running', ports: '0.0.0.0:3000->3000/tcp', created: '2 days ago' },
-                    { id: 'b2c3d4e5f6a1', name: 'command-center-postgres', image: 'postgres:16-alpine', status: 'Up 4 days', state: 'running', ports: '0.0.0.0:5432->5432/tcp', created: '4 days ago' },
-                    { id: 'c3d4e5f6a1b2', name: 'command-center-redis', image: 'redis:7-alpine', status: 'Up 4 days', state: 'running', ports: '0.0.0.0:6379->6379/tcp', created: '4 days ago' }
-                  ]).map((c: any, idx: number) => {
-                    const isRunning = c.state === 'running' || c.status?.toLowerCase().includes('up');
-                    const isActionBusy = serviceActionLoading === `${c.name}:restart` || serviceActionLoading === `${c.name}:stop`;
-                    return (
-                      <tr key={idx} className="hover:bg-slate-800/40">
-                        <td className="py-2.5 px-3 text-slate-400 font-mono">{c.id}</td>
-                        <td className="py-2.5 px-3 font-semibold text-white flex items-center gap-1.5">
-                          <Box size={13} className="text-sky-400 shrink-0" />
-                          <span>{c.name}</span>
-                        </td>
-                        <td className="py-2.5 px-3 text-slate-300 max-w-[180px] truncate" title={c.image}>
-                          {c.image}
-                        </td>
-                        <td className="py-2.5 px-3 text-slate-400">{c.status}</td>
-                        <td className="py-2.5 px-3 text-slate-300 max-w-[180px] truncate" title={c.ports}>
-                          {c.ports || 'None'}
-                        </td>
-                        <td className="py-2.5 px-3 text-center">
-                          <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${
-                            isRunning
-                              ? 'bg-emerald-950 text-emerald-400 border border-emerald-800'
-                              : 'bg-rose-950 text-rose-400 border border-rose-800'
-                          }`}>
-                            {isRunning ? 'RUNNING' : 'STOPPED'}
-                          </span>
-                        </td>
-                        <td className="py-2.5 px-3 text-right">
-                          <div className="flex items-center justify-end gap-1.5">
-                            <button
-                              onClick={() => handleServiceAction(c.name, 'restart')}
-                              disabled={isActionBusy}
-                              className="px-2 py-1 bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-200 rounded text-[11px] font-medium transition-colors flex items-center gap-1 disabled:opacity-50"
-                              title="Restart container"
-                            >
-                              <RotateCw size={11} className={serviceActionLoading === `${c.name}:restart` ? 'animate-spin text-sky-400' : ''} />
-                              <span>Restart</span>
-                            </button>
+              {/* Running & Detected Containers Table */}
+              <div className="p-5 bg-slate-900/80 border border-slate-800 rounded-xl space-y-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="text-sm font-semibold text-white">Active & Detected Docker Containers</h3>
+                    <p className="text-xs text-slate-400">Direct container inspection, log stream, and lifecycle control on {server.name}</p>
+                  </div>
+                </div>
 
-                            <button
-                              onClick={() => handleRunTroubleshoot('CUSTOM', `docker logs --tail 50 ${c.name}`)}
-                              className="px-2 py-1 bg-brand-950/70 hover:bg-brand-900 text-brand-300 border border-brand-800 rounded text-[11px] font-medium transition-colors flex items-center gap-1"
-                              title="Inspect last 50 lines of logs"
-                            >
-                              <Terminal size={11} />
-                              <span>Logs</span>
-                            </button>
-
-                            <button
-                              onClick={() => handleServiceAction(c.name, isRunning ? 'stop' : 'start')}
-                              disabled={isActionBusy}
-                              className={`px-2 py-1 rounded text-[11px] font-medium transition-colors flex items-center gap-1 disabled:opacity-50 ${
-                                isRunning
-                                  ? 'bg-rose-950/60 hover:bg-rose-900 text-rose-300 border border-rose-800'
-                                  : 'bg-emerald-950/60 hover:bg-emerald-900 text-emerald-300 border border-emerald-800'
-                              }`}
-                              title={isRunning ? 'Stop container' : 'Start container'}
-                            >
-                              <Power size={11} />
-                              <span>{isRunning ? 'Stop' : 'Start'}</span>
-                            </button>
-                          </div>
-                        </td>
+                <div className="overflow-x-auto rounded-lg border border-slate-800">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-slate-950 text-slate-400 font-mono text-[11px] border-b border-slate-800">
+                      <tr>
+                        <th className="py-2.5 px-3">Container ID</th>
+                        <th className="py-2.5 px-3">Name</th>
+                        <th className="py-2.5 px-3">Image</th>
+                        <th className="py-2.5 px-3">Status</th>
+                        <th className="py-2.5 px-3">Ports</th>
+                        <th className="py-2.5 px-3 text-center">State</th>
+                        <th className="py-2.5 px-3 text-right">Actions</th>
                       </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </div>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/60 font-mono">
+                      {dockerData?.containers?.map((c: any, idx: number) => {
+                        const isRunning = c.state === 'running' || c.status?.toLowerCase().includes('up');
+                        const isActionBusy = serviceActionLoading === `${c.name}:restart` || serviceActionLoading === `${c.name}:stop`;
+                        return (
+                          <tr key={idx} className="hover:bg-slate-800/40">
+                            <td className="py-2.5 px-3 text-slate-400 font-mono">{c.id}</td>
+                            <td className="py-2.5 px-3 font-semibold text-white flex items-center gap-1.5">
+                              <Box size={13} className="text-sky-400 shrink-0" />
+                              <span>{c.name}</span>
+                            </td>
+                            <td className="py-2.5 px-3 text-slate-300 max-w-[180px] truncate" title={c.image}>
+                              {c.image}
+                            </td>
+                            <td className="py-2.5 px-3 text-slate-400">{c.status}</td>
+                            <td className="py-2.5 px-3 text-slate-300 max-w-[180px] truncate" title={c.ports}>
+                              {c.ports || 'None'}
+                            </td>
+                            <td className="py-2.5 px-3 text-center">
+                              <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${
+                                isRunning
+                                  ? 'bg-emerald-950 text-emerald-400 border border-emerald-800'
+                                  : 'bg-rose-950 text-rose-400 border border-rose-800'
+                              }`}>
+                                {isRunning ? 'RUNNING' : 'STOPPED'}
+                              </span>
+                            </td>
+                            <td className="py-2.5 px-3 text-right">
+                              <div className="flex items-center justify-end gap-1.5">
+                                <button
+                                  onClick={() => handleServiceAction(c.name, 'restart')}
+                                  disabled={isActionBusy}
+                                  className="px-2 py-1 bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-200 rounded text-[11px] font-medium transition-colors flex items-center gap-1 disabled:opacity-50"
+                                  title="Restart container"
+                                >
+                                  <RotateCw size={11} className={serviceActionLoading === `${c.name}:restart` ? 'animate-spin text-sky-400' : ''} />
+                                  <span>Restart</span>
+                                </button>
+
+                                <button
+                                  onClick={() => handleRunTroubleshoot('CUSTOM', `docker logs --tail 50 ${c.name}`)}
+                                  className="px-2 py-1 bg-brand-950/70 hover:bg-brand-900 text-brand-300 border border-brand-800 rounded text-[11px] font-medium transition-colors flex items-center gap-1"
+                                  title="Inspect last 50 lines of logs"
+                                >
+                                  <Terminal size={11} />
+                                  <span>Logs</span>
+                                </button>
+
+                                <button
+                                  onClick={() => handleServiceAction(c.name, isRunning ? 'stop' : 'start')}
+                                  disabled={isActionBusy}
+                                  className={`px-2 py-1 rounded text-[11px] font-medium transition-colors flex items-center gap-1 disabled:opacity-50 ${
+                                    isRunning
+                                      ? 'bg-rose-950/60 hover:bg-rose-900 text-rose-300 border border-rose-800'
+                                      : 'bg-emerald-950/60 hover:bg-emerald-900 text-emerald-300 border border-emerald-800'
+                                  }`}
+                                  title={isRunning ? 'Stop container' : 'Start container'}
+                                >
+                                  <Power size={11} />
+                                  <span>{isRunning ? 'Stop' : 'Start'}</span>
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </>
+          )}
         </div>
       )}
 

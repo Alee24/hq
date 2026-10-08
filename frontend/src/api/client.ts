@@ -141,6 +141,9 @@ class ApiClient {
   async inspectAppContainer(id: string) {
     return this.request<{
       found: boolean;
+      has_container?: boolean;
+      is_native_process?: boolean;
+      process_manager?: string;
       target_name: string;
       container: {
         id: string;
@@ -161,7 +164,7 @@ class ApiClient {
         mounts: string[];
         env_vars: string[];
         logs: string;
-      };
+      } | null;
       all_containers: Array<{
         id: string;
         name: string;

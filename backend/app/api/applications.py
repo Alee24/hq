@@ -396,7 +396,9 @@ async def inspect_application_container(
         server=srv,
         app_name=app.name,
         service_name=app.service_name,
-        port=app.port
+        port=app.port,
+        process_manager=app.process_manager,
+        app_type=app.app_type
     )
     return data
 

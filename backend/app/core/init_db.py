@@ -125,12 +125,21 @@ async def apply_schema_migrations():
             ("database_name", "VARCHAR(100)")
         ]
 
+        app_cols = [
+            ("root_path", "VARCHAR(500)")
+        ]
+
         if dialect_name == "postgresql":
             # PostgreSQL natively supports ADD COLUMN IF NOT EXISTS without aborting transactions
             for col_name, col_type in server_cols:
                 await conn.execute(text(f"ALTER TABLE servers ADD COLUMN IF NOT EXISTS {col_name} {col_type}"))
             for col_name, col_type in backup_cols:
                 await conn.execute(text(f"ALTER TABLE backups ADD COLUMN IF NOT EXISTS {col_name} {col_type}"))
+            for col_name, col_type in app_cols:
+                await conn.execute(text(f"ALTER TABLE applications ADD COLUMN IF NOT EXISTS {col_name} {col_type}"))
+            # Clean up bogus auto-discovered Apache comment artifacts
+            await conn.execute(text("DELETE FROM domains WHERE domain_name IN ('#', 'directive', 'www.example.com')"))
+            await conn.execute(text("DELETE FROM applications WHERE name IN ('#', 'directive', 'www.example.com') OR domain IN ('#', 'directive', 'www.example.com')"))
         else:
             # SQLite: Check existing table schema before altering to prevent duplicate column errors
             try:
@@ -145,6 +154,16 @@ async def apply_schema_migrations():
                 for col_name, col_type in backup_cols:
                     if col_name not in backup_existing:
                         await conn.execute(text(f"ALTER TABLE backups ADD COLUMN {col_name} {col_type}"))
+
+                res_a = await conn.execute(text("PRAGMA table_info(applications)"))
+                app_existing = [row[1] for row in res_a.fetchall()]
+                for col_name, col_type in app_cols:
+                    if col_name not in app_existing:
+                        await conn.execute(text(f"ALTER TABLE applications ADD COLUMN {col_name} {col_type}"))
+
+                # Clean up bogus auto-discovered Apache comment artifacts
+                await conn.execute(text("DELETE FROM domains WHERE domain_name IN ('#', 'directive', 'www.example.com')"))
+                await conn.execute(text("DELETE FROM applications WHERE name IN ('#', 'directive', 'www.example.com') OR domain IN ('#', 'directive', 'www.example.com')"))
             except Exception as e:
                 print(f"[SQLITE MIGRATION NOTICE]: {e}")
 

@@ -4,6 +4,7 @@ import io
 import os
 import re
 import json
+import base64
 import subprocess
 import paramiko
 from datetime import datetime, timezone
@@ -139,6 +140,7 @@ def execute_remote_command(server: Server, command: str, working_dir: Optional[s
     if server.public_ip not in ["127.0.0.1", "localhost", "0.0.0.0"] and (server.ssh_key or server.ssh_password):
         client = paramiko.SSHClient()
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        conn_timeout = min(float(timeout), 4.0)
         try:
             if server.ssh_key:
                 key_file = io.StringIO(server.ssh_key.strip())
@@ -156,7 +158,8 @@ def execute_remote_command(server: Server, command: str, working_dir: Optional[s
                     port=port,
                     username=server.ssh_user or "root",
                     pkey=pkey,
-                    timeout=float(timeout)
+                    timeout=conn_timeout,
+                    auth_timeout=conn_timeout
                 )
             else:
                 client.connect(
@@ -164,7 +167,8 @@ def execute_remote_command(server: Server, command: str, working_dir: Optional[s
                     port=port,
                     username=server.ssh_user or "root",
                     password=server.ssh_password,
-                    timeout=float(timeout)
+                    timeout=conn_timeout,
+                    auth_timeout=conn_timeout
                 )
 
             stdin, stdout, stderr = client.exec_command(full_cmd, timeout=float(timeout))
@@ -184,10 +188,16 @@ def execute_remote_command(server: Server, command: str, working_dir: Optional[s
             }
         except Exception as ssh_err:
             duration_ms = int((time.time() - start_time) * 1000)
-            # If SSH network error, fall through to simulation/fallback output
-            pass
+            return {
+                "success": False,
+                "command": clean_cmd,
+                "stdout": "",
+                "stderr": f"SSH connection failed to {server.public_ip} ({server.name}): {str(ssh_err)}",
+                "exit_code": 255,
+                "duration_ms": duration_ms
+            }
 
-    # 2. Local loopback execution (run real subprocess on Linux/Docker, or fall through to POSIX engine on Windows)
+    # 2. Local loopback execution (run real subprocess on Linux/Docker, or handle localhost)
     if target_ip in ["127.0.0.1", "localhost", "0.0.0.0"] and os.name != "nt":
         try:
             res = subprocess.run(
@@ -216,80 +226,25 @@ def execute_remote_command(server: Server, command: str, working_dir: Optional[s
                 "exit_code": 124,
                 "duration_ms": duration_ms
             }
-        except Exception:
-            pass
+        except Exception as e:
+            return {
+                "success": False,
+                "command": clean_cmd,
+                "stdout": "",
+                "stderr": f"Local command error: {str(e)}",
+                "exit_code": 1,
+                "duration_ms": int((time.time() - start_time) * 1000)
+            }
 
-    # 3. Dynamic POSIX Command Engine (for registered nodes awaiting physical SSH keys)
-    duration_ms = int((time.time() - start_time) * 1000) + 12
-    cmd_lower = clean_cmd.lower()
-
-    if cmd_lower in ["uptime", "w"]:
-        now_str = datetime.now(timezone.utc).strftime("%H:%M:%S")
-        stdout = f" {now_str} up 42 days, 14:28, 2 users, load average: 0.28, 0.34, 0.41\n"
-        return {"success": True, "command": clean_cmd, "stdout": stdout, "stderr": "", "exit_code": 0, "duration_ms": duration_ms}
-
-    elif "df" in cmd_lower:
-        stdout = (
-            "Filesystem     1K-blocks      Used Available Use% Mounted on\n"
-            "/dev/sda1      162489240  42104928 112098480  28% /\n"
-            "tmpfs            8245100         0   8245100   0% /dev/shm\n"
-            "/dev/sda15        106858      6252    100606   6% /boot/efi\n"
-        )
-        return {"success": True, "command": clean_cmd, "stdout": stdout, "stderr": "", "exit_code": 0, "duration_ms": duration_ms}
-
-    elif "free" in cmd_lower:
-        stdout = (
-            "               total        used        free      shared  buff/cache   available\n"
-            "Mem:         8192000     3420000     2810000       42000     1962000     4730000\n"
-            "Swap:        2097148           0     2097148\n"
-        )
-        return {"success": True, "command": clean_cmd, "stdout": stdout, "stderr": "", "exit_code": 0, "duration_ms": duration_ms}
-
-    elif "docker ps" in cmd_lower:
-        stdout = (
-            "CONTAINER ID   IMAGE                 COMMAND                  CREATED        STATUS          PORTS                    NAMES\n"
-            "8f2b1c4e90a1   nginx:alpine          \"/docker-entrypoint.…\"   3 days ago     Up 3 days       0.0.0.0:80->80/tcp       web-proxy\n"
-            "4e90a18f2b1c   postgres:16-alpine    \"docker-entrypoint.s…\"   3 days ago     Up 3 days       0.0.0.0:5432->5432/tcp   prod-postgres\n"
-            "3a1b4c5d6e7f   redis:7-alpine        \"docker-entrypoint.s…\"   3 days ago     Up 3 days       0.0.0.0:6379->6379/tcp   cache-redis\n"
-        )
-        return {"success": True, "command": clean_cmd, "stdout": stdout, "stderr": "", "exit_code": 0, "duration_ms": duration_ms}
-
-    elif "uname" in cmd_lower:
-        stdout = f"Linux {server.hostname} {server.kernel or '6.8.0-generic'} x86_64 GNU/Linux\n"
-        return {"success": True, "command": clean_cmd, "stdout": stdout, "stderr": "", "exit_code": 0, "duration_ms": duration_ms}
-
-    elif "whoami" in cmd_lower:
-        stdout = f"{server.ssh_user or 'root'}\n"
-        return {"success": True, "command": clean_cmd, "stdout": stdout, "stderr": "", "exit_code": 0, "duration_ms": duration_ms}
-
-    elif "systemctl status" in cmd_lower:
-        svc = clean_cmd.split()[-1] if len(clean_cmd.split()) > 2 else "docker"
-        stdout = (
-            f"● {svc}.service - High-Performance Production Service\n"
-            f"     Loaded: loaded (/etc/systemd/system/{svc}.service; enabled; vendor preset: enabled)\n"
-            f"     Active: active (running) since Tue 2026-10-06 08:14:02 UTC; 8h ago\n"
-            f"   Main PID: 1842 ({svc})\n"
-            f"      Tasks: 14 (limit: 9482)\n"
-            f"     Memory: 64.2M\n"
-            f"        CPU: 12.4s\n"
-        )
-        return {"success": True, "command": clean_cmd, "stdout": stdout, "stderr": "", "exit_code": 0, "duration_ms": duration_ms}
-
-    elif "ls" in cmd_lower or "dir" in cmd_lower:
-        stdout = "backups\ndocker-compose.yml\nenv.production\nlogs\nnginx.conf\nscripts\n"
-        return {"success": True, "command": clean_cmd, "stdout": stdout, "stderr": "", "exit_code": 0, "duration_ms": duration_ms}
-
-    elif "cat" in cmd_lower and "os-release" in cmd_lower:
-        stdout = (
-            "NAME=\"Ubuntu\"\nVERSION=\"24.04 LTS (Noble Numbat)\"\nID=ubuntu\n"
-            "ID_LIKE=debian\nPRETTY_NAME=\"Ubuntu 24.04 LTS\"\nVERSION_ID=\"24.04\"\n"
-        )
-        return {"success": True, "command": clean_cmd, "stdout": stdout, "stderr": "", "exit_code": 0, "duration_ms": duration_ms}
-
-    else:
-        # Default response
-        stdout = f"[{server.name}] Executed: `{clean_cmd}`\nExit status: 0 (OK)\n"
-        return {"success": True, "command": clean_cmd, "stdout": stdout, "stderr": "", "exit_code": 0, "duration_ms": duration_ms}
+    duration_ms = int((time.time() - start_time) * 1000)
+    return {
+        "success": False,
+        "command": clean_cmd,
+        "stdout": "",
+        "stderr": f"Authentication not configured for {server.name} ({server.public_ip}). Please configure SSH password or private key in Server Settings.",
+        "exit_code": 1,
+        "duration_ms": duration_ms
+    }
 
 def generate_agent_enrollment_script(server: Server, base_url: str) -> str:
     """
@@ -406,24 +361,7 @@ def get_remote_server_processes(server: Server) -> List[Dict[str, Any]]:
                         "status": status_text
                     })
 
-    if processes:
-        return processes
-
-    # Dynamic fallback daemons for registered nodes awaiting agent or SSH
-    return [
-        {"pid": 1, "name": "systemd", "command": "/sbin/init", "user": "root", "cpu": 0.1, "cpu_percent": 0.1, "mem": 0.2, "mem_percent": 0.2, "status": "RUNNING"},
-        {"pid": 842, "name": "dockerd", "command": "/usr/bin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock", "user": "root", "cpu": 1.4, "cpu_percent": 1.4, "mem": 2.1, "mem_percent": 2.1, "status": "RUNNING"},
-        {"pid": 895, "name": "containerd", "command": "/usr/bin/containerd", "user": "root", "cpu": 0.8, "cpu_percent": 0.8, "mem": 1.4, "mem_percent": 1.4, "status": "RUNNING"},
-        {"pid": 1120, "name": "sshd", "command": "sshd: /usr/sbin/sshd -D [listener]", "user": "root", "cpu": 0.0, "cpu_percent": 0.0, "mem": 0.3, "mem_percent": 0.3, "status": "RUNNING"},
-        {"pid": 1240, "name": "nginx", "command": "nginx: worker process", "user": "www-data", "cpu": 0.5, "cpu_percent": 0.5, "mem": 1.2, "mem_percent": 1.2, "status": "RUNNING"},
-        {"pid": 1430, "name": "postgres", "command": "postgres: 16/main: checkpointer", "user": "postgres", "cpu": 0.2, "cpu_percent": 0.2, "mem": 3.8, "mem_percent": 3.8, "status": "RUNNING"},
-        {"pid": 1520, "name": "redis-server", "command": "/usr/bin/redis-server 127.0.0.1:6379", "user": "redis", "cpu": 0.1, "cpu_percent": 0.1, "mem": 0.9, "mem_percent": 0.9, "status": "RUNNING"},
-        {"pid": 1840, "name": "apache2", "command": "/usr/sbin/apache2 -k start", "user": "www-data", "cpu": 0.4, "cpu_percent": 0.4, "mem": 1.6, "mem_percent": 1.6, "status": "RUNNING"},
-        {"pid": 2140, "name": "node", "command": "node /var/www/apps/server.js", "user": "root", "cpu": 2.1, "cpu_percent": 2.1, "mem": 4.2, "mem_percent": 4.2, "status": "RUNNING"},
-        {"pid": 2280, "name": "python3", "command": "python3 -m uvicorn app:main --port 8000", "user": "root", "cpu": 1.8, "cpu_percent": 1.8, "mem": 3.5, "mem_percent": 3.5, "status": "RUNNING"},
-        {"pid": 2690, "name": "fail2ban-server", "command": "/usr/bin/fail2ban-server -xf start", "user": "root", "cpu": 0.1, "cpu_percent": 0.1, "mem": 0.5, "mem_percent": 0.5, "status": "RUNNING"},
-        {"pid": 3012, "name": "rsyslogd", "command": "/usr/sbin/rsyslogd -n -iNONE", "user": "syslog", "cpu": 0.0, "cpu_percent": 0.0, "mem": 0.2, "mem_percent": 0.2, "status": "RUNNING"}
-    ]
+    return processes or []
 
 
 def discover_remote_server_hardware(server: Server) -> Dict[str, Any]:
@@ -446,17 +384,17 @@ def discover_remote_server_hardware(server: Server) -> Dict[str, Any]:
     specs = {
         "cpu_cores": server.cpu_cores or 4,
         "ram_total_mb": server.ram_total_mb or 8192,
-        "ram_used_mb": 3420,
-        "ram_percent": 41.7,
+        "ram_used_mb": 0,
+        "ram_percent": 0.0,
         "disk_total_gb": server.disk_total_gb or 160,
-        "disk_used_gb": 42,
-        "disk_percent": 26.2,
-        "load_1m": 0.35,
-        "load_5m": 0.40,
-        "load_15m": 0.38,
-        "kernel": server.kernel or "6.8.0-generic",
+        "disk_used_gb": 0,
+        "disk_percent": 0.0,
+        "load_1m": 0.0,
+        "load_5m": 0.0,
+        "load_15m": 0.0,
+        "kernel": server.kernel or "Linux",
         "os": server.os or "Ubuntu Linux",
-        "os_version": server.os_version or "24.04 LTS"
+        "os_version": server.os_version or ""
     }
 
     if res.get("success") and "===HARDWARE_PROBE===" in output:
@@ -503,80 +441,105 @@ def discover_remote_server_hardware(server: Server) -> Dict[str, Any]:
 
 def scan_remote_server_websites(server: Server) -> List[Dict[str, Any]]:
     """
-    Inspects Apache2, Nginx, and Docker containers running on the remote VPS.
-    Discovers domain names, virtual hosts, proxy paths, ports, and hosted web applications.
+    Inspects Apache2, Nginx, and Docker containers running on the remote VPS over SSH.
+    Discovers domain names, virtual hosts, proxy paths, ports, document roots, and hosted web applications.
     """
-    scanner_script = """python3 -c "
-import os, glob, re, json, subprocess
+    vps_py = """
+import os, glob, re, subprocess, json
+
+def clean_domain(d):
+    return d.strip().lower().rstrip(';').strip('"').strip("'")
 
 items = []
 
 # 1. Apache2 VirtualHosts
-apache_files = glob.glob('/etc/apache2/sites-enabled/*.conf') + glob.glob('/etc/apache2/sites-available/*.conf')
-for p in set(apache_files):
+for p in set(glob.glob('/etc/apache2/sites-enabled/*.conf') + glob.glob('/etc/apache2/sites-available/*.conf')):
     try:
         with open(p, 'r', errors='ignore') as f:
             c = f.read()
-        sns = re.findall(r'ServerName\\\\s+([^\\\\s]+)', c, re.I)
-        sas = re.findall(r'ServerAlias\\\\s+([^\\\\r\\\\n]+)', c, re.I)
-        drs = re.findall(r'DocumentRoot\\\\s+([^\\\\r\\\\n]+)', c, re.I)
-        pps = re.findall(r'ProxyPass\\\\s+[^\\\\s]+\\\\s+([^\\\\s\\\\r\\\\n]+)', c, re.I)
-        ssl = 'SSLCertificateFile' in c or '443' in c
-        for s in sns:
-            s_clean = s.strip().lower()
-            if s_clean and s_clean not in ['localhost', 'default']:
-                items.append({
-                    'name': s_clean,
-                    'domain': s_clean,
-                    'web_server': 'Apache2',
-                    'framework': 'PHP / Apache2',
-                    'process_manager': 'Apache',
-                    'service_name': f'apache2-{s_clean}',
-                    'port': 443 if ssl else 80,
-                    'ssl_enabled': ssl,
-                    'root_path': drs[0].strip() if drs else None,
-                    'proxy_pass': pps[0].strip() if pps else None,
-                    'config_file': p,
-                    'is_container': False
-                })
+        vhosts = re.findall(r'<VirtualHost[^>]*>(.*?)</VirtualHost>', c, re.DOTALL | re.I)
+        for vh in vhosts:
+            lines = [l.strip() for l in vh.splitlines() if l.strip() and not l.strip().startswith('#')]
+            clean_vh = '\\n'.join(lines)
+            
+            sn_m = re.search(r'ServerName\\s+([^\\s]+)', clean_vh, re.I)
+            if not sn_m:
+                continue
+            sn = clean_domain(sn_m.group(1))
+            if not sn or sn in ['localhost', 'default', '#', 'directive'] or sn.startswith('www.example') or sn.startswith('#'):
+                continue
+            
+            dr_m = re.search(r'DocumentRoot\\s+([^\\s\\r\\n]+)', clean_vh, re.I)
+            dr = dr_m.group(1).strip().strip('"').strip("'") if dr_m else None
+            
+            pp_m = re.search(r'ProxyPass\\s+[^\\s]+\\s+([^\\s\\r\\n]+)', clean_vh, re.I)
+            pp = pp_m.group(1).strip() if pp_m else None
+            
+            ssl = 'SSLCertificateFile' in clean_vh or '443' in clean_vh or 'Include /etc/letsencrypt' in clean_vh
+            
+            items.append({
+                'name': sn,
+                'domain': sn,
+                'web_server': 'Apache2',
+                'framework': 'PHP / Apache2',
+                'process_manager': 'Apache',
+                'service_name': f'apache2-{sn}',
+                'port': 443 if ssl else 80,
+                'ssl_enabled': ssl,
+                'root_path': dr,
+                'proxy_pass': pp,
+                'config_file': p,
+                'is_container': False
+            })
     except Exception:
         pass
 
 # 2. Nginx Server Blocks
-nginx_files = glob.glob('/etc/nginx/sites-enabled/*') + glob.glob('/etc/nginx/conf.d/*.conf')
-for p in set(nginx_files):
+for p in set(glob.glob('/etc/nginx/sites-enabled/*') + glob.glob('/etc/nginx/conf.d/*.conf')):
     try:
         with open(p, 'r', errors='ignore') as f:
             c = f.read()
-        sns = re.findall(r'server_name\\\\s+([^;]+);', c, re.I)
-        pps = re.findall(r'proxy_pass\\\\s+([^;]+);', c, re.I)
-        roots = re.findall(r'root\\\\s+([^;]+);', c, re.I)
-        ssl = 'ssl_certificate' in c or '443' in c
-        for sn_line in sns:
-            for s in sn_line.strip().split():
-                s_clean = s.strip().lower()
-                if s_clean and s_clean not in ['_', 'localhost', 'default_server']:
-                    proxy = pps[0].strip() if pps else None
-                    port_val = 443 if ssl else 80
-                    if proxy and ':' in proxy:
-                        try:
-                            port_val = int(re.findall(r':(\\\\d+)', proxy)[-1])
-                        except Exception:
-                            pass
-                    items.append({
-                        'name': s_clean,
-                        'domain': s_clean,
-                        'web_server': 'Nginx',
-                        'framework': 'Nginx Reverse Proxy',
-                        'process_manager': 'Nginx',
-                        'service_name': f'nginx-{s_clean}',
-                        'port': port_val,
-                        'ssl_enabled': ssl,
-                        'root_path': roots[0].strip() if roots else None,
-                        'proxy_pass': proxy,
-                        'config_file': p,
-                        'is_container': False
-                    })
+        servers = re.findall(r'server\\s*{(.*?)}', c, re.DOTALL | re.I)
+        for sb in servers:
+            lines = [l.strip() for l in sb.splitlines() if l.strip() and not l.strip().startswith('#')]
+            clean_sb = '\\n'.join(lines)
+            
+            sn_m = re.search(r'server_name\\s+([^;]+);', clean_sb, re.I)
+            if not sn_m:
+                continue
+            names = [clean_domain(x) for x in sn_m.group(1).split() if clean_domain(x) and clean_domain(x) not in ['_', 'localhost', 'default_server', '#', 'directive'] and not clean_domain(x).startswith('#')]
+            if not names:
+                continue
+                
+            r_m = re.search(r'root\\s+([^;]+);', clean_sb, re.I)
+            dr = r_m.group(1).strip().strip('"').strip("'") if r_m else None
+            
+            pp_m = re.search(r'proxy_pass\\s+([^;]+);', clean_sb, re.I)
+            pp = pp_m.group(1).strip() if pp_m else None
+            
+            ssl = 'ssl_certificate' in clean_sb or '443' in clean_sb
+            port_val = 443 if ssl else 80
+            if pp and ':' in pp:
+                try:
+                    port_val = int(re.findall(r':(\\d+)', pp)[-1])
+                except Exception:
+                    pass
+                    
+            for sn in names:
+                items.append({
+                    'name': sn,
+                    'domain': sn,
+                    'web_server': 'Nginx',
+                    'framework': 'Nginx Reverse Proxy',
+                    'process_manager': 'Nginx',
+                    'service_name': f'nginx-{sn}',
+                    'port': port_val,
+                    'ssl_enabled': ssl,
+                    'root_path': dr,
+                    'proxy_pass': pp,
+                    'config_file': p,
+                    'is_container': False
+                })
     except Exception:
         pass
 
@@ -591,7 +554,7 @@ try:
             image = c.get('Image', '')
             state = c.get('State', 'running')
             port_val = 80
-            m = re.search(r'0\\\\.0\\\\.0\\\\.0:(\\\\d+)->', ports)
+            m = re.search(r'0\\.0\\.0\\.0:(\\d+)->', ports)
             if m:
                 port_val = int(m.group(1))
             items.append({
@@ -603,7 +566,7 @@ try:
                 'service_name': c_name,
                 'port': port_val,
                 'ssl_enabled': '443' in ports,
-                'root_path': f'/var/lib/docker/containers/{c.get(\"ID\", \"\")[:12]}',
+                'root_path': f'/var/lib/docker/containers/{c.get("ID", "")[:12]}',
                 'proxy_pass': ports or 'Internal Docker Bridge',
                 'config_file': f'docker:{c_name}',
                 'is_container': True,
@@ -614,16 +577,17 @@ except Exception:
     pass
 
 print(json.dumps(items))
-" """
+"""
 
-    res = execute_remote_command(server, scanner_script, timeout=18)
+    b64_str = base64.b64encode(vps_py.encode("utf-8")).decode("ascii")
+    scanner_cmd = f"python3 -c \"import base64; exec(base64.b64decode('{b64_str}'))\""
+
+    res = execute_remote_command(server, scanner_cmd, timeout=22)
     discovered: List[Dict[str, Any]] = []
 
     if res.get("success") and res.get("stdout"):
         try:
-            # Look for JSON output
             json_text = res["stdout"].strip()
-            # If extra lines before JSON, extract between [ and ]
             if not (json_text.startswith("[") and json_text.endswith("]")):
                 match = re.search(r"(\[.*\])", json_text, re.DOTALL)
                 if match:
@@ -635,81 +599,46 @@ print(json.dumps(items))
             pass
 
     if discovered:
-        # Deduplicate by domain or name
-        seen = set()
-        deduped = []
+        # Deduplicate by domain or name; prefer entries with actual document roots or SSL configs
+        merged: Dict[str, Dict[str, Any]] = {}
         for item in discovered:
-            key = (item.get("domain") or item.get("name", "")).lower()
-            if key and key not in seen:
-                seen.add(key)
-                deduped.append(item)
-        return deduped
+            key = (item.get("domain") or item.get("name", "")).lower().strip()
+            if not key or key in ["#", "directive", "www.example.com"] or key.startswith("#"):
+                continue
+            if key not in merged:
+                merged[key] = item
+            else:
+                existing = merged[key]
+                if item.get("root_path") and not existing.get("root_path"):
+                    existing["root_path"] = item["root_path"]
+                if item.get("ssl_enabled") and not existing.get("ssl_enabled"):
+                    existing["ssl_enabled"] = True
+                    existing["port"] = 443
+                if item.get("proxy_pass") and not existing.get("proxy_pass"):
+                    existing["proxy_pass"] = item["proxy_pass"]
+        return list(merged.values())
 
-    # Fallback realistic discoveries for nodes (like hq.kkdes.co.ke or common web stacks)
-    base_domain = server.hostname if "." in server.hostname else f"node-{server.public_ip.replace('.', '-')}.kkdes.co.ke"
-    return [
-        {
-            "name": "Central Command Center",
-            "domain": "hq.kkdes.co.ke",
-            "web_server": "Nginx / Docker",
-            "framework": "FastAPI + Vite React",
-            "process_manager": "Docker",
-            "service_name": "hq-frontend",
-            "port": 443,
-            "ssl_enabled": True,
-            "root_path": "/var/www/hq",
-            "proxy_pass": "http://127.0.0.1:2365",
-            "config_file": "/etc/nginx/sites-enabled/hq.kkdes.co.ke.conf",
-            "is_container": True,
-            "container_id": "hq-web-01",
-            "state": "running"
-        },
-        {
-            "name": f"App Service ({server.name})",
-            "domain": f"app.{base_domain}",
-            "web_server": "Apache2",
-            "framework": "PHP 8.3 / Apache2",
-            "process_manager": "Apache",
-            "service_name": "apache2-vhost",
-            "port": 80,
-            "ssl_enabled": False,
-            "root_path": f"/var/www/html",
-            "proxy_pass": None,
-            "config_file": "/etc/apache2/sites-enabled/000-default.conf",
-            "is_container": False,
-            "container_id": None,
-            "state": "running"
-        },
-        {
-            "name": f"Backend API ({server.name})",
-            "domain": f"api.{base_domain}",
-            "web_server": "Docker Container",
-            "framework": "Docker (Python Uvicorn)",
-            "process_manager": "Docker",
-            "service_name": "api-backend",
-            "port": 8000,
-            "ssl_enabled": False,
-            "root_path": "/app",
-            "proxy_pass": "0.0.0.0:8000->8000/tcp",
-            "config_file": "docker:api-backend",
-            "is_container": True,
-            "container_id": "api-srv-88",
-            "state": "running"
-        }
-    ]
+    return []
 
 
 def inspect_remote_container(
     server: Server,
     app_name: str,
     service_name: Optional[str] = None,
-    port: Optional[int] = None
+    port: Optional[int] = None,
+    process_manager: Optional[str] = None,
+    app_type: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Discovers and deep-inspects the Docker container associated with an application.
     Extracts runtime telemetry (CPU%, RAM, Network I/O, PIDs), configurations,
     mounts, environment variables, restart policies, and generates 1-click optimization commands.
+    Strictly isolated to the target server; never defaults to arbitrary containers.
     """
+    clean_app_name = app_name.lower().replace(" ", "-")
+    clean_svc_name = (service_name or "").lower().strip()
+    is_native = bool(process_manager and process_manager in ["Apache", "Nginx", "Systemd", "PM2"])
+
     # 1. Fetch all containers on host
     ps_res = execute_remote_command(server, "docker ps -a --format '{{json .}}'", timeout=10)
     all_containers: List[Dict[str, Any]] = []
@@ -733,74 +662,154 @@ def inspect_remote_container(
 
     # Match target container
     matched_c = None
-    clean_app_name = app_name.lower().replace(" ", "-")
-    clean_svc_name = (service_name or "").lower().strip()
-
     for c in all_containers:
         c_name = c["name"].lower()
         c_img = c["image"].lower()
-        if clean_svc_name and clean_svc_name in c_name:
+        if clean_svc_name and (clean_svc_name == c_name or clean_svc_name in c_name):
             matched_c = c
             break
-        elif clean_app_name in c_name or clean_app_name in c_img:
+        elif clean_app_name and (clean_app_name == c_name or clean_app_name in c_name or clean_app_name in c_img):
             matched_c = c
             break
         elif port and f":{port}->" in c.get("ports", ""):
             matched_c = c
             break
 
-    # If no exact match but containers exist, default to the first container
-    if not matched_c and all_containers:
-        matched_c = all_containers[0]
+    # If no match found, do NOT default to other containers!
+    if not matched_c:
+        is_apache = any(x in (process_manager or "").lower() for x in ["apache", "httpd"]) or "apache" in clean_svc_name
+        is_nginx = "nginx" in (process_manager or "").lower() or "nginx" in clean_svc_name
+        is_docker = "docker" in (process_manager or "").lower() or app_type == "Docker Container"
 
-    target_id_or_name = matched_c["id"] if matched_c else (clean_svc_name or clean_app_name or "app-container")
-    target_name = matched_c["name"] if matched_c else target_id_or_name
+        if is_docker:
+            native_recs = [
+                {
+                    "type": "WARNING",
+                    "category": "Container Availability",
+                    "title": "Container Not Found on Host",
+                    "message": f"No running container matching '{service_name or app_name}' was detected on {server.name}. The container may be stopped or un-deployed.",
+                    "command": "docker ps -a"
+                }
+            ]
+            native_quick_cmds = [
+                {"name": "Docker Daemon Status", "command": "systemctl status docker --no-pager", "description": "Check if Docker service is running."},
+                {"name": "List All Containers", "command": "docker ps -a", "description": "View all containers including stopped or exited containers."},
+                {"name": "Docker Resource Stats", "command": "docker stats --no-stream", "description": "Inspect CPU, memory and network usage of running containers."},
+                {"name": "Prune Dead Containers", "command": "docker container prune -f", "description": "Remove stopped containers."},
+                {"name": "Docker Storage Breakdown", "command": "docker system df", "description": "Inspect disk usage by images, containers and volumes."}
+            ]
+        elif is_apache:
+            native_recs = [
+                {
+                    "type": "INFO",
+                    "category": "Architecture",
+                    "title": "Native Apache2 VirtualHost",
+                    "message": "This application runs as a native Apache2 daemon on the VPS, avoiding Docker container overhead and sharing the host network directly.",
+                    "command": "apache2ctl configtest"
+                }
+            ]
+            native_quick_cmds = [
+                {"name": "Apache Status", "command": "systemctl status apache2 --no-pager", "description": "Check if Apache service is active and responsive."},
+                {"name": "Test VirtualHost Syntax", "command": "apache2ctl configtest", "description": "Verify Apache syntax configuration before reloading."},
+                {"name": "Reload Apache", "command": "systemctl reload apache2", "description": "Gracefully reload Apache VirtualHost configurations without downtime."},
+                {"name": "Tail Error Logs", "command": "tail -n 40 /var/log/apache2/error.log", "description": "View the most recent 40 lines of Apache error log."},
+                {"name": "Tail Access Logs", "command": "tail -n 40 /var/log/apache2/access.log", "description": "View recent incoming HTTP request traffic."}
+            ]
+        elif is_nginx:
+            native_recs = [
+                {
+                    "type": "INFO",
+                    "category": "Architecture",
+                    "title": "Native Nginx Server Block",
+                    "message": "This application runs directly under Nginx reverse proxy / host daemon on the VPS.",
+                    "command": "nginx -t"
+                }
+            ]
+            native_quick_cmds = [
+                {"name": "Nginx Status", "command": "systemctl status nginx --no-pager", "description": "Check if Nginx daemon is active."},
+                {"name": "Test Nginx Syntax", "command": "nginx -t", "description": "Verify Nginx configuration syntax."},
+                {"name": "Reload Nginx", "command": "systemctl reload nginx", "description": "Gracefully reload Nginx configs."},
+                {"name": "Tail Error Logs", "command": "tail -n 40 /var/log/nginx/error.log", "description": "View recent Nginx error logs."},
+                {"name": "Tail Access Logs", "command": "tail -n 40 /var/log/nginx/access.log", "description": "View recent Nginx access traffic."}
+            ]
+        else:
+            native_recs = [
+                {
+                    "type": "INFO",
+                    "category": "Architecture",
+                    "title": "Native Host Web Process",
+                    "message": f"This application runs directly on the host server under {process_manager or 'Host Daemon'}.",
+                    "command": None
+                }
+            ]
+            clean_token = clean_app_name.split('.')[0] if '.' in clean_app_name else (clean_app_name or 'app')
+            native_quick_cmds = [
+                {"name": "Service Status", "command": f"systemctl status {service_name or app_name} --no-pager 2>/dev/null || ps aux | grep -i '{clean_token}'", "description": "Inspect host service daemon status."},
+                {"name": "Listening Ports", "command": "ss -tulpn | grep -E ':(80|443|8080|3000|8000)'", "description": "Check listening web sockets."},
+                {"name": "Recent System Logs", "command": f"journalctl -u {service_name or app_name} -n 40 --no-pager 2>/dev/null || journalctl -n 40 --no-pager", "description": "View service journal logs."},
+                {"name": "Process List", "command": f"ps aux | head -15", "description": "List top running processes on the host."},
+                {"name": "Memory & Swap Vitals", "command": "free -h", "description": "Inspect physical memory and swap allocation."}
+            ]
+
+        return {
+            "found": False,
+            "has_container": False,
+            "is_native_process": is_native,
+            "process_manager": process_manager or ("Docker" if app_type == "Docker Container" else "Native Host"),
+            "target_name": service_name or app_name,
+            "container": None,
+            "all_containers": all_containers,
+            "recommendations": native_recs,
+            "quick_commands": native_quick_cmds
+        }
+
+    target_id_or_name = matched_c["id"]
+    target_name = matched_c["name"]
 
     # 2. Inspect target container details
     inspect_data = {}
     stats_data = {}
     logs_output = ""
 
-    if matched_c:
-        # Run docker inspect
-        ins_res = execute_remote_command(server, f"docker inspect {target_id_or_name}", timeout=10)
-        if ins_res.get("success") and ins_res.get("stdout"):
-            try:
-                parsed_ins = json.loads(ins_res["stdout"].strip())
-                if isinstance(parsed_ins, list) and len(parsed_ins) > 0:
-                    inspect_data = parsed_ins[0]
-            except Exception:
-                pass
+    # Run docker inspect
+    ins_res = execute_remote_command(server, f"docker inspect {target_id_or_name}", timeout=10)
+    if ins_res.get("success") and ins_res.get("stdout"):
+        try:
+            parsed_ins = json.loads(ins_res["stdout"].strip())
+            if isinstance(parsed_ins, list) and len(parsed_ins) > 0:
+                inspect_data = parsed_ins[0]
+        except Exception:
+            pass
 
-        # Run docker stats
-        st_res = execute_remote_command(server, f"docker stats --no-stream --format '{{json .}}' {target_id_or_name}", timeout=10)
-        if st_res.get("success") and st_res.get("stdout"):
-            try:
-                stats_data = json.loads(st_res["stdout"].strip().splitlines()[0])
-            except Exception:
-                pass
+    # Run docker stats
+    st_res = execute_remote_command(server, f"docker stats --no-stream --format '{{json .}}' {target_id_or_name}", timeout=10)
+    if st_res.get("success") and st_res.get("stdout"):
+        try:
+            stats_data = json.loads(st_res["stdout"].strip().splitlines()[0])
+        except Exception:
+            pass
 
-        # Run docker logs
-        log_res = execute_remote_command(server, f"docker logs --tail 35 {target_id_or_name}", timeout=10)
-        logs_output = log_res.get("stdout") or log_res.get("stderr") or ""
+    # Run docker logs
+    log_res = execute_remote_command(server, f"docker logs --tail 35 {target_id_or_name}", timeout=10)
+    logs_output = log_res.get("stdout") or log_res.get("stderr") or ""
 
     # Parse details
     state_obj = inspect_data.get("State", {})
     host_cfg = inspect_data.get("HostConfig", {})
     cfg_obj = inspect_data.get("Config", {})
 
-    status_str = state_obj.get("Status", matched_c.get("status") if matched_c else "Up 3 days")
+    status_str = state_obj.get("Status", matched_c.get("status", "running"))
     restart_policy = host_cfg.get("RestartPolicy", {}).get("Name", "unless-stopped")
     mem_limit_bytes = host_cfg.get("Memory", 0)
     mem_limit_str = f"{round(mem_limit_bytes / (1024 * 1024))} MB" if mem_limit_bytes > 0 else "Unlimited"
 
     # CPU and Memory from stats
-    cpu_percent = stats_data.get("CPUPerc", "0.45%").replace("%", "").strip()
-    mem_percent = stats_data.get("MemPerc", "1.2%").replace("%", "").strip()
-    mem_usage = stats_data.get("MemUsage", "42.8MiB / 8.00GiB")
-    net_io = stats_data.get("NetIO", "12.4MB / 8.2MB")
-    block_io = stats_data.get("BlockIO", "1.2MB / 512KB")
-    pids_count = stats_data.get("PIDs", "8")
+    cpu_percent = stats_data.get("CPUPerc", "0.0%").replace("%", "").strip()
+    mem_percent = stats_data.get("MemPerc", "0.0%").replace("%", "").strip()
+    mem_usage = stats_data.get("MemUsage", "0 MB / 0 MB")
+    net_io = stats_data.get("NetIO", "0 B / 0 B")
+    block_io = stats_data.get("BlockIO", "0 B / 0 B")
+    pids_count = stats_data.get("PIDs", "0")
 
     # Sanitize env vars
     raw_env = cfg_obj.get("Env", [])
@@ -866,15 +875,18 @@ def inspect_remote_container(
     ]
 
     return {
-        "found": bool(matched_c),
+        "found": True,
+        "has_container": True,
+        "is_native_process": False,
+        "process_manager": "Docker",
         "target_name": target_name,
         "container": {
-            "id": matched_c["id"] if matched_c else "c-demo-8421",
+            "id": matched_c["id"],
             "name": target_name,
-            "image": inspect_data.get("Config", {}).get("Image") or (matched_c["image"] if matched_c else f"{clean_app_name}:latest"),
+            "image": inspect_data.get("Config", {}).get("Image") or matched_c["image"],
             "status": status_str,
             "state": state_obj.get("Status", "running"),
-            "created": inspect_data.get("Created") or (matched_c["created"] if matched_c else "3 days ago"),
+            "created": inspect_data.get("Created") or matched_c.get("created", ""),
             "restart_policy": restart_policy,
             "memory_limit": mem_limit_str,
             "cpu_percent": cpu_percent,
@@ -883,16 +895,12 @@ def inspect_remote_container(
             "net_io": net_io,
             "block_io": block_io,
             "pids": pids_count,
-            "ports": matched_c.get("ports", f"0.0.0.0:{port or 80}->80/tcp") if matched_c else f"0.0.0.0:{port or 80}->80/tcp",
+            "ports": matched_c.get("ports", f"0.0.0.0:{port or 80}->80/tcp"),
             "mounts": [m.get("Source", "") + " -> " + m.get("Destination", "") for m in inspect_data.get("Mounts", [])[:4]],
-            "env_vars": safe_env or ["NODE_ENV=production", "PORT=8000"],
-            "logs": logs_output or f"[{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}] INFO: Container {target_name} healthy and responding to requests."
+            "env_vars": safe_env,
+            "logs": logs_output
         },
-        "all_containers": all_containers or [
-            {"id": "8f2b1c4e90a1", "name": "web-proxy", "image": "nginx:alpine", "status": "Up 3 days", "ports": "0.0.0.0:80->80/tcp"},
-            {"id": "4e90a18f2b1c", "name": "prod-postgres", "image": "postgres:16-alpine", "status": "Up 3 days", "ports": "0.0.0.0:5432->5432/tcp"},
-            {"id": "3a1b4c5d6e7f", "name": "cache-redis", "image": "redis:7-alpine", "status": "Up 3 days", "ports": "0.0.0.0:6379->6379/tcp"}
-        ],
+        "all_containers": all_containers,
         "recommendations": recommendations,
         "quick_commands": quick_commands
     }
@@ -924,10 +932,25 @@ def execute_container_action(
         "update_restart": f"docker update --restart unless-stopped {target}",
         "update_memory": f"docker update --memory {params.get('memory', '512m')} {target}",
         "logs": f"docker logs --tail {params.get('tail', 100)} {target}",
-        "exec_cmd": f"docker exec {target} {params.get('command', 'ls -la')}"
+        "exec_cmd": f"docker exec {target} {params.get('command', 'ls -la')}",
+        "reload": f"systemctl reload apache2 2>/dev/null || systemctl reload nginx 2>/dev/null || docker restart {target}",
+        "configtest": "apache2ctl configtest 2>&1 || nginx -t 2>&1",
+        "test_syntax": "apache2ctl configtest 2>&1 || nginx -t 2>&1",
+        "tail_error_log": "tail -n 60 /var/log/apache2/error.log 2>/dev/null || tail -n 60 /var/log/nginx/error.log 2>/dev/null",
+        "tail_access_log": "tail -n 60 /var/log/apache2/access.log 2>/dev/null || tail -n 60 /var/log/nginx/access.log 2>/dev/null",
+        "service_status": f"systemctl status {target} --no-pager 2>/dev/null || apache2ctl status 2>/dev/null || nginx -t 2>/dev/null"
     }
 
-    if action == "custom_command":
+    if action == "restart":
+        if any(srv in target.lower() for srv in ["apache", "httpd"]):
+            cmd_to_run = "systemctl restart apache2 || apache2ctl restart"
+        elif "nginx" in target.lower():
+            cmd_to_run = "systemctl restart nginx || nginx -s reload"
+        elif action in cmd_map:
+            cmd_to_run = cmd_map[action]
+        else:
+            cmd_to_run = f"docker restart {target}"
+    elif action == "custom_command":
         cmd_to_run = params.get("command", f"docker ps").strip()
     elif action in cmd_map:
         cmd_to_run = cmd_map[action]
@@ -1606,90 +1629,10 @@ print(json.dumps(report))
         except Exception:
             pass
 
-    # Dynamic fallback based on real server profile and listening ports
-    engines = [
-        {
-            "name": "PostgreSQL Cluster",
-            "type": "POSTGRESQL",
-            "version": "PostgreSQL 16.2",
-            "port": 5432,
-            "status": "ONLINE",
-            "active_connections": 8,
-            "databases_count": 3,
-            "service_name": "postgresql"
-        },
-        {
-            "name": "Redis In-Memory Store",
-            "type": "REDIS",
-            "version": "Redis 7.0.15",
-            "port": 6379,
-            "status": "ONLINE",
-            "active_connections": 14,
-            "databases_count": 1,
-            "service_name": "redis-server"
-        }
-    ]
-
-    databases = [
-        {
-            "name": "production_hq",
-            "engine": "PostgreSQL",
-            "size": "48.2 MB",
-            "port": 5432,
-            "status": "ACTIVE",
-            "used_by": ["HQ Command Center", "hq.kkdes.co.ke"]
-        },
-        {
-            "name": "mclinic_db",
-            "engine": "PostgreSQL",
-            "size": "142.8 MB",
-            "port": 5432,
-            "status": "ACTIVE",
-            "used_by": ["mclinic", "mclinic.co.ke"]
-        },
-        {
-            "name": "somesha_app_db",
-            "engine": "PostgreSQL",
-            "size": "89.4 MB",
-            "port": 5432,
-            "status": "ACTIVE",
-            "used_by": ["Somesha App", "somesha.kkdes.co.ke"]
-        },
-        {
-            "name": "db0 (Cache Keyspace)",
-            "engine": "Redis",
-            "size": "18.4 MB",
-            "port": 6379,
-            "status": "ACTIVE",
-            "used_by": ["FastAPI Sessions", "Rate Limiter"]
-        }
-    ]
-
-    app_connections = [
-        {
-            "app_name": "mclinic",
-            "database_name": "mclinic_db",
-            "engine": "PostgreSQL",
-            "config_source": "/var/www/mclinic/.env"
-        },
-        {
-            "app_name": "Somesha App",
-            "database_name": "somesha_app_db",
-            "engine": "PostgreSQL",
-            "config_source": "/var/www/somesha/.env"
-        },
-        {
-            "app_name": "HQ Command Center",
-            "database_name": "production_hq",
-            "engine": "PostgreSQL",
-            "config_source": "/var/www/hq/.env"
-        }
-    ]
-
     return {
-        "engines": engines,
-        "databases": databases,
-        "app_connections": app_connections
+        "engines": [],
+        "databases": [],
+        "app_connections": []
     }
 
 
@@ -1700,6 +1643,7 @@ print(json.dumps(report))
 def get_remote_docker_suite(server: Server) -> Dict[str, Any]:
     """
     Queries Docker on the remote server for all containers, system disk space, and stats.
+    Strictly queries target server over SSH; never returns containers from other hosts.
     """
     cmd = (
         "echo '===DOCKER_PS===' && "
@@ -1713,7 +1657,7 @@ def get_remote_docker_suite(server: Server) -> Dict[str, Any]:
     containers = []
     df_items = []
 
-    if "===DOCKER_PS===" in output:
+    if res.get("success") and "===DOCKER_PS===" in output:
         parts = output.split("===DOCKER_DF===")
         ps_part = parts[0].replace("===DOCKER_PS===", "").strip()
         for line in ps_part.splitlines():
@@ -1744,22 +1688,11 @@ def get_remote_docker_suite(server: Server) -> Dict[str, Any]:
                     except Exception:
                         pass
 
-    if not containers:
-        containers = [
-            {"id": "a1b2c3d4e5f6", "name": "hq-backend", "image": "hq-backend:latest", "status": "Up 2 days", "state": "running", "ports": "0.0.0.0:8000->8000/tcp", "created": "2 days ago"},
-            {"id": "f6e5d4c3b2a1", "name": "hq-frontend", "image": "hq-frontend:latest", "status": "Up 2 days", "state": "running", "ports": "0.0.0.0:3000->3000/tcp", "created": "2 days ago"},
-            {"id": "b2c3d4e5f6a1", "name": "command-center-postgres", "image": "postgres:16-alpine", "status": "Up 4 days", "state": "running", "ports": "0.0.0.0:5432->5432/tcp", "created": "4 days ago"},
-            {"id": "c3d4e5f6a1b2", "name": "command-center-redis", "image": "redis:7-alpine", "status": "Up 4 days", "state": "running", "ports": "0.0.0.0:6379->6379/tcp", "created": "4 days ago"}
-        ]
-
     return {
         "containers": containers,
-        "disk_usage": df_items or [
-            {"Type": "Images", "TotalCount": "8", "Active": "4", "Size": "2.4GB", "Reclaimable": "1.1GB (45%)"},
-            {"Type": "Containers", "TotalCount": "6", "Active": "4", "Size": "142MB", "Reclaimable": "38MB (26%)"},
-            {"Type": "Local Volumes", "TotalCount": "4", "Active": "4", "Size": "1.2GB", "Reclaimable": "0B (0%)"},
-            {"Type": "Build Cache", "TotalCount": "12", "Active": "0", "Size": "840MB", "Reclaimable": "840MB (100%)"}
-        ]
+        "disk_usage": df_items,
+        "total_containers": len(containers),
+        "docker_installed": bool(res.get("success") and "===DOCKER_PS===" in output)
     }
 
 
@@ -1772,7 +1705,7 @@ def execute_remote_service_action(server: Server, service_name: str, action: str
     a_clean = action.lower().strip()
 
     # If it's a docker container action
-    if s_clean.startswith("docker:") or s_clean in ["hq-backend", "hq-frontend", "command-center-postgres", "command-center-redis"]:
+    if s_clean.startswith("docker:"):
         c_target = s_clean.replace("docker:", "")
         cmd = f"docker {a_clean} {c_target}"
     elif s_clean in ["apache2", "apache"]:
@@ -1801,76 +1734,113 @@ def execute_remote_service_action(server: Server, service_name: str, action: str
 def detect_remote_application_git(server: Server, app: Application) -> Dict[str, Any]:
     """
     Executes a deep Git probe on the target VPS over SSH as root.
-    Locates the application's repository directory (under /var/www, /var/www/html, /root, /home).
+    Locates the application's repository directory (under /var/www, /home, /root, /opt).
     Queries real Git branch, commit hash, version tag, remote origin URL, author, date,
     and checks if updates exist on origin (commits behind, incoming commit messages).
+    Never returns hardcoded or fabricated commits.
     """
-    app_name_json = json.dumps(app.name or "")
-    app_domain_json = json.dumps(app.domain or "")
+    vps_py = """
+import os, glob, re, subprocess, json
 
-    probe_script = f"""python3 -c "
-import os, sys, glob, re, subprocess, json
-
-app_name = {app_name_json}
-app_domain = {app_domain_json}
+app_name = payload.get('name', '')
+app_domain = payload.get('domain', '')
+app_root = payload.get('root_path', '')
 
 clean_name = app_name.strip().lower()
 clean_dom = app_domain.strip().lower()
-subparts = [p for p in clean_name.split('.') if p and p not in ['co', 'ke', 'com', 'org', 'net']]
+subparts = [p for p in clean_name.split('.') if p and p not in ['co', 'ke', 'com', 'org', 'net', 'www']]
 
-candidates = []
-for base in ['/var/www', '/var/www/html', '/opt', '/root', '/home']:
+# Discover candidate git directories
+git_candidates = []
+
+# 1. If app_root is specified, check it and parent directories
+if app_root and os.path.exists(app_root):
+    curr = app_root
+    for _ in range(4):
+        if os.path.isdir(os.path.join(curr, '.git')):
+            git_candidates.append(curr)
+            break
+        curr = os.path.dirname(curr)
+
+# 2. Check Apache / Nginx configuration for DocumentRoot
+doc_root = app_root
+if not doc_root:
+    for f in glob.glob('/etc/apache2/sites-enabled/*.conf') + glob.glob('/etc/apache2/sites-available/*.conf'):
+        try:
+            with open(f, 'r', errors='ignore') as fp:
+                c = fp.read()
+            vhosts = re.findall(r'<VirtualHost[^>]*>(.*?)</VirtualHost>', c, re.DOTALL | re.I)
+            for vh in vhosts:
+                lines = [l.strip() for l in vh.splitlines() if l.strip() and not l.strip().startswith('#')]
+                clean_vh = '\\n'.join(lines)
+                sn_m = re.search(r'ServerName\\s+([^\\s]+)', clean_vh, re.I)
+                if sn_m:
+                    s_cand = sn_m.group(1).strip().lower().rstrip(';')
+                    if s_cand in [clean_name, clean_dom] or any(p == s_cand for p in subparts):
+                        dr_m = re.search(r'DocumentRoot\\s+([^\\s\\r\\n]+)', clean_vh, re.I)
+                        if dr_m:
+                            doc_root = dr_m.group(1).strip().strip('"').strip("'")
+                            break
+            if doc_root:
+                break
+        except Exception:
+            pass
+
+if not git_candidates and doc_root and os.path.exists(doc_root):
+    curr = doc_root
+    for _ in range(4):
+        if os.path.isdir(os.path.join(curr, '.git')):
+            git_candidates.append(curr)
+            break
+        curr = os.path.dirname(curr)
+
+# 3. Check direct directories under /var/www, /home, /root, /opt
+for base in ['/var/www', '/var/www/html', '/home', '/root', '/opt']:
     for n in [clean_name, clean_dom] + subparts:
         if n:
-            d = os.path.join(base, n)
-            if os.path.isdir(os.path.join(d, '.git')):
-                candidates.append(d)
+            d1 = os.path.join(base, n)
+            d2 = os.path.join(base, n, n)
+            for d in [d1, d2]:
+                if os.path.isdir(os.path.join(d, '.git')):
+                    git_candidates.append(d)
 
-for base in ['/var/www', '/var/www/html']:
-    for g in glob.glob(os.path.join(base, '*', '.git')) + glob.glob(os.path.join(base, '*', '*', '.git')):
-        candidates.append(os.path.dirname(g))
+# 4. Search broader git repositories
+if not git_candidates:
+    for base in ['/var/www', '/home']:
+        for g in glob.glob(os.path.join(base, '*', '.git')) + glob.glob(os.path.join(base, '*', '*', '.git')):
+            d = os.path.dirname(g)
+            b = os.path.basename(d).lower()
+            if b in clean_name or b in clean_dom or any(p == b for p in subparts):
+                git_candidates.append(d)
 
-target_dir = None
-for c in set(candidates):
-    b = os.path.basename(c).lower()
-    if b == clean_name or b == clean_dom:
-        target_dir = c
-        break
-    if clean_name.startswith(b) or b in clean_name or clean_dom.startswith(b):
-        target_dir = c
-        break
+target_dir = git_candidates[0] if git_candidates else (doc_root or f"/var/www/{clean_name}")
 
-if not target_dir and candidates:
-    target_dir = list(set(candidates))[0]
-
-if not target_dir:
-    target_dir = f'/var/www/{{clean_name}}'
-
-res = {{
+res = {
     'repo_dir': target_dir,
+    'doc_root': doc_root or target_dir,
     'is_git_repo': False,
-    'branch': 'main',
-    'commit_hash': '',
-    'short_hash': '',
+    'branch': None,
+    'commit_hash': None,
+    'short_hash': None,
     'version': 'v1.0.0',
-    'author': 'Deployment Bot',
-    'message': 'Initial release',
-    'date': '',
-    'repo_url': '',
+    'author': None,
+    'message': None,
+    'date': None,
+    'repo_url': None,
     'update_available': False,
     'commits_behind': 0,
     'recent_commits': [],
     'incoming_commits': [],
-    'status_summary': 'Working directory clean'
-}}
+    'status_summary': 'No Git repository found at document root'
+}
 
-if os.path.isdir(os.path.join(target_dir, '.git')):
+if target_dir and os.path.isdir(os.path.join(target_dir, '.git')):
     res['is_git_repo'] = True
     subprocess.run(['git', 'config', '--global', '--add', 'safe.directory', target_dir], capture_output=True)
     
     p_b = subprocess.run(['git', '-C', target_dir, 'rev-parse', '--abbrev-ref', 'HEAD'], capture_output=True, text=True, timeout=5)
-    if p_b.returncode == 0 and p_b.stdout.strip():
-        res['branch'] = p_b.stdout.strip()
+    branch = p_b.stdout.strip() or 'main'
+    res['branch'] = branch
     
     p_h = subprocess.run(['git', '-C', target_dir, 'rev-parse', 'HEAD'], capture_output=True, text=True, timeout=5)
     if p_h.returncode == 0 and p_h.stdout.strip():
@@ -1881,18 +1851,18 @@ if os.path.isdir(os.path.join(target_dir, '.git')):
     if p_v.returncode == 0 and p_v.stdout.strip():
         res['version'] = p_v.stdout.strip()
     else:
-        pkg_path = os.path.join(target_dir, 'package.json')
-        if os.path.exists(pkg_path):
+        pkg_p = os.path.join(target_dir, 'package.json')
+        if os.path.exists(pkg_p):
             try:
-                with open(pkg_path) as pf:
-                    res['version'] = f\"v{{json.load(pf).get('version', '1.0.0')}}\"
+                with open(pkg_p) as pf:
+                    res['version'] = 'v' + str(json.load(pf).get('version', '1.0.0'))
             except Exception:
                 pass
-    
+
     p_u = subprocess.run(['git', '-C', target_dir, 'config', '--get', 'remote.origin.url'], capture_output=True, text=True, timeout=5)
     if p_u.returncode == 0 and p_u.stdout.strip():
         res['repo_url'] = p_u.stdout.strip()
-    
+
     p_l1 = subprocess.run(['git', '-C', target_dir, 'log', '-1', '--pretty=format:%H|%s|%an|%ad', '--date=iso'], capture_output=True, text=True, timeout=5)
     if p_l1.returncode == 0 and p_l1.stdout.strip():
         parts = p_l1.stdout.strip().split('|')
@@ -1902,137 +1872,119 @@ if os.path.isdir(os.path.join(target_dir, '.git')):
             res['message'] = parts[1]
             res['author'] = parts[2]
             res['date'] = parts[3]
-    
+
     p_l10 = subprocess.run(['git', '-C', target_dir, 'log', '-10', '--pretty=format:%H|%h|%s|%an|%ad', '--date=iso'], capture_output=True, text=True, timeout=8)
     if p_l10.returncode == 0 and p_l10.stdout.strip():
         for line in p_l10.stdout.strip().splitlines():
             cparts = line.strip().split('|')
             if len(cparts) >= 5:
-                res['recent_commits'].append({{
+                res['recent_commits'].append({
                     'commit_hash': cparts[0],
                     'short_hash': cparts[1],
                     'message': cparts[2],
                     'author': cparts[3],
                     'date': cparts[4]
-                }})
-    
+                })
+
     if res['repo_url']:
         subprocess.run(['git', '-C', target_dir, 'remote', 'update', 'origin', '--prune'], capture_output=True, text=True, timeout=12)
-        p_behind = subprocess.run(['git', '-C', target_dir, 'rev-list', f\"HEAD..origin/{{res['branch']}}\", '--count'], capture_output=True, text=True, timeout=5)
+        p_behind = subprocess.run(['git', '-C', target_dir, 'rev-list', f'HEAD..origin/{branch}', '--count'], capture_output=True, text=True, timeout=5)
         if p_behind.returncode == 0 and p_behind.stdout.strip().isdigit():
             count = int(p_behind.stdout.strip())
             res['commits_behind'] = count
             res['update_available'] = count > 0
-        
-        p_inc = subprocess.run(['git', '-C', target_dir, 'log', f\"HEAD..origin/{{res['branch']}}\", '--pretty=format:%H|%h|%s|%an|%ad', '--date=iso'], capture_output=True, text=True, timeout=8)
+
+        p_inc = subprocess.run(['git', '-C', target_dir, 'log', f'HEAD..origin/{branch}', '--pretty=format:%H|%h|%s|%an|%ad', '--date=iso'], capture_output=True, text=True, timeout=8)
         if p_inc.returncode == 0 and p_inc.stdout.strip():
             for line in p_inc.stdout.strip().splitlines():
                 cparts = line.strip().split('|')
                 if len(cparts) >= 5:
-                    res['incoming_commits'].append({{
+                    res['incoming_commits'].append({
                         'commit_hash': cparts[0],
                         'short_hash': cparts[1],
                         'message': cparts[2],
                         'author': cparts[3],
                         'date': cparts[4]
-                    }})
-    
+                    })
+
     p_stat = subprocess.run(['git', '-C', target_dir, 'status', '--short'], capture_output=True, text=True, timeout=5)
     if p_stat.returncode == 0:
         res['status_summary'] = p_stat.stdout.strip() or 'Working directory clean'
 
 print(json.dumps(res))
-" """
+"""
 
-    res = execute_remote_command(server, probe_script, timeout=20)
+    payload = {"name": app.name or "", "domain": app.domain or "", "root_path": getattr(app, "root_path", None) or ""}
+    payload_b64 = base64.b64encode(json.dumps(payload).encode("utf-8")).decode("ascii")
+    script_b64 = base64.b64encode(vps_py.encode("utf-8")).decode("ascii")
+    probe_cmd = f"python3 -c \"import base64, json; payload = json.loads(base64.b64decode('{payload_b64}')); exec(base64.b64decode('{script_b64}'), {{'payload': payload}})\""
+
+    res = execute_remote_command(server, probe_cmd, timeout=25)
     if res.get("success") and res.get("stdout"):
         try:
             raw = res["stdout"].strip()
             if "{" in raw and "}" in raw:
                 parsed = json.loads(raw[raw.find("{"):raw.rfind("}")+1])
-                if parsed.get("repo_dir") and parsed.get("is_git_repo"):
+                if isinstance(parsed, dict) and "repo_dir" in parsed:
                     return parsed
         except Exception:
             pass
 
-    # Intelligent fallback specific to the application
-    slug = re.sub(r'[^a-zA-Z0-9]', '', (app.name or 'app').lower())[:8]
-    seed_hash = f"{slug}4f89d2c1e6a"[0:40]
-    short_hash = seed_hash[:7]
-    has_update = "mclinic" in (app.name or "").lower() or "hq" in (app.name or "").lower() or "directive" in (app.name or "").lower()
-
+    # Real non-mock fallback when server is unreachable or offline
+    doc_path = getattr(app, "root_path", None) or f"/var/www/{(app.name or 'app').lower()}"
     return {
-        "repo_dir": f"/var/www/{app.name.lower()}",
-        "is_git_repo": True,
+        "repo_dir": doc_path,
+        "doc_root": doc_path,
+        "is_git_repo": False,
         "branch": app.git_branch or "main",
-        "commit_hash": app.current_commit or seed_hash,
-        "short_hash": (app.current_commit or seed_hash)[:7],
-        "version": app.current_version or "v1.2.4",
-        "author": "Metto Alex",
-        "message": f"feat({app.name.lower()}): update service layer and production configurations",
-        "date": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
-        "repo_url": app.repo_url or f"https://github.com/Alee24/{app.name.lower()}.git",
-        "update_available": has_update,
-        "commits_behind": 2 if has_update else 0,
-        "recent_commits": [
-            {
-                "commit_hash": seed_hash,
-                "short_hash": short_hash,
-                "author": "Metto Alex",
-                "message": f"feat({app.name.lower()}): update service layer and production configurations",
-                "date": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-            },
-            {
-                "commit_hash": f"e{seed_hash[1:]}",
-                "short_hash": f"e{short_hash[1:]}",
-                "author": "Metto Alex",
-                "message": "fix(core): enhance database pooling and exception handler",
-                "date": "2026-10-07 18:22:10 UTC"
-            }
-        ],
-        "incoming_commits": [
-            {
-                "commit_hash": f"f{seed_hash[1:]}",
-                "short_hash": f"f{short_hash[1:]}",
-                "author": "Metto Alex",
-                "message": "feat(api): production security patches and performance optimization",
-                "date": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-            }
-        ] if has_update else [],
-        "status_summary": "On branch " + (app.git_branch or "main") + "\nnothing to commit, working tree clean"
+        "commit_hash": app.current_commit or None,
+        "short_hash": app.current_commit[:7] if app.current_commit else None,
+        "version": app.current_version or "v1.0.0",
+        "author": None,
+        "message": "Probe could not contact remote VPS",
+        "date": None,
+        "repo_url": app.repo_url or None,
+        "update_available": False,
+        "commits_behind": 0,
+        "recent_commits": [],
+        "incoming_commits": [],
+        "status_summary": "VPS execution unavailable or connection timed out"
     }
 
 
 def scan_all_remote_git_repos(server: Server) -> List[Dict[str, Any]]:
     """
-    Batches-scans the target VPS to discover all Git repositories under /var/www, /var/www/html, /root.
+    Batches-scans the target VPS to discover all Git repositories under /var/www, /home, /root, /opt.
+    Queries real active branches, commit hashes, version tags, and remote tracking status.
     """
-    find_script = """python3 -c "
+    vps_py = """
 import os, glob, subprocess, json
 
 repos = []
-git_dirs = glob.glob('/var/www/*/.git') + glob.glob('/var/www/*/*/.git') + glob.glob('/var/www/html/*/.git') + glob.glob('/root/*/.git')
+all_git_dirs = []
+for base in ['/var/www', '/home', '/root', '/opt']:
+    for g in glob.glob(os.path.join(base, '*', '.git')) + glob.glob(os.path.join(base, '*', '*', '.git')) + glob.glob(os.path.join(base, '*', '*', '*', '.git')):
+        all_git_dirs.append(os.path.dirname(g))
 
-for gd in set(git_dirs):
-    d = os.path.dirname(gd)
+for gd in set(all_git_dirs):
     try:
-        subprocess.run(['git', 'config', '--global', '--add', 'safe.directory', d], capture_output=True)
-        branch = subprocess.run(['git', '-C', d, 'rev-parse', '--abbrev-ref', 'HEAD'], capture_output=True, text=True, timeout=4).stdout.strip() or 'main'
-        commit = subprocess.run(['git', '-C', d, 'rev-parse', 'HEAD'], capture_output=True, text=True, timeout=4).stdout.strip()
-        version = subprocess.run(['git', '-C', d, 'describe', '--tags', '--always'], capture_output=True, text=True, timeout=4).stdout.strip() or 'v1.0.0'
-        url = subprocess.run(['git', '-C', d, 'config', '--get', 'remote.origin.url'], capture_output=True, text=True, timeout=4).stdout.strip()
-        msg = subprocess.run(['git', '-C', d, 'log', '-1', '--pretty=format:%s'], capture_output=True, text=True, timeout=4).stdout.strip() or 'Release'
+        subprocess.run(['git', 'config', '--global', '--add', 'safe.directory', gd], capture_output=True)
+        branch = subprocess.run(['git', '-C', gd, 'rev-parse', '--abbrev-ref', 'HEAD'], capture_output=True, text=True, timeout=4).stdout.strip() or 'main'
+        commit = subprocess.run(['git', '-C', gd, 'rev-parse', 'HEAD'], capture_output=True, text=True, timeout=4).stdout.strip()
+        version = subprocess.run(['git', '-C', gd, 'describe', '--tags', '--always'], capture_output=True, text=True, timeout=4).stdout.strip() or 'v1.0.0'
+        url = subprocess.run(['git', '-C', gd, 'config', '--get', 'remote.origin.url'], capture_output=True, text=True, timeout=4).stdout.strip()
+        msg = subprocess.run(['git', '-C', gd, 'log', '-1', '--pretty=format:%s'], capture_output=True, text=True, timeout=4).stdout.strip() or 'Initial commit'
         
         behind = 0
         if url:
-            subprocess.run(['git', '-C', d, 'remote', 'update', 'origin', '--prune'], capture_output=True, timeout=6)
-            b_cnt = subprocess.run(['git', '-C', d, 'rev-list', f'HEAD..origin/{branch}', '--count'], capture_output=True, text=True, timeout=4).stdout.strip()
+            subprocess.run(['git', '-C', gd, 'remote', 'update', 'origin', '--prune'], capture_output=True, timeout=8)
+            b_cnt = subprocess.run(['git', '-C', gd, 'rev-list', f'HEAD..origin/{branch}', '--count'], capture_output=True, text=True, timeout=4).stdout.strip()
             if b_cnt.isdigit():
                 behind = int(b_cnt)
         
         repos.append({
-            'dir': d,
-            'name': os.path.basename(d),
+            'dir': gd,
+            'name': os.path.basename(gd),
             'branch': branch,
             'commit': commit,
             'short_commit': commit[:7] if commit else 'HEAD',
@@ -2046,14 +1998,17 @@ for gd in set(git_dirs):
         pass
 
 print(json.dumps(repos))
-" """
-    res = execute_remote_command(server, find_script, timeout=25)
+"""
+    script_b64 = base64.b64encode(vps_py.encode("utf-8")).decode("ascii")
+    scan_cmd = f"python3 -c \"import base64; exec(base64.b64decode('{script_b64}'))\""
+
+    res = execute_remote_command(server, scan_cmd, timeout=30)
     if res.get("success") and res.get("stdout"):
         try:
             raw = res["stdout"].strip()
             if "[" in raw and "]" in raw:
-                parsed = json.loads(raw[raw.find("["):raw.rfind("}")+1] if "}" in raw else raw[raw.find("["):raw.rfind("]")+1])
-                if isinstance(parsed, list) and len(parsed) > 0:
+                parsed = json.loads(raw[raw.find("["):raw.rfind("]")+1])
+                if isinstance(parsed, list):
                     return parsed
         except Exception:
             pass
@@ -2070,60 +2025,96 @@ def execute_remote_git_action(
 ) -> Dict[str, Any]:
     """
     Executes a real Git command on the target VPS repository over SSH as root.
+    Dynamically resolves target directory from app.root_path and auto-detects active branch.
     Supports: pull, fetch, reset_hard, status, diff, log, custom.
     """
-    target_branch = (branch or app.git_branch or "main").strip()
     act = action.lower().strip()
-
+    app_root = (getattr(app, "root_path", None) or "").strip()
     app_slug = (app.name or "app").lower().strip()
     app_dom = (app.domain or "").lower().strip()
 
-    if act == "pull":
-        git_cmd = f"git pull origin {target_branch}"
-    elif act == "fetch":
-        git_cmd = f"git fetch origin && git log HEAD..origin/{target_branch} --oneline"
-    elif act == "reset_hard":
-        git_cmd = f"git fetch origin && git reset --hard origin/{target_branch}"
-    elif act == "status":
-        git_cmd = "git status"
-    elif act == "diff":
-        git_cmd = f"git diff HEAD origin/{target_branch}"
-    elif act == "log":
-        git_cmd = "git log -n 15 --oneline --graph --decorate"
-    elif act == "custom":
-        git_cmd = (custom_command or "git status").strip()
-    else:
-        git_cmd = f"git pull origin {target_branch}"
+    # Build bash execution block that discovers true git directory and active branch
+    vps_action_script = f"""
+TARGET_DIR=""
 
-    full_cmd = (
-        f"bash -c '"
-        f"TARGET_DIR=\"\"; "
-        f"for cand in \"/var/www/{app_slug}/{app_slug}\" \"/var/www/{app_slug}\" \"/var/www/{app_dom}\" \"/var/www/html/{app_slug}\" \"/var/www/html/{app_dom}\" $(find /var/www -maxdepth 3 -type d -name \".git\" 2>/dev/null | sed \"s/\\/\\.git$//\"); do "
-        f"  if [ -d \"$cand/.git\" ]; then "
-        f"    b=$(basename \"$cand\" | tr \"[:upper:]\" \"[:lower:]\"); "
-        f"    if [ \"$b\" = \"{app_slug}\" ] || [ \"$b\" = \"{app_dom}\" ] || [[ \"{app_slug}\" == *\"$b\"* ]] || [[ \"$b\" == *\"{app_slug}\"* ]]; then "
-        f"      TARGET_DIR=\"$cand\"; break; "
-        f"    fi; "
-        f"  fi; "
-        f"done; "
-        f"if [ -z \"$TARGET_DIR\" ]; then TARGET_DIR=\"/var/www/{app_slug}\"; fi; "
-        f"git config --global --add safe.directory \"$TARGET_DIR\" 2>/dev/null; "
-        f"echo \"[HQ-GIT-DIR] $TARGET_DIR\"; "
-        f"cd \"$TARGET_DIR\" || exit 1; "
-        f"{git_cmd}'"
-    )
+# 1. Check configured root_path and its parent hierarchy
+if [ -n "{app_root}" ] && [ -d "{app_root}" ]; then
+  curr="{app_root}"
+  for i in 1 2 3 4; do
+    if [ -d "$curr/.git" ]; then
+      TARGET_DIR="$curr"
+      break
+    fi
+    curr=$(dirname "$curr")
+  done
+fi
 
-    res = execute_remote_command(server, full_cmd, timeout=30)
+# 2. Check candidate paths under /var/www, /home, /root
+if [ -z "$TARGET_DIR" ]; then
+  for cand in "/var/www/{app_slug}/{app_slug}" "/var/www/{app_slug}" "/var/www/{app_dom}" "/home/{app_slug}" "/home/backend" "/var/www/html/{app_slug}" $(find /var/www /home -maxdepth 3 -type d -name ".git" 2>/dev/null | sed "s/\\/\\.git$//"); do
+    if [ -d "$cand/.git" ]; then
+      b=$(basename "$cand" | tr "[:upper:]" "[:lower:]")
+      if [ "$b" = "{app_slug}" ] || [ "$b" = "{app_dom}" ] || [[ "{app_slug}" == *"$b"* ]] || [[ "$b" == *"{app_slug}"* ]]; then
+        TARGET_DIR="$cand"
+        break
+      fi
+    fi
+  done
+fi
+
+if [ -z "$TARGET_DIR" ]; then
+  TARGET_DIR="{app_root or f'/var/www/{app_slug}'}"
+fi
+
+git config --global --add safe.directory "$TARGET_DIR" 2>/dev/null
+echo "[HQ-GIT-DIR] $TARGET_DIR"
+cd "$TARGET_DIR" || exit 1
+
+# Detect active checked-out branch
+ACTIVE_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
+echo "[HQ-ACTIVE-BRANCH] $ACTIVE_BRANCH"
+
+# Use requested branch if explicitly non-empty and non-default, else active branch
+REQ_BRANCH="{branch or ''}"
+if [ -n "$REQ_BRANCH" ] && [ "$REQ_BRANCH" != "main" ] && [ "$REQ_BRANCH" != "$ACTIVE_BRANCH" ]; then
+  TARGET_BRANCH="$REQ_BRANCH"
+else
+  TARGET_BRANCH="$ACTIVE_BRANCH"
+fi
+echo "[HQ-TARGET-BRANCH] $TARGET_BRANCH"
+
+if [ "{act}" = "pull" ]; then
+  git pull origin "$TARGET_BRANCH" || git pull origin HEAD || git pull
+elif [ "{act}" = "fetch" ]; then
+  git fetch origin && git log HEAD..origin/"$TARGET_BRANCH" --oneline -n 10
+elif [ "{act}" = "reset_hard" ]; then
+  git fetch origin && git reset --hard origin/"$TARGET_BRANCH"
+elif [ "{act}" = "status" ]; then
+  git status
+elif [ "{act}" = "diff" ]; then
+  git diff HEAD origin/"$TARGET_BRANCH"
+elif [ "{act}" = "log" ]; then
+  git log -n 15 --oneline --graph --decorate
+elif [ "{act}" = "custom" ]; then
+  {(custom_command or "git status").strip()}
+else
+  git pull origin "$TARGET_BRANCH" || git pull
+fi
+"""
+
+    res = execute_remote_command(server, vps_action_script, timeout=35)
     
     new_commit = None
     new_version = None
-    detected_dir = f"/var/www/{app_slug}"
+    detected_dir = app_root or f"/var/www/{app_slug}"
+    active_branch = app.git_branch or "main"
 
     if res.get("stdout"):
         for line in res["stdout"].splitlines():
             if line.startswith("[HQ-GIT-DIR]"):
                 detected_dir = line.replace("[HQ-GIT-DIR]", "").strip()
-                break
+            elif line.startswith("[HQ-ACTIVE-BRANCH]"):
+                active_branch = line.replace("[HQ-ACTIVE-BRANCH]", "").strip()
 
     if act in ["pull", "reset_hard"] and res.get("success"):
         h_res = execute_remote_command(server, f"cd '{detected_dir}' 2>/dev/null && git rev-parse HEAD", timeout=6)
@@ -2141,15 +2132,15 @@ def execute_remote_git_action(
         "success": res.get("success", False),
         "application_id": app.id,
         "action": act,
-        "command": full_cmd,
+        "command": f"git {act} (in {detected_dir} on branch {active_branch})",
         "stdout": res.get("stdout", ""),
         "stderr": res.get("stderr", ""),
         "exit_code": res.get("exit_code", 0),
         "duration_ms": res.get("duration_ms", 0),
-        "new_commit": new_commit or "c3a9256",
-        "new_version": new_version or app.current_version or "v1.2.4",
+        "new_commit": new_commit or app.current_commit,
+        "new_version": new_version or app.current_version or "v1.0.0",
         "update_available": False if act in ["pull", "reset_hard"] else False,
-        "message": f"Git action '{act}' executed on {app.name} ({detected_dir}) over SSH"
+        "message": f"Git action '{act}' executed on {app.name} ({detected_dir}) on branch '{active_branch}'"
     }
 
 

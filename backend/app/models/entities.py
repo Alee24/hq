@@ -74,10 +74,11 @@ class Application(Base):
     app_type = Column(String(50), default="Web Application") # Web App, API, Static Site, Background Service
     framework = Column(String(50), default="FastAPI / React")
     repo_url = Column(String(255), nullable=True)
-    git_branch = Column(String(100), default="main")
-    current_version = Column(String(50), default="v1.0.0")
-    current_commit = Column(String(40), default="8a92f31")
-    latest_repo_commit = Column(String(40), default="8a92f31")
+    root_path = Column(String(500), nullable=True)
+    git_branch = Column(String(100), default="main", nullable=True)
+    current_version = Column(String(50), default="v1.0.0", nullable=True)
+    current_commit = Column(String(40), nullable=True)
+    latest_repo_commit = Column(String(40), nullable=True)
     deployment_status = Column(String(50), default="IDLE") # IDLE, DEPLOYING, SUCCESS, FAILED
     process_manager = Column(String(50), default="Docker") # Docker, Docker Compose, systemd, PM2, Supervisor, Nginx
     service_name = Column(String(100), default="app-service")

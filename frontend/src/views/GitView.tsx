@@ -30,6 +30,7 @@ interface GitStatusData {
   repo_url: string;
   branch: string;
   repo_dir?: string;
+  doc_root?: string;
   version?: string;
   is_git_repo: boolean;
   current_server_commit: {
@@ -149,9 +150,10 @@ export const GitView: React.FC = () => {
     if (!selectedApp) return;
     setActiveAction(action);
     try {
+      const activeBranch = gitStatus?.branch || selectedApp.git_branch || 'main';
       const res = await api.executeGitAction(selectedApp.id, {
         action,
-        branch: selectedApp.git_branch,
+        branch: activeBranch,
         custom_command: customCmd,
       });
 
@@ -382,13 +384,17 @@ export const GitView: React.FC = () => {
 
                       <div className="flex items-center justify-between text-[11px] font-mono text-slate-400 mt-2">
                         <div className="flex items-center gap-1.5 truncate">
-                          <GitBranch size={11} className="text-slate-500 shrink-0" />
-                          <span className="text-slate-300">{a.git_branch || 'main'}</span>
+                          <GitBranch size={11} className={a.git_branch ? 'text-indigo-400' : 'text-slate-600'} />
+                          <span className={a.git_branch ? 'text-slate-200 font-semibold' : 'text-slate-500'}>
+                            {a.git_branch || 'untracked'}
+                          </span>
                           <span>•</span>
-                          <span className="text-brand-400 font-semibold">{a.current_commit?.slice(0, 7) || 'HEAD'}</span>
+                          <span className="text-brand-400 font-semibold">
+                            {a.current_commit ? a.current_commit.slice(0, 7) : 'no-git'}
+                          </span>
                         </div>
-                        <span className="text-[10px] text-slate-500 truncate max-w-[100px]">
-                          {a.domain}
+                        <span className="text-[10px] text-slate-500 truncate max-w-[110px]" title={a.root_path || a.domain}>
+                          {a.root_path ? a.root_path.replace('/var/www/', '').replace('/home/', '~') : a.domain}
                         </span>
                       </div>
                     </div>
@@ -411,9 +417,21 @@ export const GitView: React.FC = () => {
                       <h2 className="text-lg font-bold text-white tracking-tight">
                         {selectedApp.name}
                       </h2>
-                      <span className="px-2 py-0.5 rounded-full text-[11px] font-mono font-semibold bg-brand-950 text-brand-300 border border-brand-800/80">
-                        {gitStatus.version || selectedApp.current_version || 'v1.0.0'}
-                      </span>
+                      {gitStatus.is_git_repo ? (
+                        <>
+                          <span className="px-2 py-0.5 rounded-full text-[11px] font-mono font-semibold bg-brand-950 text-brand-300 border border-brand-800/80">
+                            {gitStatus.version || selectedApp.current_version || 'v1.0.0'}
+                          </span>
+                          <span className="px-2 py-0.5 rounded-full text-[11px] font-mono font-semibold bg-indigo-950 text-indigo-300 border border-indigo-800/80 flex items-center gap-1">
+                            <GitBranch size={11} />
+                            {gitStatus.branch || selectedApp.git_branch || 'HEAD'}
+                          </span>
+                        </>
+                      ) : (
+                        <span className="px-2 py-0.5 rounded-full text-[11px] font-mono font-semibold bg-amber-950 text-amber-300 border border-amber-800/80">
+                          Untracked (No Git)
+                        </span>
+                      )}
                       <span className="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-slate-950 text-slate-400 border border-slate-800">
                         {selectedApp.environment}
                       </span>
@@ -422,8 +440,19 @@ export const GitView: React.FC = () => {
                     <div className="flex flex-wrap items-center gap-3 text-xs text-slate-400 mt-1.5 font-mono">
                       <span className="flex items-center gap-1 text-slate-300">
                         <Folder size={12} className="text-amber-400" />
-                        <code>{gitStatus.repo_dir || `/var/www/${selectedApp.name.toLowerCase()}`}</code>
+                        <span className="text-slate-500">DocRoot:</span>
+                        <code className="text-amber-300">{gitStatus.doc_root || selectedApp.root_path || gitStatus.repo_dir || `/var/www/${selectedApp.name.toLowerCase()}`}</code>
                       </span>
+                      {gitStatus.is_git_repo && gitStatus.repo_dir && (
+                        <>
+                          <span>•</span>
+                          <span className="flex items-center gap-1 text-slate-300">
+                            <GitBranch size={12} className="text-emerald-400" />
+                            <span className="text-slate-500">Repo:</span>
+                            <code className="text-emerald-300">{gitStatus.repo_dir}</code>
+                          </span>
+                        </>
+                      )}
                       <span>•</span>
                       <span className="flex items-center gap-1 text-slate-400">
                         <ServerIcon size={12} className="text-indigo-400" />
@@ -454,7 +483,9 @@ export const GitView: React.FC = () => {
                   <div className="flex items-center gap-2 text-slate-300 truncate">
                     <GitPullRequest size={13} className="text-slate-500 shrink-0" />
                     <span className="text-slate-500">Origin URL:</span>
-                    <span className="text-brand-300 truncate">{gitStatus.repo_url || selectedApp.repo_url || 'git@github.com:Alee24/hq.git'}</span>
+                    <span className="text-brand-300 truncate">
+                      {gitStatus.repo_url || selectedApp.repo_url || (gitStatus.is_git_repo ? 'git@github.com:Alee24/hq.git' : 'None configured (Untracked directory)')}
+                    </span>
                   </div>
                   {gitStatus.repo_url && gitStatus.repo_url.startsWith('http') && (
                     <a
@@ -470,8 +501,30 @@ export const GitView: React.FC = () => {
                 </div>
               </div>
 
-              {/* VIBRANT UPDATE AVAILABLE HERO BANNER */}
-              {gitStatus.update_available ? (
+              {/* HERO ALERT / STATUS BANNER */}
+              {!gitStatus.is_git_repo ? (
+                <div className="p-5 rounded-xl bg-slate-900 border border-amber-600/50 space-y-3 animate-in fade-in">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2.5 bg-amber-500/20 border border-amber-500/40 rounded-xl text-amber-400">
+                      <Folder size={22} />
+                    </div>
+                    <div>
+                      <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                        <span>No Git Working Tree Detected at Document Root</span>
+                        <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-amber-950 text-amber-300 border border-amber-800">
+                          UNTRACKED
+                        </span>
+                      </h3>
+                      <p className="text-xs text-slate-300 mt-0.5">
+                        Document root <code className="text-amber-300 font-mono">{gitStatus.doc_root || selectedApp.root_path || gitStatus.repo_dir}</code> is active on the VPS, but is not initialized as a Git working tree.
+                      </p>
+                    </div>
+                  </div>
+                  <p className="text-xs text-slate-400 leading-relaxed">
+                    This website serves files directly from the filesystem or a build artifact directory without a local <code className="text-slate-300">.git</code> folder. You can run custom inspection commands in the terminal runner below, or clone/initialize a Git repository to enable 1-click deployments.
+                  </p>
+                </div>
+              ) : gitStatus.update_available ? (
                 <div className="p-5 rounded-xl bg-gradient-to-r from-amber-950/70 via-slate-900 to-amber-950/40 border border-amber-600/80 shadow-lg space-y-4 animate-in fade-in">
                   <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
                     <div className="flex items-center gap-3">
@@ -558,9 +611,9 @@ export const GitView: React.FC = () => {
                 <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2">
                   <button
                     onClick={() => handleExecuteAction('pull')}
-                    disabled={Boolean(activeAction)}
-                    className="flex flex-col items-center justify-center p-3 rounded-lg bg-slate-950 hover:bg-slate-800 border border-slate-800 hover:border-brand-500 text-slate-200 transition-all text-center gap-1.5"
-                    title="git pull origin <branch>"
+                    disabled={Boolean(activeAction) || !gitStatus.is_git_repo}
+                    className="flex flex-col items-center justify-center p-3 rounded-lg bg-slate-950 hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed border border-slate-800 hover:border-brand-500 text-slate-200 transition-all text-center gap-1.5"
+                    title={gitStatus.is_git_repo ? `git pull origin ${gitStatus.branch}` : 'Requires Git repository'}
                   >
                     <Download size={16} className={activeAction === 'pull' ? 'animate-spin text-brand-400' : 'text-brand-400'} />
                     <span className="text-xs font-semibold">Pull Origin</span>
@@ -569,9 +622,9 @@ export const GitView: React.FC = () => {
 
                   <button
                     onClick={() => handleExecuteAction('fetch')}
-                    disabled={Boolean(activeAction)}
-                    className="flex flex-col items-center justify-center p-3 rounded-lg bg-slate-950 hover:bg-slate-800 border border-slate-800 hover:border-indigo-500 text-slate-200 transition-all text-center gap-1.5"
-                    title="git fetch origin"
+                    disabled={Boolean(activeAction) || !gitStatus.is_git_repo}
+                    className="flex flex-col items-center justify-center p-3 rounded-lg bg-slate-950 hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed border border-slate-800 hover:border-indigo-500 text-slate-200 transition-all text-center gap-1.5"
+                    title={gitStatus.is_git_repo ? 'git fetch origin' : 'Requires Git repository'}
                   >
                     <RefreshCw size={16} className={activeAction === 'fetch' ? 'animate-spin text-indigo-400' : 'text-indigo-400'} />
                     <span className="text-xs font-semibold">Fetch Remote</span>
@@ -591,9 +644,9 @@ export const GitView: React.FC = () => {
 
                   <button
                     onClick={() => handleExecuteAction('diff')}
-                    disabled={Boolean(activeAction)}
-                    className="flex flex-col items-center justify-center p-3 rounded-lg bg-slate-950 hover:bg-slate-800 border border-slate-800 hover:border-cyan-500 text-slate-200 transition-all text-center gap-1.5"
-                    title="git diff HEAD origin/<branch>"
+                    disabled={Boolean(activeAction) || !gitStatus.is_git_repo}
+                    className="flex flex-col items-center justify-center p-3 rounded-lg bg-slate-950 hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed border border-slate-800 hover:border-cyan-500 text-slate-200 transition-all text-center gap-1.5"
+                    title={gitStatus.is_git_repo ? `git diff HEAD origin/${gitStatus.branch}` : 'Requires Git repository'}
                   >
                     <GitPullRequest size={16} className={activeAction === 'diff' ? 'animate-spin text-cyan-400' : 'text-cyan-400'} />
                     <span className="text-xs font-semibold">Diff Remote</span>
@@ -602,9 +655,9 @@ export const GitView: React.FC = () => {
 
                   <button
                     onClick={() => handleExecuteAction('log')}
-                    disabled={Boolean(activeAction)}
-                    className="flex flex-col items-center justify-center p-3 rounded-lg bg-slate-950 hover:bg-slate-800 border border-slate-800 hover:border-purple-500 text-slate-200 transition-all text-center gap-1.5"
-                    title="git log -n 15 --oneline --graph"
+                    disabled={Boolean(activeAction) || !gitStatus.is_git_repo}
+                    className="flex flex-col items-center justify-center p-3 rounded-lg bg-slate-950 hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed border border-slate-800 hover:border-purple-500 text-slate-200 transition-all text-center gap-1.5"
+                    title={gitStatus.is_git_repo ? 'git log -n 15 --oneline --graph' : 'Requires Git repository'}
                   >
                     <GitCommit size={16} className={activeAction === 'log' ? 'animate-spin text-purple-400' : 'text-purple-400'} />
                     <span className="text-xs font-semibold">Commit Graph</span>
@@ -613,9 +666,9 @@ export const GitView: React.FC = () => {
 
                   <button
                     onClick={() => handleExecuteAction('reset_hard')}
-                    disabled={Boolean(activeAction)}
-                    className="flex flex-col items-center justify-center p-3 rounded-lg bg-slate-950 hover:bg-rose-950/40 border border-slate-800 hover:border-rose-600 text-slate-200 transition-all text-center gap-1.5"
-                    title="git reset --hard origin/<branch>"
+                    disabled={Boolean(activeAction) || !gitStatus.is_git_repo}
+                    className="flex flex-col items-center justify-center p-3 rounded-lg bg-slate-950 hover:bg-rose-950/40 disabled:opacity-50 disabled:cursor-not-allowed border border-slate-800 hover:border-rose-600 text-slate-200 transition-all text-center gap-1.5"
+                    title={gitStatus.is_git_repo ? `git reset --hard origin/${gitStatus.branch}` : 'Requires Git repository'}
                   >
                     <RotateCcw size={16} className={activeAction === 'reset_hard' ? 'animate-spin text-rose-400' : 'text-rose-400'} />
                     <span className="text-xs font-semibold text-rose-300">Hard Reset</span>
@@ -634,7 +687,7 @@ export const GitView: React.FC = () => {
                       onKeyDown={(e) => {
                         if (e.key === 'Enter') handleExecuteAction('custom', customCommand);
                       }}
-                      placeholder="e.g. git log -n 5, git status, git stash..."
+                      placeholder="e.g. git log -n 5, git status, git stash, ls -la..."
                       className="w-full pl-7 pr-3 py-2 text-xs font-mono bg-slate-950 border border-slate-800 rounded-lg text-slate-200 placeholder-slate-600 focus:outline-none focus:border-brand-500"
                     />
                   </div>
@@ -650,55 +703,95 @@ export const GitView: React.FC = () => {
               </div>
 
               {/* Server Commit vs Remote Commit Comparison */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="p-4 bg-slate-900 border border-slate-800 rounded-xl space-y-2.5">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1">
-                      <ServerIcon size={12} className="text-brand-400" />
-                      <span>Current Server HEAD</span>
-                    </span>
-                    <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-brand-950 text-brand-400 border border-brand-800/80">
-                      LOCAL
-                    </span>
+              {gitStatus.is_git_repo ? (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="p-4 bg-slate-900 border border-slate-800 rounded-xl space-y-2.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1">
+                        <ServerIcon size={12} className="text-brand-400" />
+                        <span>Current Server HEAD</span>
+                      </span>
+                      <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-brand-950 text-brand-400 border border-brand-800/80">
+                        LOCAL
+                      </span>
+                    </div>
+                    <div className="text-base font-bold text-brand-400 font-mono">
+                      {gitStatus.current_server_commit.short_hash}
+                    </div>
+                    <p className="text-xs text-slate-300 leading-relaxed font-medium">
+                      {gitStatus.current_server_commit.message}
+                    </p>
+                    <div className="text-[11px] text-slate-500 font-mono pt-1 border-t border-slate-800/80 flex items-center justify-between">
+                      <span>{gitStatus.current_server_commit.author}</span>
+                      <span>{gitStatus.current_server_commit.date}</span>
+                    </div>
                   </div>
-                  <div className="text-base font-bold text-brand-400 font-mono">
-                    {gitStatus.current_server_commit.short_hash}
-                  </div>
-                  <p className="text-xs text-slate-300 leading-relaxed font-medium">
-                    {gitStatus.current_server_commit.message}
-                  </p>
-                  <div className="text-[11px] text-slate-500 font-mono pt-1 border-t border-slate-800/80 flex items-center justify-between">
-                    <span>{gitStatus.current_server_commit.author}</span>
-                    <span>{gitStatus.current_server_commit.date}</span>
-                  </div>
-                </div>
 
-                <div className="p-4 bg-slate-900 border border-slate-800 rounded-xl space-y-2.5">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1">
-                      <GitPullRequest size={12} className="text-emerald-400" />
-                      <span>Latest Remote Origin HEAD</span>
-                    </span>
-                    <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase ${
-                      gitStatus.update_available
-                        ? 'bg-amber-950 text-amber-400 border border-amber-800'
-                        : 'bg-emerald-950 text-emerald-400 border border-emerald-800'
-                    }`}>
-                      {gitStatus.update_available ? 'PENDING UPDATE' : 'UP TO DATE'}
-                    </span>
-                  </div>
-                  <div className="text-base font-bold text-emerald-400 font-mono">
-                    {gitStatus.latest_remote_commit.short_hash}
-                  </div>
-                  <p className="text-xs text-slate-300 leading-relaxed font-medium">
-                    {gitStatus.latest_remote_commit.message}
-                  </p>
-                  <div className="text-[11px] text-slate-500 font-mono pt-1 border-t border-slate-800/80 flex items-center justify-between">
-                    <span>{gitStatus.latest_remote_commit.author}</span>
-                    <span>{gitStatus.latest_remote_commit.date}</span>
+                  <div className="p-4 bg-slate-900 border border-slate-800 rounded-xl space-y-2.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1">
+                        <GitPullRequest size={12} className="text-emerald-400" />
+                        <span>Latest Remote Origin HEAD</span>
+                      </span>
+                      <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase ${
+                        gitStatus.update_available
+                          ? 'bg-amber-950 text-amber-400 border border-amber-800'
+                          : 'bg-emerald-950 text-emerald-400 border border-emerald-800'
+                      }`}>
+                        {gitStatus.update_available ? 'PENDING UPDATE' : 'UP TO DATE'}
+                      </span>
+                    </div>
+                    <div className="text-base font-bold text-emerald-400 font-mono">
+                      {gitStatus.latest_remote_commit.short_hash}
+                    </div>
+                    <p className="text-xs text-slate-300 leading-relaxed font-medium">
+                      {gitStatus.latest_remote_commit.message}
+                    </p>
+                    <div className="text-[11px] text-slate-500 font-mono pt-1 border-t border-slate-800/80 flex items-center justify-between">
+                      <span>{gitStatus.latest_remote_commit.author}</span>
+                      <span>{gitStatus.latest_remote_commit.date}</span>
+                    </div>
                   </div>
                 </div>
-              </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="p-4 bg-slate-900 border border-slate-800 rounded-xl space-y-2.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1">
+                        <Folder size={12} className="text-amber-400" />
+                        <span>Document Root Vitals</span>
+                      </span>
+                      <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-amber-950 text-amber-400 border border-amber-800/80">
+                        FILESYSTEM
+                      </span>
+                    </div>
+                    <div className="text-xs font-bold text-amber-300 font-mono truncate">
+                      {gitStatus.doc_root || selectedApp.root_path || gitStatus.repo_dir}
+                    </div>
+                    <p className="text-xs text-slate-300 leading-relaxed">
+                      Active directory inspected on VPS. No Git metadata present in folder hierarchy.
+                    </p>
+                  </div>
+
+                  <div className="p-4 bg-slate-900 border border-slate-800 rounded-xl space-y-2.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1">
+                        <GitPullRequest size={12} className="text-slate-400" />
+                        <span>Source Control Status</span>
+                      </span>
+                      <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-slate-950 text-slate-400 border border-slate-800">
+                        UNTRACKED
+                      </span>
+                    </div>
+                    <div className="text-xs font-bold text-slate-400 font-mono">
+                      Static / Direct Deployment
+                    </div>
+                    <p className="text-xs text-slate-400 leading-relaxed">
+                      Changes cannot be auto-pulled until a remote Git repository is configured.
+                    </p>
+                  </div>
+                </div>
+              )}
 
               {/* LIVE TERMINAL EXECUTION CONSOLE */}
               {terminalLog && (
@@ -764,36 +857,44 @@ export const GitView: React.FC = () => {
               )}
 
               {/* Commit History Log */}
-              <div className="p-5 rounded-xl bg-slate-900 border border-slate-800 space-y-3">
-                <div className="flex items-center justify-between">
-                  <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
-                    <Clock size={13} className="text-brand-400" />
-                    <span>Recent Commit Trajectory ({gitStatus.recent_commits?.length || 0})</span>
-                  </h4>
-                  <span className="text-[11px] text-slate-500 font-mono">Verified git log</span>
-                </div>
+              {gitStatus.is_git_repo && (
+                <div className="p-5 rounded-xl bg-slate-900 border border-slate-800 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
+                      <Clock size={13} className="text-brand-400" />
+                      <span>Recent Commit Trajectory ({gitStatus.recent_commits?.length || 0})</span>
+                    </h4>
+                    <span className="text-[11px] text-slate-500 font-mono">Verified git log</span>
+                  </div>
 
-                <div className="space-y-2">
-                  {gitStatus.recent_commits?.map((c) => (
-                    <div
-                      key={c.commit_hash}
-                      className="p-3 bg-slate-950 border border-slate-800 rounded-lg flex flex-col md:flex-row md:items-center justify-between gap-2 text-xs"
-                    >
-                      <div className="space-y-1">
-                        <div className="flex items-center gap-2 font-mono">
-                          <span className="text-brand-400 font-bold px-1.5 py-0.5 rounded bg-brand-950/60 border border-brand-900/60">
-                            {c.short_hash}
-                          </span>
-                          <span className="text-slate-200 font-medium">{c.message}</span>
-                        </div>
-                        <div className="text-[11px] text-slate-500 font-mono">
-                          {c.author} • {c.date}
-                        </div>
+                  <div className="space-y-2">
+                    {gitStatus.recent_commits?.length === 0 ? (
+                      <div className="py-6 text-center text-xs text-slate-500">
+                        No commit history recorded for this branch.
                       </div>
-                    </div>
-                  ))}
+                    ) : (
+                      gitStatus.recent_commits?.map((c) => (
+                        <div
+                          key={c.commit_hash}
+                          className="p-3 bg-slate-950 border border-slate-800 rounded-lg flex flex-col md:flex-row md:items-center justify-between gap-2 text-xs"
+                        >
+                          <div className="space-y-1">
+                            <div className="flex items-center gap-2 font-mono">
+                              <span className="text-brand-400 font-bold px-1.5 py-0.5 rounded bg-brand-950/60 border border-brand-900/60">
+                                {c.short_hash}
+                              </span>
+                              <span className="text-slate-200 font-medium">{c.message}</span>
+                            </div>
+                            <div className="text-[11px] text-slate-500 font-mono">
+                              {c.author} • {c.date}
+                            </div>
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
                 </div>
-              </div>
+              )}
             </>
           ) : (
             <div className="py-24 text-center text-slate-500 text-xs bg-slate-900 border border-slate-800 rounded-xl space-y-3">

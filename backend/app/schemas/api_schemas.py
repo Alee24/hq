@@ -190,6 +190,7 @@ class ApplicationCreate(BaseModel):
     app_type: str = "Web Application"
     framework: str = "FastAPI / React"
     repo_url: Optional[str] = None
+    root_path: Optional[str] = None
     git_branch: str = "main"
     current_version: str = "v1.0.0"
     process_manager: str = "Docker"
@@ -205,6 +206,8 @@ class ApplicationUpdate(BaseModel):
     port: Optional[int] = None
     app_type: Optional[str] = None
     framework: Optional[str] = None
+    repo_url: Optional[str] = None
+    root_path: Optional[str] = None
     git_branch: Optional[str] = None
     current_version: Optional[str] = None
     process_manager: Optional[str] = None
@@ -234,10 +237,11 @@ class ApplicationResponse(BaseModel):
     app_type: str
     framework: str
     repo_url: Optional[str]
-    git_branch: str
-    current_version: str
-    current_commit: str
-    latest_repo_commit: str
+    root_path: Optional[str] = None
+    git_branch: Optional[str] = "main"
+    current_version: Optional[str] = "v1.0.0"
+    current_commit: Optional[str] = None
+    latest_repo_commit: Optional[str] = None
     deployment_status: str
     process_manager: str
     service_name: str
@@ -344,6 +348,7 @@ class GitRepoStatusResponse(BaseModel):
     repo_url: str
     branch: str
     repo_dir: Optional[str] = None
+    doc_root: Optional[str] = None
     version: Optional[str] = "v1.0.0"
     is_git_repo: bool = True
     current_server_commit: GitCommitInfo

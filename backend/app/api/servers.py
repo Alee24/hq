@@ -233,6 +233,7 @@ async def scan_and_import_server_websites(
                     framework=site.get("framework") or ("Apache2" if site.get("web_server") == "Apache2" else "Nginx"),
                     process_manager=site.get("process_manager") or "Docker",
                     service_name=service_name,
+                    root_path=site.get("root_path"),
                     health_status="ONLINE",
                     ssl_status="VALID" if site.get("ssl_enabled") else "NONE",
                     http_status=200,
@@ -241,26 +242,32 @@ async def scan_and_import_server_websites(
                 )
                 db.add(new_app)
                 await db.flush()
+                target_app_id = new_app.id
                 imported_apps.append(new_app)
                 new_count += 1
-
-                # Also check/create Domain entry
-                if site_domain and "." in site_domain and not site_domain.endswith(".local"):
-                    dom_res = await db.execute(select(Domain).where(Domain.domain_name == site_domain))
-                    existing_dom = dom_res.scalar_one_or_none()
-                    if not existing_dom:
-                        new_dom = Domain(
-                            domain_name=site_domain,
-                            application_id=new_app.id,
-                            server_ip=srv.public_ip,
-                            dns_status="RESOLVED",
-                            ssl_status="VALID" if site.get("ssl_enabled") else "NONE",
-                            ssl_issuer="Let's Encrypt Authority X3" if site.get("ssl_enabled") else "None",
-                            redirect_status="HTTP_TO_HTTPS" if site.get("ssl_enabled") else "NONE"
-                        )
-                        db.add(new_dom)
             else:
+                if site.get("root_path"):
+                    existing_app.root_path = site.get("root_path")
+                if site.get("port"):
+                    existing_app.port = site.get("port")
+                target_app_id = existing_app.id
                 imported_apps.append(existing_app)
+
+            # Also check/create Domain entry
+            if site_domain and "." in site_domain and not site_domain.endswith(".local"):
+                dom_res = await db.execute(select(Domain).where(Domain.domain_name == site_domain))
+                existing_dom = dom_res.scalar_one_or_none()
+                if not existing_dom:
+                    new_dom = Domain(
+                        domain_name=site_domain,
+                        application_id=target_app_id,
+                        server_ip=srv.public_ip,
+                        dns_status="RESOLVED",
+                        ssl_status="VALID" if site.get("ssl_enabled") else "NONE",
+                        ssl_issuer="Let's Encrypt Authority X3" if site.get("ssl_enabled") else "None",
+                        redirect_status="HTTP_TO_HTTPS" if site.get("ssl_enabled") else "NONE"
+                    )
+                    db.add(new_dom)
 
         await db.commit()
 

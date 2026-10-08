@@ -52,56 +52,71 @@ async def get_app_git_status(
             app.current_version = probe["version"]
         if probe.get("repo_url"):
             app.repo_url = probe["repo_url"]
+        if probe.get("doc_root"):
+            app.root_path = probe["doc_root"]
+        elif probe.get("repo_dir") and not app.root_path:
+            app.root_path = probe["repo_dir"]
         if probe.get("incoming_commits"):
             app.latest_repo_commit = probe["incoming_commits"][0].get("commit_hash", app.current_commit)
         elif probe.get("update_available"):
-            app.latest_repo_commit = f"{app.current_commit[:6]}updated"
+            app.latest_repo_commit = f"{app.current_commit[:7]}-update" if app.current_commit else "update-pending"
         else:
             app.latest_repo_commit = app.current_commit
+        await db.commit()
+    elif probe and not probe.get("is_git_repo"):
+        if probe.get("doc_root"):
+            app.root_path = probe["doc_root"]
+        elif probe.get("repo_dir") and not app.root_path:
+            app.root_path = probe["repo_dir"]
+        app.current_commit = None
+        app.latest_repo_commit = None
+        app.git_branch = None
         await db.commit()
 
     # Form recent commits list
     recent_commits: List[GitCommitInfo] = []
-    if probe and probe.get("recent_commits"):
-        for c in probe["recent_commits"]:
-            recent_commits.append(GitCommitInfo(
-                commit_hash=c.get("commit_hash", ""),
-                short_hash=c.get("short_hash") or c.get("commit_hash", "")[:7],
-                author=c.get("author", "Git Author"),
-                message=c.get("message", "Commit"),
-                date=str(c.get("date", ""))
-            ))
-    else:
-        # Fallback to recorded deployments or current app state
-        dep_res = await db.execute(
-            select(Deployment)
-            .where(Deployment.application_id == application_id)
-            .order_by(Deployment.created_at.desc())
-            .limit(10)
-        )
-        deployments = dep_res.scalars().all()
-        if deployments:
-            for d in deployments:
+    is_git = probe.get("is_git_repo", False) if probe else bool(app.current_commit)
+
+    if is_git:
+        if probe and probe.get("recent_commits"):
+            for c in probe["recent_commits"]:
                 recent_commits.append(GitCommitInfo(
-                    commit_hash=d.commit_hash or "HEAD",
-                    short_hash=(d.commit_hash or "HEAD")[:7],
-                    author=d.deployed_by or "System",
-                    message=d.commit_message or "Release deployment",
-                    date=d.created_at.strftime("%Y-%m-%d %H:%M:%S UTC")
+                    commit_hash=c.get("commit_hash", ""),
+                    short_hash=c.get("short_hash") or c.get("commit_hash", "")[:7],
+                    author=c.get("author", "Git Author"),
+                    message=c.get("message", "Commit"),
+                    date=str(c.get("date", ""))
                 ))
-        else:
-            curr_hash = app.current_commit or "c3a9256"
-            recent_commits.append(GitCommitInfo(
-                commit_hash=curr_hash,
-                short_hash=curr_hash[:7],
-                author="Metto Alex",
-                message=f"Current release {app.current_version or 'v1.0.0'}",
-                date=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-            ))
+        elif app.current_commit:
+            # Fallback to recorded deployments or current app state
+            dep_res = await db.execute(
+                select(Deployment)
+                .where(Deployment.application_id == application_id)
+                .order_by(Deployment.created_at.desc())
+                .limit(10)
+            )
+            deployments = dep_res.scalars().all()
+            if deployments:
+                for d in deployments:
+                    recent_commits.append(GitCommitInfo(
+                        commit_hash=d.commit_hash or "HEAD",
+                        short_hash=(d.commit_hash or "HEAD")[:7],
+                        author=d.deployed_by or "System",
+                        message=d.commit_message or "Release deployment",
+                        date=d.created_at.strftime("%Y-%m-%d %H:%M:%S UTC")
+                    ))
+            else:
+                recent_commits.append(GitCommitInfo(
+                    commit_hash=app.current_commit,
+                    short_hash=app.current_commit[:7],
+                    author="System",
+                    message=f"Current release {app.current_version or 'v1.0.0'}",
+                    date=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+                ))
 
     # Form incoming commits list
     incoming_commits: List[GitCommitInfo] = []
-    if probe and probe.get("incoming_commits"):
+    if is_git and probe and probe.get("incoming_commits"):
         for c in probe["incoming_commits"]:
             incoming_commits.append(GitCommitInfo(
                 commit_hash=c.get("commit_hash", ""),
@@ -111,32 +126,43 @@ async def get_app_git_status(
                 date=str(c.get("date", ""))
             ))
 
-    current_server_commit = recent_commits[0] if recent_commits else GitCommitInfo(
-        commit_hash=app.current_commit or "c3a9256",
-        short_hash=(app.current_commit or "c3a9256")[:7],
-        author="System",
-        message="Current release",
-        date="Recent"
-    )
-
-    latest_remote_commit = incoming_commits[0] if incoming_commits else current_server_commit
-
-    is_update_available = bool(probe.get("update_available") if probe else (app.current_commit != app.latest_repo_commit))
-    commits_behind = int(probe.get("commits_behind", 0) if probe else (1 if is_update_available else 0))
+    if is_git:
+        current_server_commit = recent_commits[0] if recent_commits else GitCommitInfo(
+            commit_hash=app.current_commit or "HEAD",
+            short_hash=(app.current_commit or "HEAD")[:7],
+            author="System",
+            message="Local Git repository",
+            date="N/A"
+        )
+        latest_remote_commit = incoming_commits[0] if incoming_commits else current_server_commit
+        is_update_available = bool(probe.get("update_available") if probe else (app.current_commit and app.current_commit != app.latest_repo_commit))
+        commits_behind = int(probe.get("commits_behind", 0) if probe else 0)
+    else:
+        current_server_commit = GitCommitInfo(
+            commit_hash="untracked",
+            short_hash="no-git",
+            author="N/A",
+            message="No Git working tree detected at document root",
+            date="N/A"
+        )
+        latest_remote_commit = current_server_commit
+        is_update_available = False
+        commits_behind = 0
 
     return GitRepoStatusResponse(
-        repo_url=probe.get("repo_url") if probe else (app.repo_url or ""),
-        branch=probe.get("branch") if probe else (app.git_branch or "main"),
-        repo_dir=probe.get("repo_dir") if probe else f"/var/www/{app.name.lower()}",
+        repo_url=probe.get("repo_url") if (probe and probe.get("repo_url")) else (app.repo_url or ""),
+        branch=probe.get("branch") if (probe and probe.get("branch")) else (app.git_branch or "untracked"),
+        repo_dir=probe.get("repo_dir") if probe else (app.root_path or f"/var/www/{app.name.lower()}"),
+        doc_root=probe.get("doc_root") if probe else (app.root_path or probe.get("repo_dir") if probe else None),
         version=probe.get("version") if probe else (app.current_version or "v1.0.0"),
-        is_git_repo=probe.get("is_git_repo", True) if probe else True,
+        is_git_repo=is_git,
         current_server_commit=current_server_commit,
         latest_remote_commit=latest_remote_commit,
         update_available=is_update_available,
         commits_behind=commits_behind,
         recent_commits=recent_commits,
         incoming_commits=incoming_commits,
-        status_summary=probe.get("status_summary") if probe else "Working directory clean",
+        status_summary=probe.get("status_summary") if probe else ("Working directory clean" if is_git else "No Git working tree detected"),
         server_name=server.name if server else "Remote Host",
         server_ip=server.public_ip if server else "127.0.0.1"
     )
@@ -276,19 +302,21 @@ async def scan_all_git_repos_endpoint(
         total_scanned += len(discovered_repos)
 
         apps_res = await db.execute(
-            select(Application).where(Application.server_id == s.id, Application.is_active == True)
+            select(Application).where(Application.server_id == s.id, Application.deleted_at == None)
         )
         apps = apps_res.scalars().all()
 
         for a in apps:
             app_clean = (a.name or "").lower().strip()
             dom_clean = (a.domain or "").lower().strip()
+            app_root = (getattr(a, "root_path", None) or "").lower().strip()
 
             matched = None
             for r in discovered_repos:
                 r_name = r.get("name", "").lower()
                 r_dir = r.get("dir", "").lower()
-                if r_name == app_clean or r_name in app_clean or app_clean in r_name or dom_clean in r_dir:
+                if (app_root and (app_root == r_dir or app_root.startswith(r_dir) or r_dir.startswith(app_root))) or \
+                   r_name == app_clean or r_name in app_clean or app_clean in r_name or dom_clean in r_dir:
                     matched = r
                     break
 
@@ -302,9 +330,11 @@ async def scan_all_git_repos_endpoint(
                     a.current_version = matched["version"]
                 if matched.get("repo_url"):
                     a.repo_url = matched["repo_url"]
+                if matched.get("dir") and not a.root_path:
+                    a.root_path = matched["dir"]
                 if matched.get("update_available"):
                     updates_available_count += 1
-                    a.latest_repo_commit = f"{matched['commit'][:6]}updated"
+                    a.latest_repo_commit = f"{matched['commit'][:7]}-update"
                 else:
                     a.latest_repo_commit = a.current_commit
 
@@ -319,7 +349,7 @@ async def scan_all_git_repos_endpoint(
                     "commits_behind": matched.get("commits_behind", 0),
                     "update_available": matched.get("update_available", False)
                 })
-            else:
+            elif discovered_repos and a.root_path:
                 p = detect_remote_application_git(s, a)
                 if p and p.get("is_git_repo"):
                     updated_apps += 1
@@ -331,9 +361,13 @@ async def scan_all_git_repos_endpoint(
                         a.current_version = p["version"]
                     if p.get("repo_url"):
                         a.repo_url = p["repo_url"]
+                    if p.get("doc_root"):
+                        a.root_path = p["doc_root"]
+                    elif p.get("repo_dir") and not a.root_path:
+                        a.root_path = p["repo_dir"]
                     if p.get("update_available"):
                         updates_available_count += 1
-                        a.latest_repo_commit = f"{p['commit_hash'][:6]}updated"
+                        a.latest_repo_commit = f"{p['commit_hash'][:7]}-update" if p.get("commit_hash") else "update-pending"
                     else:
                         a.latest_repo_commit = a.current_commit
 
@@ -348,6 +382,11 @@ async def scan_all_git_repos_endpoint(
                         "commits_behind": p.get("commits_behind", 0),
                         "update_available": p.get("update_available", False)
                     })
+                elif p and not p.get("is_git_repo"):
+                    if p.get("doc_root"):
+                        a.root_path = p["doc_root"]
+                    elif p.get("repo_dir") and not a.root_path:
+                        a.root_path = p["repo_dir"]
 
     await db.commit()
 

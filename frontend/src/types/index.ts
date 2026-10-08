@@ -77,6 +77,7 @@ export interface Application {
   app_type: string;
   framework: string;
   repo_url?: string;
+  root_path?: string;
   git_branch: string;
   current_version: string;
   current_commit: string;

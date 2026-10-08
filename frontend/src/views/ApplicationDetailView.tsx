@@ -31,7 +31,8 @@ import {
   Sparkles,
   Copy,
   Check,
-  RotateCcw
+  RotateCcw,
+  Folder
 } from 'lucide-react';
 import { api } from '../api/client';
 
@@ -115,7 +116,7 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
     try {
       const res = await api.executeGitAction(app.id, {
         action,
-        branch: app.git_branch,
+        branch: gitStatus?.branch || app.git_branch || 'main',
         custom_command: customCmd,
       });
       setGitTerminalOutput(res);
@@ -309,9 +310,18 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
     );
   }
 
+  const isNativeApp = Boolean(
+    dockerData?.is_native_process ||
+    (dockerData && !dockerData.has_container) ||
+    app.process_manager === 'Apache' ||
+    app.process_manager === 'Nginx' ||
+    app.process_manager === 'Systemd' ||
+    app.app_type === 'Web Application'
+  );
+
   const tabs = [
     { id: 'overview', label: 'Overview', icon: Sliders },
-    { id: 'docker', label: 'Docker & Performance', icon: Box },
+    { id: 'docker', label: isNativeApp ? 'Process & Web Host' : 'Docker & Performance', icon: isNativeApp ? Cpu : Box },
     { id: 'monitoring', label: 'Monitoring', icon: Activity },
     { id: 'deployments', label: 'Deployments', icon: Rocket },
     { id: 'git', label: 'Git Integration', icon: GitBranch },
@@ -513,8 +523,8 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
               </div>
             </div>
 
-            {/* Live Docker Container Preview Banner in Overview */}
-            {dockerData?.container && (
+            {/* Live Docker Container or Native Process Architecture Preview Banner in Overview */}
+            {dockerData?.has_container && dockerData?.container ? (
               <div className="col-span-full p-5 rounded-xl bg-slate-900 border border-slate-800 flex flex-col md:flex-row md:items-center justify-between gap-4">
                 <div className="flex items-center gap-3">
                   <div className="p-2.5 bg-brand-950/80 border border-brand-800/80 rounded-xl text-brand-400">
@@ -563,6 +573,62 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
                   </button>
                 </div>
               </div>
+            ) : (
+              <div className="col-span-full p-5 rounded-xl bg-slate-900 border border-slate-800 flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div className="flex items-center gap-3">
+                  <div className="p-2.5 bg-emerald-950/80 border border-emerald-800/80 rounded-xl text-emerald-400">
+                    <Cpu size={20} />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="font-semibold text-white text-sm">
+                        Native Host Architecture: {app.process_manager || 'Bare-Metal Web Service'}
+                      </span>
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-emerald-950 text-emerald-400 border border-emerald-800">
+                        DIRECT HOST PROCESS
+                      </span>
+                      {app.process_manager && (
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-purple-950 text-purple-300 border border-purple-800">
+                          {app.process_manager}
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-xs text-slate-400 mt-1 flex flex-wrap items-center gap-3 font-mono">
+                      <span>Host: <strong className="text-slate-200">{app.server_name}</strong> ({app.server_ip})</span>
+                      <span>•</span>
+                      <span>Root: <strong className="text-amber-300">{app.root_path || gitStatus?.doc_root || `/var/www/${app.domain}`}</strong></span>
+                      <span>•</span>
+                      <span>Port: <strong className="text-sky-300">:{app.port || 80}</strong></span>
+                      <span>•</span>
+                      <span>Service: <strong className="text-slate-300">{app.service_name || app.domain}</strong></span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => {
+                      const isApache = (app.process_manager || '').toLowerCase().includes('apache') || (app.service_name || '').toLowerCase().includes('apache');
+                      handleDockerAction('custom_command', {
+                        command: isApache ? 'apache2ctl configtest' : 'nginx -t'
+                      });
+                      setActiveTab('docker');
+                    }}
+                    disabled={actionLoading}
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-medium border border-slate-700 transition-colors"
+                  >
+                    <CheckCircle2 size={12} className="text-emerald-400" />
+                    <span>Test Syntax</span>
+                  </button>
+                  <button
+                    onClick={() => setActiveTab('docker')}
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-brand-600 hover:bg-brand-500 text-white rounded-lg text-xs font-semibold shadow-sm transition-colors"
+                  >
+                    <Terminal size={13} />
+                    <span>Manage Host Process & Logs</span>
+                  </button>
+                </div>
+              </div>
             )}
           </div>
         )}
@@ -583,190 +649,378 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
               </div>
             )}
 
-            {/* Docker Header & Active Container Switcher */}
-            <div className="p-5 rounded-xl bg-slate-900 border border-slate-800 flex flex-col md:flex-row md:items-center justify-between gap-4">
-              <div className="flex items-center gap-3">
-                <div className="p-2.5 bg-brand-950/80 border border-brand-800/80 rounded-xl text-brand-400">
-                  <Box size={22} />
-                </div>
-                <div>
+            {dockerData?.has_container && dockerData?.container ? (
+              <>
+                {/* Docker Header & Active Container Switcher */}
+                <div className="p-5 rounded-xl bg-slate-900 border border-slate-800 flex flex-col md:flex-row md:items-center justify-between gap-4">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2.5 bg-brand-950/80 border border-brand-800/80 rounded-xl text-brand-400">
+                      <Box size={22} />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h3 className="text-base font-bold text-white tracking-tight">
+                          Docker Container: {dockerData?.container?.name || selectedContainerName || app.service_name}
+                        </h3>
+                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider border ${
+                          dockerData?.container?.state === 'running'
+                            ? 'bg-emerald-950 text-emerald-400 border-emerald-800'
+                            : 'bg-rose-950 text-rose-400 border-rose-800'
+                        }`}>
+                          {dockerData?.container?.state || 'RUNNING'}
+                        </span>
+                      </div>
+                      <div className="text-xs text-slate-400 mt-1 flex flex-wrap items-center gap-3 font-mono">
+                        <span>Host: <strong className="text-slate-200">{app.server_name}</strong> ({app.server_ip})</span>
+                        <span>•</span>
+                        <span>Image: <strong className="text-slate-200">{dockerData?.container?.image || 'latest'}</strong></span>
+                        <span>•</span>
+                        <span>ID: <code className="text-brand-400">{dockerData?.container?.id || 'c-init'}</code></span>
+                      </div>
+                    </div>
+                  </div>
+
                   <div className="flex items-center gap-2">
-                    <h3 className="text-base font-bold text-white tracking-tight">
-                      Docker Container: {dockerData?.container?.name || selectedContainerName || app.service_name}
-                    </h3>
-                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider border ${
-                      dockerData?.container?.state === 'running'
-                        ? 'bg-emerald-950 text-emerald-400 border-emerald-800'
-                        : 'bg-rose-950 text-rose-400 border-rose-800'
-                    }`}>
-                      {dockerData?.container?.state || 'RUNNING'}
-                    </span>
+                    {dockerData?.all_containers && dockerData.all_containers.length > 1 && (
+                      <select
+                        value={selectedContainerName}
+                        onChange={(e) => setSelectedContainerName(e.target.value)}
+                        className="px-2.5 py-1.5 text-xs bg-slate-950 border border-slate-800 rounded-lg text-slate-200 focus:outline-none focus:border-brand-500"
+                      >
+                        {dockerData.all_containers.map((c: any) => (
+                          <option key={c.id} value={c.name}>
+                            {c.name} ({c.id})
+                          </option>
+                        ))}
+                      </select>
+                    )}
+
+                    <button
+                      onClick={() => loadDockerInfo(app.id)}
+                      disabled={dockerLoading}
+                      className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-semibold border border-slate-700 transition-colors"
+                      title="Query Live Stats via SSH"
+                    >
+                      <RefreshCw size={12} className={dockerLoading ? 'animate-spin text-brand-400' : ''} />
+                      <span>{dockerLoading ? 'Refreshing...' : 'Live Probe'}</span>
+                    </button>
                   </div>
-                  <div className="text-xs text-slate-400 mt-1 flex flex-wrap items-center gap-3 font-mono">
-                    <span>Host: <strong className="text-slate-200">{app.server_name}</strong> ({app.server_ip})</span>
-                    <span>•</span>
-                    <span>Image: <strong className="text-slate-200">{dockerData?.container?.image || 'latest'}</strong></span>
-                    <span>•</span>
-                    <span>ID: <code className="text-brand-400">{dockerData?.container?.id || 'c-init'}</code></span>
+                </div>
+
+                {/* Container Runtime Telemetry (4 Vitals Cards) */}
+                <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                  <div className="p-4 bg-slate-900 border border-slate-800 rounded-xl space-y-1">
+                    <div className="flex items-center justify-between text-xs text-slate-400">
+                      <span>CPU Utilization</span>
+                      <Cpu size={14} className="text-emerald-400" />
+                    </div>
+                    <div className="text-xl font-bold text-emerald-400 mono">
+                      {dockerData?.container?.cpu_percent ? `${dockerData.container.cpu_percent}%` : '0.45%'}
+                    </div>
+                    <div className="text-[11px] text-slate-500">Live compute load on host</div>
+                  </div>
+
+                  <div className="p-4 bg-slate-900 border border-slate-800 rounded-xl space-y-1">
+                    <div className="flex items-center justify-between text-xs text-slate-400">
+                      <span>RAM Usage & Ceiling</span>
+                      <HardDrive size={14} className="text-purple-400" />
+                    </div>
+                    <div className="text-lg font-bold text-white mono truncate">
+                      {dockerData?.container?.mem_usage || '42.8MiB / 8.00GiB'}
+                    </div>
+                    <div className="text-[11px] text-slate-400 flex items-center justify-between">
+                      <span>Limit:</span>
+                      <strong className="text-brand-300 mono">{dockerData?.container?.memory_limit || 'Unlimited'}</strong>
+                    </div>
+                  </div>
+
+                  <div className="p-4 bg-slate-900 border border-slate-800 rounded-xl space-y-1">
+                    <div className="flex items-center justify-between text-xs text-slate-400">
+                      <span>Network Traffic I/O</span>
+                      <Activity size={14} className="text-sky-400" />
+                    </div>
+                    <div className="text-base font-bold text-slate-200 mono truncate">
+                      {dockerData?.container?.net_io || '12.4MB / 8.2MB'}
+                    </div>
+                    <div className="text-[11px] text-slate-500">Rx / Tx network stream</div>
+                  </div>
+
+                  <div className="p-4 bg-slate-900 border border-slate-800 rounded-xl space-y-1">
+                    <div className="flex items-center justify-between text-xs text-slate-400">
+                      <span>Restart Policy & PIDs</span>
+                      <RotateCw size={14} className="text-amber-400" />
+                    </div>
+                    <div className="text-base font-bold text-amber-300 mono uppercase truncate">
+                      {dockerData?.container?.restart_policy || 'unless-stopped'}
+                    </div>
+                    <div className="text-[11px] text-slate-400 flex items-center justify-between">
+                      <span>Active Threads:</span>
+                      <strong className="text-slate-200 mono">{dockerData?.container?.pids || '8'} PIDs</strong>
+                    </div>
                   </div>
                 </div>
-              </div>
 
-              <div className="flex items-center gap-2">
-                {dockerData?.all_containers && dockerData.all_containers.length > 1 && (
-                  <select
-                    value={selectedContainerName}
-                    onChange={(e) => setSelectedContainerName(e.target.value)}
-                    className="px-2.5 py-1.5 text-xs bg-slate-950 border border-slate-800 rounded-lg text-slate-200 focus:outline-none focus:border-brand-500"
-                  >
-                    {dockerData.all_containers.map((c: any) => (
-                      <option key={c.id} value={c.name}>
-                        {c.name} ({c.id})
-                      </option>
-                    ))}
-                  </select>
-                )}
+                {/* 1-Click Operations Control Toolbar */}
+                <div className="p-5 rounded-xl bg-slate-900 border border-slate-800 space-y-3">
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
+                    <Sparkles size={14} className="text-brand-400" />
+                    1-Click Container Optimization & Hygiene Operations
+                  </h4>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      onClick={() => handleDockerAction('restart')}
+                      disabled={actionLoading}
+                      className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-semibold border border-slate-700 transition-colors shadow-sm"
+                    >
+                      <RotateCw size={12} className={actionLoading ? 'animate-spin' : ''} />
+                      <span>Restart Container</span>
+                    </button>
 
-                <button
-                  onClick={() => loadDockerInfo(app.id)}
-                  disabled={dockerLoading}
-                  className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-semibold border border-slate-700 transition-colors"
-                  title="Query Live Stats via SSH"
-                >
-                  <RefreshCw size={12} className={dockerLoading ? 'animate-spin text-brand-400' : ''} />
-                  <span>{dockerLoading ? 'Refreshing...' : 'Live Probe'}</span>
-                </button>
-              </div>
-            </div>
+                    <button
+                      onClick={() => handleDockerAction(dockerData?.container?.state === 'running' ? 'stop' : 'start')}
+                      disabled={actionLoading}
+                      className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-semibold border border-slate-700 transition-colors shadow-sm"
+                    >
+                      {dockerData?.container?.state === 'running' ? <Square size={12} /> : <Play size={12} />}
+                      <span>{dockerData?.container?.state === 'running' ? 'Stop Container' : 'Start Container'}</span>
+                    </button>
 
-            {/* Container Runtime Telemetry (4 Vitals Cards) */}
-            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-              <div className="p-4 bg-slate-900 border border-slate-800 rounded-xl space-y-1">
-                <div className="flex items-center justify-between text-xs text-slate-400">
-                  <span>CPU Utilization</span>
-                  <Cpu size={14} className="text-emerald-400" />
+                    <button
+                      onClick={() => handleDockerAction('prune_containers')}
+                      disabled={actionLoading}
+                      className="flex items-center gap-1.5 px-3 py-1.5 bg-rose-950/60 hover:bg-rose-900 text-rose-300 border border-rose-800/80 rounded-lg text-xs font-semibold transition-colors shadow-sm"
+                      title="Executes `docker container prune -f` to delete old/dead containers"
+                    >
+                      <Trash2 size={12} />
+                      <span>Prune Inactive Containers</span>
+                    </button>
+
+                    <button
+                      onClick={() => handleDockerAction('prune_images')}
+                      disabled={actionLoading}
+                      className="flex items-center gap-1.5 px-3 py-1.5 bg-rose-950/60 hover:bg-rose-900 text-rose-300 border border-rose-800/80 rounded-lg text-xs font-semibold transition-colors shadow-sm"
+                      title="Executes `docker image prune -af` to delete unused images"
+                    >
+                      <Trash2 size={12} />
+                      <span>Purge Unused Images</span>
+                    </button>
+
+                    <button
+                      onClick={() => handleDockerAction('update_memory', { memory: '512m' })}
+                      disabled={actionLoading}
+                      className="flex items-center gap-1.5 px-3 py-1.5 bg-purple-950/60 hover:bg-purple-900 text-purple-300 border border-purple-800/80 rounded-lg text-xs font-semibold transition-colors shadow-sm"
+                      title="Executes `docker update --memory 512m` to set memory ceiling"
+                    >
+                      <HardDrive size={12} />
+                      <span>Set 512M RAM Ceiling</span>
+                    </button>
+
+                    <button
+                      onClick={() => handleDockerAction('update_restart')}
+                      disabled={actionLoading}
+                      className="flex items-center gap-1.5 px-3 py-1.5 bg-purple-950/60 hover:bg-purple-900 text-purple-300 border border-purple-800/80 rounded-lg text-xs font-semibold transition-colors shadow-sm"
+                      title="Executes `docker update --restart unless-stopped`"
+                    >
+                      <RotateCw size={12} />
+                      <span>Set Auto-Restart Policy</span>
+                    </button>
+
+                    <button
+                      onClick={() => handleDockerAction('custom_command', { command: 'docker stats --no-stream' })}
+                      disabled={actionLoading}
+                      className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-950 hover:bg-slate-800 text-slate-300 rounded-lg text-xs font-mono border border-slate-800 transition-colors"
+                    >
+                      <Activity size={12} />
+                      <span>Full Host Benchmark</span>
+                    </button>
+                  </div>
                 </div>
-                <div className="text-xl font-bold text-emerald-400 mono">
-                  {dockerData?.container?.cpu_percent ? `${dockerData.container.cpu_percent}%` : '0.45%'}
+              </>
+            ) : (
+              <>
+                {/* Native Web Host & Process Header */}
+                <div className="p-5 rounded-xl bg-slate-900 border border-slate-800 flex flex-col md:flex-row md:items-center justify-between gap-4">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2.5 bg-emerald-950/80 border border-emerald-800/80 rounded-xl text-emerald-400">
+                      <Cpu size={22} />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h3 className="text-base font-bold text-white tracking-tight">
+                          Host Web Process: {app.name} ({app.process_manager || 'Native Host Daemon'})
+                        </h3>
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-emerald-950 text-emerald-400 border border-emerald-800">
+                          DIRECT HOST PROCESS
+                        </span>
+                        {app.process_manager && (
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-purple-950 text-purple-300 border border-purple-800">
+                            {app.process_manager}
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-xs text-slate-400 mt-1 flex flex-wrap items-center gap-3 font-mono">
+                        <span>Host: <strong className="text-slate-200">{app.server_name}</strong> ({app.server_ip})</span>
+                        <span>•</span>
+                        <span>DocRoot: <strong className="text-amber-300">{app.root_path || gitStatus?.doc_root || `/var/www/${app.domain}`}</strong></span>
+                        <span>•</span>
+                        <span>Domain: <strong className="text-sky-300">{app.domain}</strong></span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => loadDockerInfo(app.id)}
+                      disabled={dockerLoading}
+                      className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-semibold border border-slate-700 transition-colors"
+                      title="Probe VPS via SSH"
+                    >
+                      <RefreshCw size={12} className={dockerLoading ? 'animate-spin text-brand-400' : ''} />
+                      <span>{dockerLoading ? 'Probing...' : 'Live Probe'}</span>
+                    </button>
+                  </div>
                 </div>
-                <div className="text-[11px] text-slate-500">Live compute load on host</div>
-              </div>
 
-              <div className="p-4 bg-slate-900 border border-slate-800 rounded-xl space-y-1">
-                <div className="flex items-center justify-between text-xs text-slate-400">
-                  <span>RAM Usage & Ceiling</span>
-                  <HardDrive size={14} className="text-purple-400" />
+                {/* Native Runtime Architecture (4 Vitals Cards) */}
+                <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                  <div className="p-4 bg-slate-900 border border-slate-800 rounded-xl space-y-1">
+                    <div className="flex items-center justify-between text-xs text-slate-400">
+                      <span>Process Engine</span>
+                      <Cpu size={14} className="text-emerald-400" />
+                    </div>
+                    <div className="text-lg font-bold text-emerald-400 mono">
+                      {app.process_manager || 'Host Daemon'}
+                    </div>
+                    <div className="text-[11px] text-slate-500">Direct Linux host daemon execution</div>
+                  </div>
+
+                  <div className="p-4 bg-slate-900 border border-slate-800 rounded-xl space-y-1">
+                    <div className="flex items-center justify-between text-xs text-slate-400">
+                      <span>Document Root</span>
+                      <Folder size={14} className="text-amber-400" />
+                    </div>
+                    <div className="text-xs font-bold text-amber-300 mono truncate" title={app.root_path || gitStatus?.doc_root || `/var/www/${app.domain}`}>
+                      {app.root_path || gitStatus?.doc_root || `/var/www/${app.domain}`}
+                    </div>
+                    <div className="text-[11px] text-slate-500">Live VPS working tree directory</div>
+                  </div>
+
+                  <div className="p-4 bg-slate-900 border border-slate-800 rounded-xl space-y-1">
+                    <div className="flex items-center justify-between text-xs text-slate-400">
+                      <span>Bound Port & Sockets</span>
+                      <Activity size={14} className="text-sky-400" />
+                    </div>
+                    <div className="text-lg font-bold text-sky-400 mono">
+                      :{app.port || 80} / TCP
+                    </div>
+                    <div className="text-[11px] text-slate-500">Active virtualhost / reverse proxy port</div>
+                  </div>
+
+                  <div className="p-4 bg-slate-900 border border-slate-800 rounded-xl space-y-1">
+                    <div className="flex items-center justify-between text-xs text-slate-400">
+                      <span>Virtualization Mode</span>
+                      <ShieldCheck size={14} className="text-purple-400" />
+                    </div>
+                    <div className="text-base font-bold text-purple-300 mono">
+                      Bare-Metal Host
+                    </div>
+                    <div className="text-[11px] text-slate-500">0% containerization overhead</div>
+                  </div>
                 </div>
-                <div className="text-lg font-bold text-white mono truncate">
-                  {dockerData?.container?.mem_usage || '42.8MiB / 8.00GiB'}
+
+                {/* 1-Click Operations Control Toolbar for Native Web Servers */}
+                <div className="p-5 rounded-xl bg-slate-900 border border-slate-800 space-y-3">
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
+                    <Sparkles size={14} className="text-emerald-400" />
+                    1-Click Web Server & Host Process Operations
+                  </h4>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      onClick={() => {
+                        const isApache = (app.process_manager || '').toLowerCase().includes('apache') || (app.service_name || '').toLowerCase().includes('apache');
+                        handleDockerAction('custom_command', {
+                          command: isApache ? 'systemctl restart apache2 || apache2ctl restart' : 'systemctl restart nginx || nginx -s reload'
+                        });
+                      }}
+                      disabled={actionLoading}
+                      className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-semibold border border-slate-700 transition-colors shadow-sm"
+                    >
+                      <RotateCw size={12} className={actionLoading ? 'animate-spin' : ''} />
+                      <span>Restart Web Server</span>
+                    </button>
+
+                    <button
+                      onClick={() => {
+                        const isApache = (app.process_manager || '').toLowerCase().includes('apache') || (app.service_name || '').toLowerCase().includes('apache');
+                        handleDockerAction('custom_command', {
+                          command: isApache ? 'systemctl reload apache2' : 'systemctl reload nginx'
+                        });
+                      }}
+                      disabled={actionLoading}
+                      className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-semibold border border-slate-700 transition-colors shadow-sm"
+                    >
+                      <RotateCcw size={12} />
+                      <span>Reload Configs (Zero-Downtime)</span>
+                    </button>
+
+                    <button
+                      onClick={() => {
+                        const isApache = (app.process_manager || '').toLowerCase().includes('apache') || (app.service_name || '').toLowerCase().includes('apache');
+                        handleDockerAction('custom_command', {
+                          command: isApache ? 'apache2ctl configtest' : 'nginx -t'
+                        });
+                      }}
+                      disabled={actionLoading}
+                      className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-950/60 hover:bg-emerald-900 text-emerald-300 border border-emerald-800/80 rounded-lg text-xs font-semibold transition-colors shadow-sm"
+                    >
+                      <CheckCircle2 size={12} />
+                      <span>Test Syntax ({((app.process_manager || '').toLowerCase().includes('apache') ? 'apache2ctl' : 'nginx -t')})</span>
+                    </button>
+
+                    <button
+                      onClick={() => {
+                        const isApache = (app.process_manager || '').toLowerCase().includes('apache') || (app.service_name || '').toLowerCase().includes('apache');
+                        handleDockerAction('custom_command', {
+                          command: isApache ? 'tail -n 60 /var/log/apache2/error.log 2>/dev/null' : 'tail -n 60 /var/log/nginx/error.log 2>/dev/null'
+                        });
+                      }}
+                      disabled={actionLoading}
+                      className="flex items-center gap-1.5 px-3 py-1.5 bg-rose-950/60 hover:bg-rose-900 text-rose-300 border border-rose-800/80 rounded-lg text-xs font-semibold transition-colors shadow-sm"
+                    >
+                      <AlertTriangle size={12} />
+                      <span>Tail Error Logs</span>
+                    </button>
+
+                    <button
+                      onClick={() => {
+                        const isApache = (app.process_manager || '').toLowerCase().includes('apache') || (app.service_name || '').toLowerCase().includes('apache');
+                        handleDockerAction('custom_command', {
+                          command: isApache ? 'tail -n 60 /var/log/apache2/access.log 2>/dev/null' : 'tail -n 60 /var/log/nginx/access.log 2>/dev/null'
+                        });
+                      }}
+                      disabled={actionLoading}
+                      className="flex items-center gap-1.5 px-3 py-1.5 bg-sky-950/60 hover:bg-sky-900 text-sky-300 border border-sky-800/80 rounded-lg text-xs font-semibold transition-colors shadow-sm"
+                    >
+                      <FileText size={12} />
+                      <span>Tail Access Traffic</span>
+                    </button>
+
+                    <button
+                      onClick={() => {
+                        handleDockerAction('custom_command', {
+                          command: `ls -la ${app.root_path || gitStatus?.doc_root || `/var/www/${app.domain}`} | head -15`
+                        });
+                      }}
+                      disabled={actionLoading}
+                      className="flex items-center gap-1.5 px-3 py-1.5 bg-purple-950/60 hover:bg-purple-900 text-purple-300 border border-purple-800/80 rounded-lg text-xs font-semibold transition-colors shadow-sm"
+                    >
+                      <Folder size={12} />
+                      <span>Inspect DocRoot Tree</span>
+                    </button>
+                  </div>
                 </div>
-                <div className="text-[11px] text-slate-400 flex items-center justify-between">
-                  <span>Limit:</span>
-                  <strong className="text-brand-300 mono">{dockerData?.container?.memory_limit || 'Unlimited'}</strong>
-                </div>
-              </div>
-
-              <div className="p-4 bg-slate-900 border border-slate-800 rounded-xl space-y-1">
-                <div className="flex items-center justify-between text-xs text-slate-400">
-                  <span>Network Traffic I/O</span>
-                  <Activity size={14} className="text-sky-400" />
-                </div>
-                <div className="text-base font-bold text-slate-200 mono truncate">
-                  {dockerData?.container?.net_io || '12.4MB / 8.2MB'}
-                </div>
-                <div className="text-[11px] text-slate-500">Rx / Tx network stream</div>
-              </div>
-
-              <div className="p-4 bg-slate-900 border border-slate-800 rounded-xl space-y-1">
-                <div className="flex items-center justify-between text-xs text-slate-400">
-                  <span>Restart Policy & PIDs</span>
-                  <RotateCw size={14} className="text-amber-400" />
-                </div>
-                <div className="text-base font-bold text-amber-300 mono uppercase truncate">
-                  {dockerData?.container?.restart_policy || 'unless-stopped'}
-                </div>
-                <div className="text-[11px] text-slate-400 flex items-center justify-between">
-                  <span>Active Threads:</span>
-                  <strong className="text-slate-200 mono">{dockerData?.container?.pids || '8'} PIDs</strong>
-                </div>
-              </div>
-            </div>
-
-            {/* 1-Click Operations Control Toolbar */}
-            <div className="p-5 rounded-xl bg-slate-900 border border-slate-800 space-y-3">
-              <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
-                <Sparkles size={14} className="text-brand-400" />
-                1-Click Container Optimization & Hygiene Operations
-              </h4>
-              <div className="flex flex-wrap items-center gap-2">
-                <button
-                  onClick={() => handleDockerAction('restart')}
-                  disabled={actionLoading}
-                  className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-semibold border border-slate-700 transition-colors shadow-sm"
-                >
-                  <RotateCw size={12} className={actionLoading ? 'animate-spin' : ''} />
-                  <span>Restart Container</span>
-                </button>
-
-                <button
-                  onClick={() => handleDockerAction(dockerData?.container?.state === 'running' ? 'stop' : 'start')}
-                  disabled={actionLoading}
-                  className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-semibold border border-slate-700 transition-colors shadow-sm"
-                >
-                  {dockerData?.container?.state === 'running' ? <Square size={12} /> : <Play size={12} />}
-                  <span>{dockerData?.container?.state === 'running' ? 'Stop Container' : 'Start Container'}</span>
-                </button>
-
-                <button
-                  onClick={() => handleDockerAction('prune_containers')}
-                  disabled={actionLoading}
-                  className="flex items-center gap-1.5 px-3 py-1.5 bg-rose-950/60 hover:bg-rose-900 text-rose-300 border border-rose-800/80 rounded-lg text-xs font-semibold transition-colors shadow-sm"
-                  title="Executes `docker container prune -f` to delete old/dead containers"
-                >
-                  <Trash2 size={12} />
-                  <span>Prune Inactive Containers</span>
-                </button>
-
-                <button
-                  onClick={() => handleDockerAction('prune_images')}
-                  disabled={actionLoading}
-                  className="flex items-center gap-1.5 px-3 py-1.5 bg-rose-950/60 hover:bg-rose-900 text-rose-300 border border-rose-800/80 rounded-lg text-xs font-semibold transition-colors shadow-sm"
-                  title="Executes `docker image prune -af` to delete unused images"
-                >
-                  <Trash2 size={12} />
-                  <span>Purge Unused Images</span>
-                </button>
-
-                <button
-                  onClick={() => handleDockerAction('update_memory', { memory: '512m' })}
-                  disabled={actionLoading}
-                  className="flex items-center gap-1.5 px-3 py-1.5 bg-purple-950/60 hover:bg-purple-900 text-purple-300 border border-purple-800/80 rounded-lg text-xs font-semibold transition-colors shadow-sm"
-                  title="Executes `docker update --memory 512m` to set memory ceiling"
-                >
-                  <HardDrive size={12} />
-                  <span>Set 512M RAM Ceiling</span>
-                </button>
-
-                <button
-                  onClick={() => handleDockerAction('update_restart')}
-                  disabled={actionLoading}
-                  className="flex items-center gap-1.5 px-3 py-1.5 bg-purple-950/60 hover:bg-purple-900 text-purple-300 border border-purple-800/80 rounded-lg text-xs font-semibold transition-colors shadow-sm"
-                  title="Executes `docker update --restart unless-stopped`"
-                >
-                  <RotateCw size={12} />
-                  <span>Set Auto-Restart Policy</span>
-                </button>
-
-                <button
-                  onClick={() => handleDockerAction('custom_command', { command: 'docker stats --no-stream' })}
-                  disabled={actionLoading}
-                  className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-950 hover:bg-slate-800 text-slate-300 rounded-lg text-xs font-mono border border-slate-800 transition-colors"
-                >
-                  <Activity size={12} />
-                  <span>Full Host Benchmark</span>
-                </button>
-              </div>
-            </div>
+              </>
+            )}
 
             {/* Performance Advisory & Diagnostic Recommendations */}
             {dockerData?.recommendations && dockerData.recommendations.length > 0 && (
@@ -897,27 +1151,67 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
               )}
             </div>
 
-            {/* Container Real-Time Logs View */}
-            <div className="p-5 rounded-xl bg-slate-900 border border-slate-800 space-y-3">
-              <div className="flex items-center justify-between">
-                <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
-                  <FileText size={14} className="text-brand-400" />
-                  Live Container Logs (Last 50 Lines)
-                </h4>
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => handleDockerAction('custom_command', { command: `docker logs --tail 50 ${dockerData?.container?.name || 'app'}` })}
-                    className="p-1 text-slate-400 hover:text-white rounded hover:bg-slate-800 transition-colors"
-                    title="Refresh Logs"
-                  >
-                    <RefreshCw size={12} />
-                  </button>
+            {/* Live Logs View */}
+            {dockerData?.has_container && dockerData?.container ? (
+              <div className="p-5 rounded-xl bg-slate-900 border border-slate-800 space-y-3">
+                <div className="flex items-center justify-between">
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
+                    <FileText size={14} className="text-brand-400" />
+                    Live Container Logs (Last 50 Lines)
+                  </h4>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => handleDockerAction('custom_command', { command: `docker logs --tail 50 ${dockerData?.container?.name || 'app'}` })}
+                      className="p-1 text-slate-400 hover:text-white rounded hover:bg-slate-800 transition-colors"
+                      title="Refresh Logs"
+                    >
+                      <RefreshCw size={12} />
+                    </button>
+                  </div>
+                </div>
+                <pre className="p-4 rounded-xl bg-slate-950 border border-slate-800 text-xs text-slate-300 mono overflow-x-auto max-h-72 overflow-y-auto whitespace-pre-wrap leading-relaxed">
+                  {dockerData?.container?.logs || 'No log output available.'}
+                </pre>
+              </div>
+            ) : (
+              <div className="p-5 rounded-xl bg-slate-900 border border-slate-800 space-y-3">
+                <div className="flex items-center justify-between">
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
+                    <FileText size={14} className="text-emerald-400" />
+                    Live Host Web Server Error & Access Logs
+                  </h4>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => {
+                        const isApache = (app.process_manager || '').toLowerCase().includes('apache') || (app.service_name || '').toLowerCase().includes('apache');
+                        handleDockerAction('custom_command', {
+                          command: isApache ? 'tail -n 50 /var/log/apache2/error.log 2>/dev/null' : 'tail -n 50 /var/log/nginx/error.log 2>/dev/null'
+                        });
+                      }}
+                      className="flex items-center gap-1 px-2.5 py-1 text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 rounded border border-slate-700 transition-colors"
+                    >
+                      <RefreshCw size={11} />
+                      <span>Tail Error Log</span>
+                    </button>
+                    <button
+                      onClick={() => {
+                        const isApache = (app.process_manager || '').toLowerCase().includes('apache') || (app.service_name || '').toLowerCase().includes('apache');
+                        handleDockerAction('custom_command', {
+                          command: isApache ? 'tail -n 50 /var/log/apache2/access.log 2>/dev/null' : 'tail -n 50 /var/log/nginx/access.log 2>/dev/null'
+                        });
+                      }}
+                      className="flex items-center gap-1 px-2.5 py-1 text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 rounded border border-slate-700 transition-colors"
+                    >
+                      <RefreshCw size={11} />
+                      <span>Tail Access Log</span>
+                    </button>
+                  </div>
+                </div>
+                <div className="text-[11px] text-slate-400">
+                  Click 'Tail Error Log' or 'Tail Access Log' to stream live server telemetry into the console above.
                 </div>
               </div>
-              <pre className="p-4 rounded-xl bg-slate-950 border border-slate-800 text-xs text-slate-300 mono overflow-x-auto max-h-72 overflow-y-auto whitespace-pre-wrap leading-relaxed">
-                {dockerData?.container?.logs || 'No log output available.'}
-              </pre>
-            </div>
+            )}
           </div>
         )}
 
@@ -1022,17 +1316,34 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
                         <h3 className="text-base font-bold text-white tracking-tight">
                           Git Repository: {app.name}
                         </h3>
-                        <span className="px-2 py-0.5 rounded-full text-[11px] font-mono font-semibold bg-brand-950 text-brand-300 border border-brand-800/80">
-                          {gitStatus.version || app.current_version || 'v1.0.0'}
-                        </span>
-                        <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-slate-950 text-slate-400 border border-slate-800">
-                          {gitStatus.branch || app.git_branch || 'main'}
-                        </span>
+                        {gitStatus.is_git_repo ? (
+                          <>
+                            <span className="px-2 py-0.5 rounded-full text-[11px] font-mono font-semibold bg-brand-950 text-brand-300 border border-brand-800/80">
+                              {gitStatus.version || app.current_version || 'v1.0.0'}
+                            </span>
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-indigo-950 text-indigo-300 border border-indigo-800/80 flex items-center gap-1">
+                              <GitBranch size={11} />
+                              {gitStatus.branch || app.git_branch || 'HEAD'}
+                            </span>
+                          </>
+                        ) : (
+                          <span className="px-2 py-0.5 rounded-full text-[11px] font-mono font-semibold bg-amber-950 text-amber-300 border border-amber-800/80">
+                            Untracked (No Git)
+                          </span>
+                        )}
                       </div>
                       <div className="flex flex-wrap items-center gap-3 text-xs text-slate-400 mt-1.5 font-mono">
                         <span className="text-slate-300">
-                          Dir: <code>{gitStatus.repo_dir || `/var/www/${app.name.toLowerCase()}`}</code>
+                          <span className="text-slate-500">DocRoot:</span> <code className="text-amber-300">{gitStatus.doc_root || app.root_path || gitStatus.repo_dir || `/var/www/${app.name.toLowerCase()}`}</code>
                         </span>
+                        {gitStatus.is_git_repo && gitStatus.repo_dir && (
+                          <>
+                            <span>•</span>
+                            <span className="text-slate-300">
+                              <span className="text-slate-500">Repo:</span> <code className="text-emerald-300">{gitStatus.repo_dir}</code>
+                            </span>
+                          </>
+                        )}
                         <span>•</span>
                         <span>Host: {gitStatus.server_name || app.server_name} ({gitStatus.server_ip || app.server_ip})</span>
                       </div>
@@ -1061,7 +1372,9 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
                     <div className="flex items-center gap-2 text-slate-300 truncate">
                       <GitPullRequest size={13} className="text-slate-500 shrink-0" />
                       <span className="text-slate-500">Origin:</span>
-                      <span className="text-brand-300 truncate">{gitStatus.repo_url || app.repo_url || 'git@github.com:Alee24/hq.git'}</span>
+                      <span className="text-brand-300 truncate">
+                        {gitStatus.repo_url || app.repo_url || (gitStatus.is_git_repo ? 'git@github.com:Alee24/hq.git' : 'None configured (Untracked directory)')}
+                      </span>
                     </div>
                     {gitStatus.repo_url && gitStatus.repo_url.startsWith('http') && (
                       <a
@@ -1077,8 +1390,30 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
                   </div>
                 </div>
 
-                {/* Update Available Hero Alert */}
-                {gitStatus.update_available ? (
+                {/* Hero Alert Banner */}
+                {!gitStatus.is_git_repo ? (
+                  <div className="p-5 rounded-xl bg-slate-900 border border-amber-600/50 space-y-3 animate-in fade-in">
+                    <div className="flex items-center gap-3">
+                      <div className="p-2.5 bg-amber-500/20 border border-amber-500/40 rounded-xl text-amber-400">
+                        <Folder size={20} />
+                      </div>
+                      <div>
+                        <h4 className="text-sm font-bold text-white flex items-center gap-2">
+                          <span>No Git Working Tree Detected at Document Root</span>
+                          <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-amber-950 text-amber-300 border border-amber-800">
+                            UNTRACKED
+                          </span>
+                        </h4>
+                        <p className="text-xs text-slate-300 mt-0.5">
+                          Document root <code className="text-amber-300 font-mono">{gitStatus.doc_root || app.root_path || gitStatus.repo_dir}</code> is active on the VPS, but is not tracked by Git.
+                        </p>
+                      </div>
+                    </div>
+                    <p className="text-xs text-slate-400">
+                      Changes cannot be synchronized until a Git working tree is initialized in this folder or registered via git clone.
+                    </p>
+                  </div>
+                ) : gitStatus.update_available ? (
                   <div className="p-5 rounded-xl bg-gradient-to-r from-amber-950/70 via-slate-900 to-amber-950/40 border border-amber-600/80 shadow-lg space-y-4 animate-in fade-in">
                     <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
                       <div className="flex items-center gap-3">
@@ -1159,8 +1494,8 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
                   <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2">
                     <button
                       onClick={() => handleExecuteGitAction('pull')}
-                      disabled={Boolean(gitActionLoading)}
-                      className="flex flex-col items-center justify-center p-3 rounded-lg bg-slate-950 hover:bg-slate-800 border border-slate-800 hover:border-brand-500 text-slate-200 transition-all text-center gap-1"
+                      disabled={Boolean(gitActionLoading) || !gitStatus.is_git_repo}
+                      className="flex flex-col items-center justify-center p-3 rounded-lg bg-slate-950 hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed border border-slate-800 hover:border-brand-500 text-slate-200 transition-all text-center gap-1"
                     >
                       <Download size={15} className={gitActionLoading === 'pull' ? 'animate-spin text-brand-400' : 'text-brand-400'} />
                       <span className="text-xs font-semibold">Pull Origin</span>
@@ -1169,8 +1504,8 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
 
                     <button
                       onClick={() => handleExecuteGitAction('fetch')}
-                      disabled={Boolean(gitActionLoading)}
-                      className="flex flex-col items-center justify-center p-3 rounded-lg bg-slate-950 hover:bg-slate-800 border border-slate-800 hover:border-indigo-500 text-slate-200 transition-all text-center gap-1"
+                      disabled={Boolean(gitActionLoading) || !gitStatus.is_git_repo}
+                      className="flex flex-col items-center justify-center p-3 rounded-lg bg-slate-950 hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed border border-slate-800 hover:border-indigo-500 text-slate-200 transition-all text-center gap-1"
                     >
                       <RefreshCw size={15} className={gitActionLoading === 'fetch' ? 'animate-spin text-indigo-400' : 'text-indigo-400'} />
                       <span className="text-xs font-semibold">Fetch Remote</span>
@@ -1189,8 +1524,8 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
 
                     <button
                       onClick={() => handleExecuteGitAction('diff')}
-                      disabled={Boolean(gitActionLoading)}
-                      className="flex flex-col items-center justify-center p-3 rounded-lg bg-slate-950 hover:bg-slate-800 border border-slate-800 hover:border-cyan-500 text-slate-200 transition-all text-center gap-1"
+                      disabled={Boolean(gitActionLoading) || !gitStatus.is_git_repo}
+                      className="flex flex-col items-center justify-center p-3 rounded-lg bg-slate-950 hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed border border-slate-800 hover:border-cyan-500 text-slate-200 transition-all text-center gap-1"
                     >
                       <GitPullRequest size={15} className={gitActionLoading === 'diff' ? 'animate-spin text-cyan-400' : 'text-cyan-400'} />
                       <span className="text-xs font-semibold">Inspect Diff</span>
@@ -1199,8 +1534,8 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
 
                     <button
                       onClick={() => handleExecuteGitAction('log')}
-                      disabled={Boolean(gitActionLoading)}
-                      className="flex flex-col items-center justify-center p-3 rounded-lg bg-slate-950 hover:bg-slate-800 border border-slate-800 hover:border-purple-500 text-slate-200 transition-all text-center gap-1"
+                      disabled={Boolean(gitActionLoading) || !gitStatus.is_git_repo}
+                      className="flex flex-col items-center justify-center p-3 rounded-lg bg-slate-950 hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed border border-slate-800 hover:border-purple-500 text-slate-200 transition-all text-center gap-1"
                     >
                       <Clock size={15} className={gitActionLoading === 'log' ? 'animate-spin text-purple-400' : 'text-purple-400'} />
                       <span className="text-xs font-semibold">Commit Log</span>
@@ -1209,8 +1544,8 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
 
                     <button
                       onClick={() => handleExecuteGitAction('reset_hard')}
-                      disabled={Boolean(gitActionLoading)}
-                      className="flex flex-col items-center justify-center p-3 rounded-lg bg-slate-950 hover:bg-rose-950/40 border border-slate-800 hover:border-rose-600 text-slate-200 transition-all text-center gap-1"
+                      disabled={Boolean(gitActionLoading) || !gitStatus.is_git_repo}
+                      className="flex flex-col items-center justify-center p-3 rounded-lg bg-slate-950 hover:bg-rose-950/40 disabled:opacity-50 disabled:cursor-not-allowed border border-slate-800 hover:border-rose-600 text-slate-200 transition-all text-center gap-1"
                     >
                       <RotateCcw size={15} className={gitActionLoading === 'reset_hard' ? 'animate-spin text-rose-400' : 'text-rose-400'} />
                       <span className="text-xs font-semibold text-rose-300">Hard Reset</span>
@@ -1220,41 +1555,75 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
                 </div>
 
                 {/* Server vs Remote Commit Comparison */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div className="p-4 bg-slate-950 rounded-xl border border-slate-800 space-y-2">
-                    <div className="flex items-center justify-between">
-                      <span className="text-slate-400 font-semibold uppercase text-[10px]">Current Server Commit</span>
-                      <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-brand-950 text-brand-400 border border-brand-800/80">
-                        LOCAL
-                      </span>
+                {gitStatus.is_git_repo ? (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="p-4 bg-slate-950 rounded-xl border border-slate-800 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-slate-400 font-semibold uppercase text-[10px]">Current Server Commit</span>
+                        <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-brand-950 text-brand-400 border border-brand-800/80">
+                          LOCAL
+                        </span>
+                      </div>
+                      <div className="text-base font-bold text-brand-400 mono">{gitStatus.current_server_commit.short_hash}</div>
+                      <p className="text-xs text-slate-300">{gitStatus.current_server_commit.message}</p>
+                      <div className="text-slate-500 text-[11px] font-mono pt-1 border-t border-slate-800/80 flex items-center justify-between">
+                        <span>{gitStatus.current_server_commit.author}</span>
+                        <span>{gitStatus.current_server_commit.date}</span>
+                      </div>
                     </div>
-                    <div className="text-base font-bold text-brand-400 mono">{gitStatus.current_server_commit.short_hash}</div>
-                    <p className="text-xs text-slate-300">{gitStatus.current_server_commit.message}</p>
-                    <div className="text-slate-500 text-[11px] font-mono pt-1 border-t border-slate-800/80 flex items-center justify-between">
-                      <span>{gitStatus.current_server_commit.author}</span>
-                      <span>{gitStatus.current_server_commit.date}</span>
-                    </div>
-                  </div>
 
-                  <div className="p-4 bg-slate-950 rounded-xl border border-slate-800 space-y-2">
-                    <div className="flex items-center justify-between">
-                      <span className="text-slate-400 font-semibold uppercase text-[10px]">Latest Remote Head</span>
-                      <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase ${
-                        gitStatus.update_available
-                          ? 'bg-amber-950 text-amber-400 border border-amber-800'
-                          : 'bg-emerald-950 text-emerald-400 border border-emerald-800'
-                      }`}>
-                        {gitStatus.update_available ? 'UPDATE AVAILABLE' : 'SYNCHRONIZED'}
-                      </span>
-                    </div>
-                    <div className="text-base font-bold text-emerald-400 mono">{gitStatus.latest_remote_commit.short_hash}</div>
-                    <p className="text-xs text-slate-300">{gitStatus.latest_remote_commit.message}</p>
-                    <div className="text-slate-500 text-[11px] font-mono pt-1 border-t border-slate-800/80 flex items-center justify-between">
-                      <span>{gitStatus.latest_remote_commit.author}</span>
-                      <span>{gitStatus.latest_remote_commit.date}</span>
+                    <div className="p-4 bg-slate-950 rounded-xl border border-slate-800 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-slate-400 font-semibold uppercase text-[10px]">Latest Remote Head</span>
+                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase ${
+                          gitStatus.update_available
+                            ? 'bg-amber-950 text-amber-400 border border-amber-800'
+                            : 'bg-emerald-950 text-emerald-400 border border-emerald-800'
+                        }`}>
+                          {gitStatus.update_available ? 'UPDATE AVAILABLE' : 'SYNCHRONIZED'}
+                        </span>
+                      </div>
+                      <div className="text-base font-bold text-emerald-400 mono">{gitStatus.latest_remote_commit.short_hash}</div>
+                      <p className="text-xs text-slate-300">{gitStatus.latest_remote_commit.message}</p>
+                      <div className="text-slate-500 text-[11px] font-mono pt-1 border-t border-slate-800/80 flex items-center justify-between">
+                        <span>{gitStatus.latest_remote_commit.author}</span>
+                        <span>{gitStatus.latest_remote_commit.date}</span>
+                      </div>
                     </div>
                   </div>
-                </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="p-4 bg-slate-950 rounded-xl border border-slate-800 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-slate-400 font-semibold uppercase text-[10px]">Document Root Vitals</span>
+                        <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-amber-950 text-amber-400 border border-amber-800/80">
+                          FILESYSTEM
+                        </span>
+                      </div>
+                      <div className="text-xs font-bold text-amber-300 font-mono truncate">
+                        {gitStatus.doc_root || app.root_path || gitStatus.repo_dir}
+                      </div>
+                      <p className="text-xs text-slate-300">
+                        Active web directory inspected on VPS. No Git metadata present in folder hierarchy.
+                      </p>
+                    </div>
+
+                    <div className="p-4 bg-slate-950 rounded-xl border border-slate-800 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-slate-400 font-semibold uppercase text-[10px]">Source Control Status</span>
+                        <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-slate-900 text-slate-400 border border-slate-800">
+                          UNTRACKED
+                        </span>
+                      </div>
+                      <div className="text-xs font-bold text-slate-400 font-mono">
+                        Static / Direct Deployment
+                      </div>
+                      <p className="text-xs text-slate-400">
+                        Changes cannot be auto-pulled until a remote Git repository is configured.
+                      </p>
+                    </div>
+                  </div>
+                )}
 
                 {/* Live Terminal Output Console */}
                 {gitTerminalOutput && (
@@ -1296,7 +1665,7 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
                 )}
 
                 {/* Recent Commit History Log */}
-                {gitStatus.recent_commits && gitStatus.recent_commits.length > 0 && (
+                {gitStatus.is_git_repo && gitStatus.recent_commits && gitStatus.recent_commits.length > 0 && (
                   <div className="p-5 rounded-xl bg-slate-900 border border-slate-800 space-y-3">
                     <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400">
                       Recent Commits ({gitStatus.recent_commits.length})
