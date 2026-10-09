@@ -85,8 +85,8 @@ async def run_deployment_pipeline(
     # Update application
     app.current_commit = commit_hash[:7]
     app.latest_repo_commit = commit_hash[:7]
-    app.last_deployment_at = datetime.now(timezone.utc)
-    app.last_restart_at = datetime.now(timezone.utc)
+    app.last_deployment_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    app.last_restart_at = datetime.now(timezone.utc).replace(tzinfo=None)
     app.deployment_status = "SUCCESS"
     app.health_status = "ONLINE"
     app.http_status = 200

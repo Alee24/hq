@@ -196,7 +196,7 @@ async def execute_application_action(
     if action not in allowed_actions:
         raise HTTPException(status_code=400, detail=f"Invalid action. Allowed: {', '.join(allowed_actions)}")
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
     log_msg = ""
     if action == "restart":
         app.last_restart_at = now
@@ -272,7 +272,7 @@ async def toggle_maintenance_mode(
     if not app:
         raise HTTPException(status_code=404, detail="Application not found.")
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
     app.is_maintenance = payload.enabled
     app.health_status = "MAINTENANCE" if payload.enabled else "ONLINE"
 
@@ -349,7 +349,7 @@ async def delete_application(
         raise HTTPException(status_code=404, detail="Application not found.")
 
     app.is_active = False
-    app.deleted_at = datetime.now(timezone.utc)
+    app.deleted_at = datetime.now(timezone.utc).replace(tzinfo=None)
 
     await log_audit_event(
         db=db,

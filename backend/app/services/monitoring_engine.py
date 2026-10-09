@@ -126,7 +126,7 @@ async def execute_monitoring_cycle():
                 running_processes_count=124 + int(cpu / 2)
             )
             db.add(metric)
-            srv.last_heartbeat = datetime.now(timezone.utc)
+            srv.last_heartbeat = datetime.now(timezone.utc).replace(tzinfo=None)
             srv.status = "ONLINE"
 
         await db.commit()

@@ -15,7 +15,7 @@ async def get_dashboard_metrics(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    now = datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
 
     # 1. Applications Stats
     apps_res = await db.execute(select(Application).where(Application.is_active == True, Application.deleted_at == None))
@@ -42,7 +42,7 @@ async def get_dashboard_metrics(
     lic_active = sum(1 for l in licenses if l.status == "ACTIVE")
     lic_expiring_soon = sum(
         1 for l in licenses 
-        if l.status == "ACTIVE" and (l.expires_at.replace(tzinfo=timezone.utc if l.expires_at.tzinfo is None else l.expires_at.tzinfo) - now).days <= 30
+        if l.status == "ACTIVE" and l.expires_at and (l.expires_at.replace(tzinfo=None) - now).days <= 30
     )
     lic_expired = sum(1 for l in licenses if l.status == "EXPIRED")
 
@@ -54,7 +54,7 @@ async def get_dashboard_metrics(
     recent_deployments = dep_res.scalars().all()
     deployments_today = sum(
         1 for d in recent_deployments 
-        if d.created_at.replace(tzinfo=timezone.utc if d.created_at.tzinfo is None else d.created_at.tzinfo) >= today_start
+        if d.created_at and d.created_at.replace(tzinfo=None) >= today_start
     )
     failed_deployments = sum(1 for d in recent_deployments if d.status == "FAILED")
 

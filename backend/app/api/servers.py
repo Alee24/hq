@@ -114,7 +114,7 @@ async def ingest_server_metrics(
             open_ports=[22, 80, 443]
         )
         db.add(metric)
-        srv.last_heartbeat = datetime.now(timezone.utc)
+        srv.last_heartbeat = datetime.now(timezone.utc).replace(tzinfo=None)
         srv.agent_status = "CONNECTED"
         srv.status = "ONLINE"
         await db.commit()
@@ -155,7 +155,7 @@ async def discover_server_system(
     srv.os = specs["os"]
     srv.os_version = specs["os_version"]
     srv.status = "ONLINE"
-    srv.last_heartbeat = datetime.now(timezone.utc)
+    srv.last_heartbeat = datetime.now(timezone.utc).replace(tzinfo=None)
 
     # Record latest metric
     metric = ServerMetric(
@@ -405,7 +405,7 @@ async def execute_server_command(
     # Simulate / execute safe command
     if action in ["restart", "reboot"]:
         srv.status = "ONLINE"
-        srv.last_heartbeat = datetime.now(timezone.utc)
+        srv.last_heartbeat = datetime.now(timezone.utc).replace(tzinfo=None)
     elif action == "shutdown":
         srv.status = "OFFLINE"
 
@@ -697,7 +697,7 @@ async def test_server_connection_endpoint(
     test_res = test_server_connection(srv)
     srv.status = test_res["status"]
     if test_res["success"]:
-        srv.last_heartbeat = datetime.now(timezone.utc)
+        srv.last_heartbeat = datetime.now(timezone.utc).replace(tzinfo=None)
         srv.agent_status = "CONNECTED"
     else:
         srv.agent_status = "DISCONNECTED"
@@ -832,7 +832,7 @@ async def execute_terminal_command(
         stderr=cmd_res["stderr"],
         exit_code=cmd_res["exit_code"],
         duration_ms=cmd_res["duration_ms"],
-        timestamp=datetime.now(timezone.utc)
+        timestamp=datetime.now(timezone.utc).replace(tzinfo=None)
     )
 
 @router.get("/{server_id}/terminal/history", response_model=List[ServerTerminalLogResponse])
@@ -880,7 +880,7 @@ async def delete_server(
         raise HTTPException(status_code=404, detail="Server node not found.")
 
     srv.is_active = False
-    srv.deleted_at = datetime.now(timezone.utc)
+    srv.deleted_at = datetime.now(timezone.utc).replace(tzinfo=None)
 
     await log_audit_event(
         db=db,

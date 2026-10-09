@@ -55,7 +55,7 @@ async def resolve_alert(
         raise HTTPException(status_code=404, detail="Alert not found.")
 
     alert.is_resolved = True
-    alert.resolved_at = datetime.now(timezone.utc)
+    alert.resolved_at = datetime.now(timezone.utc).replace(tzinfo=None)
 
     await log_audit_event(
         db=db,

@@ -70,7 +70,7 @@ async def get_license_metrics(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    now = datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
     result = await db.execute(select(License).where(License.deleted_at == None))
     licenses = result.scalars().all()
 
@@ -87,9 +87,9 @@ async def get_license_metrics(
     exp_90 = 0
 
     for l in licenses:
-        if l.status == "ACTIVE":
-            exp_tz = l.expires_at.replace(tzinfo=timezone.utc if l.expires_at.tzinfo is None else l.expires_at.tzinfo)
-            days = (exp_tz - now).days
+        if l.status == "ACTIVE" and l.expires_at:
+            exp_naive = l.expires_at.replace(tzinfo=None)
+            days = (exp_naive - now).days
             if 0 <= days <= 7:
                 exp_7 += 1
             if 0 <= days <= 30:
@@ -289,15 +289,15 @@ async def validate_license(
             message=f"License status is {lic.status}."
         )
 
-    now = datetime.now(timezone.utc)
-    exp_tz = lic.expires_at.replace(tzinfo=timezone.utc if lic.expires_at.tzinfo is None else lic.expires_at.tzinfo)
-    if exp_tz < now:
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    exp_naive = lic.expires_at.replace(tzinfo=None) if lic.expires_at else now
+    if exp_naive < now:
         lic.status = "EXPIRED"
         await db.commit()
         return LicenseValidateResponse(
             valid=False,
             status="EXPIRED",
-            message="License expired on " + exp_tz.strftime("%Y-%m-%d"),
+            message="License expired on " + exp_naive.strftime("%Y-%m-%d"),
             expires_at=lic.expires_at
         )
 
@@ -414,10 +414,10 @@ async def renew_license(
     if not lic:
         raise HTTPException(status_code=404, detail="License not found.")
 
-    now = datetime.now(timezone.utc)
-    current_exp = lic.expires_at.replace(tzinfo=timezone.utc if lic.expires_at.tzinfo is None else lic.expires_at.tzinfo)
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    current_exp = lic.expires_at.replace(tzinfo=None) if lic.expires_at else now
     new_exp = max(now, current_exp) + timedelta(days=additional_days)
-    lic.expires_at = new_exp.replace(tzinfo=None) if new_exp.tzinfo else new_exp
+    lic.expires_at = new_exp.replace(tzinfo=None)
     lic.status = "ACTIVE"
 
     await log_audit_event(

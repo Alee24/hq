@@ -21,7 +21,7 @@ async def get_monitoring_summary(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    now = datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
     delta_map = {
         "24h": timedelta(hours=24),
         "7d": timedelta(days=7),

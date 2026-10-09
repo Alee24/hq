@@ -80,13 +80,22 @@ async def verify_domain_ssl(
 
     # Probe live TLS certificate via HTTPS socket probe
     probe = probe_domain_tls(domain.domain_name)
-    domain.last_checked_at = datetime.now(timezone.utc)
+    domain.last_checked_at = datetime.now(timezone.utc).replace(tzinfo=None)
     if probe.get("valid"):
         domain.ssl_status = probe.get("ssl_status", "VALID")
         domain.ssl_issuer = probe.get("ssl_issuer", domain.ssl_issuer or "Let's Encrypt Authority X3")
         domain.days_remaining = probe.get("days_remaining", domain.days_remaining)
         if probe.get("ssl_expires_at"):
-            domain.ssl_expires_at = probe["ssl_expires_at"]
+            exp_val = probe["ssl_expires_at"]
+            if hasattr(exp_val, "replace"):
+                domain.ssl_expires_at = exp_val.replace(tzinfo=None)
+            elif isinstance(exp_val, str):
+                try:
+                    domain.ssl_expires_at = datetime.fromisoformat(exp_val).replace(tzinfo=None)
+                except Exception:
+                    pass
+            else:
+                domain.ssl_expires_at = exp_val
         domain.dns_status = probe.get("dns_status", "RESOLVED")
     else:
         if domain.ssl_status not in ["VALID", "EXPIRING"]:
@@ -154,7 +163,7 @@ async def update_domain_ssl(
     exec_res = issue_or_renew_remote_ssl(server, domain.domain_name)
 
     # 3. Update Domain record in database
-    domain.last_checked_at = datetime.now(timezone.utc)
+    domain.last_checked_at = datetime.now(timezone.utc).replace(tzinfo=None)
     if exec_res.get("success"):
         domain.ssl_status = exec_res.get("ssl_status", "VALID")
         domain.ssl_issuer = exec_res.get("ssl_issuer", "Let's Encrypt Authority X3")
@@ -163,8 +172,10 @@ async def update_domain_ssl(
             try:
                 exp_val = exec_res["ssl_expires_at"]
                 if isinstance(exp_val, str):
-                    domain.ssl_expires_at = datetime.fromisoformat(exp_val)
-                elif isinstance(exp_val, datetime):
+                    domain.ssl_expires_at = datetime.fromisoformat(exp_val).replace(tzinfo=None)
+                elif hasattr(exp_val, "replace"):
+                    domain.ssl_expires_at = exp_val.replace(tzinfo=None)
+                else:
                     domain.ssl_expires_at = exp_val
             except Exception:
                 pass
@@ -177,7 +188,16 @@ async def update_domain_ssl(
             domain.ssl_issuer = tls_probe.get("ssl_issuer", "Let's Encrypt Authority X3")
             domain.days_remaining = tls_probe.get("days_remaining", 89)
             if tls_probe.get("ssl_expires_at"):
-                domain.ssl_expires_at = tls_probe["ssl_expires_at"]
+                exp_val = tls_probe["ssl_expires_at"]
+                if hasattr(exp_val, "replace"):
+                    domain.ssl_expires_at = exp_val.replace(tzinfo=None)
+                elif isinstance(exp_val, str):
+                    try:
+                        domain.ssl_expires_at = datetime.fromisoformat(exp_val).replace(tzinfo=None)
+                    except Exception:
+                        pass
+                else:
+                    domain.ssl_expires_at = exp_val
 
     # 4. Record execution log in server terminal audit history
     term_log = ServerTerminalLog(

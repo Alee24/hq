@@ -1,6 +1,28 @@
+from datetime import datetime, timezone
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
-from sqlalchemy.orm import declarative_base
+from sqlalchemy.orm import declarative_base, Session
 from backend.app.core.config import settings
+
+@event.listens_for(Session, "before_flush")
+def sanitize_datetimes_before_flush(session, flush_context, instances):
+    """
+    Universal failsafe: Ensures that any datetime attribute on inserted or updated
+    SQLAlchemy models is converted to a naive UTC datetime.
+    This prevents asyncpg TypeError: 'can't subtract offset-naive and offset-aware datetimes'
+    when interacting with PostgreSQL TIMESTAMP WITHOUT TIME ZONE columns.
+    """
+    try:
+        for obj in session.new.union(session.dirty):
+            state = getattr(obj, "_sa_instance_state", None)
+            if not state:
+                continue
+            for prop in state.mapper.column_attrs:
+                val = getattr(obj, prop.key, None)
+                if isinstance(val, datetime) and val.tzinfo is not None:
+                    setattr(obj, prop.key, val.astimezone(timezone.utc).replace(tzinfo=None))
+    except Exception:
+        pass
 
 connect_args = {}
 if "sqlite" in settings.DATABASE_URL:

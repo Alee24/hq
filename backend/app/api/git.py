@@ -203,7 +203,7 @@ async def execute_git_action_endpoint(
             app.latest_repo_commit = new_commit
         if new_ver:
             app.current_version = new_ver
-        app.last_deployment_at = datetime.now(timezone.utc)
+        app.last_deployment_at = datetime.now(timezone.utc).replace(tzinfo=None)
 
         # Record deployment
         dep = Deployment(
@@ -270,7 +270,7 @@ async def pull_remote_changes(
             app.latest_repo_commit = new_commit
         if res.get("new_version"):
             app.current_version = res["new_version"]
-        app.last_deployment_at = datetime.now(timezone.utc)
+        app.last_deployment_at = datetime.now(timezone.utc).replace(tzinfo=None)
         await db.commit()
 
     return {

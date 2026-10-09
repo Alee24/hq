@@ -2200,7 +2200,7 @@ def probe_domain_tls(domain_name: str, timeout: int = 5) -> Dict[str, Any]:
                     "ssl_status": status,
                     "ssl_issuer": issuer_str,
                     "days_remaining": max(0, days_left),
-                    "ssl_expires_at": not_after,
+                    "ssl_expires_at": not_after.replace(tzinfo=None),
                     "dns_status": "RESOLVED",
                     "message": f"Verified TLS certificate issued by {issuer_str} with {days_left} days remaining"
                 }
