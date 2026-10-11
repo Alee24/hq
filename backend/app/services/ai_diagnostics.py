@@ -24,13 +24,21 @@ def mask_key(key: Optional[str]) -> Optional[str]:
     suffix = k[-4:]
     return f"{prefix}...{suffix}"
 
+GEMINI_MODELS_CHAIN = [
+    "gemini-3.8-flash",
+    "gemini-2.5-flash",
+    "gemini-2.0-flash",
+    "gemini-1.5-flash",
+    "gemini-1.5-pro",
+]
+
 AI_KEYS_MAP = {
     "gemini": {
         "setting_key": "ai_gemini_api_key",
         "env_var": "GEMINI_API_KEY",
-        "model": "gemini-2.5-flash",
+        "model": "gemini-3.8-flash",
         "display_name": "Google Gemini",
-        "description": "Google DeepMind's ultra-fast multimodal model (Gemini 2.5 Flash / 1.5 Flash)"
+        "description": "Google DeepMind's ultra-fast multimodal model (Gemini 3.8 Flash / 2.0 / 1.5)"
     },
     "openai": {
         "setting_key": "ai_openai_api_key",
@@ -173,32 +181,41 @@ async def test_ai_key_connectivity(
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             if p == "gemini":
-                # Google Gemini
-                url = f"https://generativelanguage.googleapis.com/v1beta/models/{meta['model']}:generateContent?key={resolved_key}"
-                body = {
-                    "contents": [{"parts": [{"text": "Respond with the single word: OK"}]}],
-                    "generationConfig": {"temperature": 0.0, "maxOutputTokens": 10}
-                }
-                resp = await client.post(url, json=body)
+                # Google Gemini with multi-model fallback chain
+                last_err = ""
+                sample = ""
+                for cand_model in GEMINI_MODELS_CHAIN:
+                    url = f"https://generativelanguage.googleapis.com/v1beta/models/{cand_model}:generateContent?key={resolved_key}"
+                    body = {
+                        "contents": [{"parts": [{"text": "Respond with the single word: OK"}]}],
+                        "generationConfig": {"temperature": 0.0, "maxOutputTokens": 10}
+                    }
+                    resp = await client.post(url, json=body)
+                    elapsed = int((time.time() - start_t) * 1000)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        sample = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                        return AiKeysTestResponse(
+                            success=True,
+                            provider=provider,
+                            message=f"Successfully authenticated with {meta['display_name']} ({cand_model}).",
+                            response_sample=sample,
+                            latency_ms=elapsed
+                        )
+                    elif resp.status_code == 404:
+                        last_err = f"HTTP 404 on {cand_model}: {resp.text[:150]}"
+                        continue
+                    else:
+                        last_err = f"HTTP {resp.status_code} on {cand_model}: {resp.text[:180]}"
+                        break
+
                 elapsed = int((time.time() - start_t) * 1000)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    sample = data["candidates"][0]["content"]["parts"][0]["text"].strip()
-                    return AiKeysTestResponse(
-                        success=True,
-                        provider=provider,
-                        message=f"Successfully authenticated with {meta['display_name']} ({meta['model']}).",
-                        response_sample=sample,
-                        latency_ms=elapsed
-                    )
-                else:
-                    err_msg = resp.text[:200]
-                    return AiKeysTestResponse(
-                        success=False,
-                        provider=provider,
-                        message=f"{meta['display_name']} API returned HTTP {resp.status_code}: {err_msg}",
-                        latency_ms=elapsed
-                    )
+                return AiKeysTestResponse(
+                    success=False,
+                    provider=provider,
+                    message=f"{meta['display_name']} authentication failed: {last_err}",
+                    latency_ms=elapsed
+                )
 
             elif p == "openai":
                 # OpenAI
@@ -323,22 +340,22 @@ async def call_ai_model_for_diagnostics(
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         if p == "gemini":
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
             body = {
                 "contents": [
                     {"role": "user", "parts": [{"text": f"{system_prompt}\n\n{user_prompt}"}]}
                 ],
                 "generationConfig": {"temperature": 0.2, "maxOutputTokens": 3000}
             }
-            resp = await client.post(url, json=body)
-            if resp.status_code != 200:
-                # Try fallback to gemini-1.5-flash
-                fallback_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
-                resp = await client.post(fallback_url, json=body)
-                model_name = "gemini-1.5-flash"
-            if resp.status_code == 200:
-                data = resp.json()
-                return data["candidates"][0]["content"]["parts"][0]["text"], model_name
+            for cand_model in GEMINI_MODELS_CHAIN:
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{cand_model}:generateContent?key={api_key}"
+                resp = await client.post(url, json=body)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    return data["candidates"][0]["content"]["parts"][0]["text"], cand_model
+                elif resp.status_code == 404:
+                    continue
+                else:
+                    break
 
         elif p in ["openai", "deepseek"]:
             base_url = "https://api.openai.com/v1/chat/completions" if p == "openai" else "https://api.deepseek.com/v1/chat/completions"

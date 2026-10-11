@@ -349,7 +349,7 @@ export const ApiKeysView: React.FC = () => {
                     <div>
                       <h4 className="text-xs font-bold text-white flex items-center gap-1.5">
                         <span>Google Gemini</span>
-                        <span className="text-[10px] text-sky-400 font-mono font-normal">(gemini-2.5-flash / 1.5-flash)</span>
+                        <span className="text-[10px] text-sky-400 font-mono font-normal">(gemini-3.8-flash / fallback)</span>
                       </h4>
                       <p className="text-[10px] text-slate-400">Google AI Studio key with fast multimodal analysis</p>
                     </div>
