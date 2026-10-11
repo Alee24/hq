@@ -337,6 +337,72 @@ class DomainSslActionResponse(BaseModel):
     duration_ms: int
     message: str
 
+class DomainDeepDiveResponse(BaseModel):
+    domain_id: str
+    domain_name: str
+    server_ip: str
+    server_id: Optional[str] = None
+    server_name: Optional[str] = None
+    server_os: Optional[str] = None
+    server_provider: Optional[str] = None
+    application_id: Optional[str] = None
+    application_name: Optional[str] = None
+    language: str = "PHP"
+    framework: str = "Apache2 VirtualHost"
+    version: Optional[str] = None
+    memory_mb: float = 0.0
+    memory_percent: float = 0.0
+    uptime_formatted: str = "Active"
+    status: str = "ONLINE"
+    port: int = 80
+    root_path: Optional[str] = None
+    process_manager: str = "systemd"
+    service_name: Optional[str] = None
+    is_container: bool = False
+    container_id: Optional[str] = None
+    total_views: int = 0
+    active_pages: int = 0
+    broken_links_count: int = 0
+    error_rate_percent: float = 0.0
+    peak_req_per_min: int = 0
+    average_latency_ms: float = 0.0
+    spikes_detected: bool = False
+    config_file_path: Optional[str] = None
+    config_content: Optional[str] = None
+    ssl_status: str = "VALID"
+    ssl_issuer: Optional[str] = None
+    days_remaining: int = 90
+
+class DomainServiceActionRequest(BaseModel):
+    action: str # "restart", "stop", "start", "reload"
+
+class DomainDeleteFromServerResponse(BaseModel):
+    success: bool
+    domain_id: str
+    domain_name: str
+    message: str
+    backup_path: Optional[str] = None
+    syntax_valid: bool = True
+    reloaded: bool = True
+    output: Optional[str] = None
+
+class ApplicationBackupRequest(BaseModel):
+    application_id: str
+    include_database: bool = True
+    custom_label: Optional[str] = None
+
+class ServerConfigBackupRequest(BaseModel):
+    server_id: str
+    custom_label: Optional[str] = None
+
+class PortableRestoreScriptResponse(BaseModel):
+    server_id: str
+    server_name: str
+    backup_id: Optional[str] = None
+    download_url: Optional[str] = None
+    restore_command_sequence: str
+    instructions: str
+
 # ==========================================
 # Monitoring & Incident Schemas
 # ==========================================

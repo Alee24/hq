@@ -1,6 +1,7 @@
 import pytest
 import pytest_asyncio
 import uuid
+import time
 from unittest.mock import patch
 from httpx import AsyncClient, ASGITransport
 from backend.app.main import app
@@ -760,6 +761,111 @@ async def test_server_snapshot_and_revert_flow():
             list_after = await ac.get(f"/api/servers/{srv_id}/snapshots", headers=headers)
             assert list_after.status_code == 200
             assert not any(s["id"] == snap_id for s in list_after.json())
+
+
+@pytest.mark.asyncio
+async def test_domain_deep_dive_live_monitoring_and_portable_restore():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        token = await get_admin_token(ac)
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # 1. Create a server
+        srv_res = await ac.post("/api/servers", json={
+            "public_ip": f"198.51.100.{int(time.time()) % 200 + 10}",
+            "name": "Target-Cluster-Node",
+            "ssh_password": "TestPassword123"
+        }, headers=headers)
+        assert srv_res.status_code == 200
+        srv_id = srv_res.json()["id"]
+
+        # 2. Create an application
+        app_res = await ac.post("/api/applications", json={
+            "name": "production-portal",
+            "domain": "production-portal.local",
+            "server_id": srv_id,
+            "framework": "PHP / Laravel",
+            "environment": "production",
+            "port": 8080,
+            "service_name": "portal-web"
+        }, headers=headers)
+        assert app_res.status_code == 200
+        app_id = app_res.json()["id"]
+
+        # 3. Create a domain
+        dom_name = f"portal-{int(time.time())}.kkdes.co.ke"
+        dom_res = await ac.post("/api/domains", json={
+            "domain_name": dom_name,
+            "application_id": app_id,
+            "server_ip": srv_res.json()["public_ip"],
+            "redirect_status": "HTTP_TO_HTTPS",
+            "auto_renew": True
+        }, headers=headers)
+        assert dom_res.status_code == 200
+        dom_id = dom_res.json()["id"]
+
+        # 4. Domain Deep-Dive Telemetry
+        dd_res = await ac.get(f"/api/domains/{dom_id}/deep-dive", headers=headers)
+        assert dd_res.status_code == 200
+        dd_data = dd_res.json()
+        assert dd_data["domain_name"] == dom_name
+        assert "language" in dd_data
+        assert "memory_mb" in dd_data
+        assert "total_views" in dd_data
+        assert "uptime_formatted" in dd_data
+
+        # 5. Domain Service Action (restart)
+        act_res = await ac.post(f"/api/domains/{dom_id}/service-action", json={
+            "action": "restart"
+        }, headers=headers)
+        assert act_res.status_code == 200
+        assert act_res.json()["action"] == "restart"
+
+        # 6. Domain Backup Config (.conf file)
+        conf_res = await ac.get(f"/api/domains/{dom_id}/backup-config", headers=headers)
+        assert conf_res.status_code == 200
+        assert dom_name in conf_res.text or "VirtualHost" in conf_res.text
+
+        # 7. Live Application Continuous Monitoring
+        mon_res = await ac.get(f"/api/monitoring/live/{app_id}", headers=headers)
+        assert mon_res.status_code == 200
+        mon_data = mon_res.json()
+        assert mon_data["application_id"] == app_id
+        assert "mem_mb" in mon_data
+        assert "terminal_logs" in mon_data
+        assert "active_visitors" in mon_data
+
+        # 8. Backup Application
+        b_app_res = await ac.post("/api/backups/application", json={
+            "application_id": app_id,
+            "include_database": True
+        }, headers=headers)
+        assert b_app_res.status_code == 200
+        assert b_app_res.json()["success"] is True
+
+        # 9. Backup Server Config Snapshot
+        b_srv_res = await ac.post("/api/backups/server-config", json={
+            "server_id": srv_id
+        }, headers=headers)
+        assert b_srv_res.status_code == 200
+        assert b_srv_res.json()["success"] is True
+
+        # 10. Portable Restore Script
+        rest_res = await ac.get(f"/api/backups/portable-restore-script/{srv_id}", headers=headers)
+        assert rest_res.status_code == 200
+        rest_data = rest_res.json()
+        assert "tar -xzf" in rest_data["restore_command_sequence"]
+        assert "apache2" in rest_data["restore_command_sequence"]
+        assert "nginx" in rest_data["restore_command_sequence"]
+
+        # 11. Delete Domain from Server (teardown VirtualHost)
+        del_srv_res = await ac.delete(f"/api/domains/{dom_id}/delete-from-server", headers=headers)
+        assert del_srv_res.status_code == 200
+        assert del_srv_res.json()["success"] is True
+
+        # 12. Verify domain deleted from active list
+        list_doms = await ac.get("/api/domains", headers=headers)
+        assert not any(d["id"] == dom_id for d in list_doms.json())
+
 
 
 

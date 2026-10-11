@@ -9,7 +9,9 @@ import {
   CheckCircle2,
   AlertTriangle,
   Clock,
-  ShieldAlert
+  ShieldAlert,
+  Filter,
+  Search
 } from 'lucide-react';
 import { api } from '../api/client';
 import { DeploymentItem, Application } from '../types';
@@ -39,6 +41,10 @@ export const DeploymentsView: React.FC = () => {
   // Rollback Modal
   const [rollbackModalOpen, setRollbackModalOpen] = useState(false);
   const [selectedForRollback, setSelectedForRollback] = useState<DeploymentItem | null>(null);
+
+  // Filter state
+  const [filterAppId, setFilterAppId] = useState<string>('ALL');
+  const [searchQuery, setSearchQuery] = useState('');
 
   // Log View Modal
   const [logModalContent, setLogModalContent] = useState<string | null>(null);
@@ -122,6 +128,16 @@ export const DeploymentsView: React.FC = () => {
     }
   };
 
+  const filteredDeployments = deployments.filter((d) => {
+    const matchesApp = filterAppId === 'ALL' || d.application_id === filterAppId;
+    const matchesSearch =
+      !searchQuery ||
+      d.commit_hash.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      d.commit_message.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (d.application_name && d.application_name.toLowerCase().includes(searchQuery.toLowerCase()));
+    return matchesApp && matchesSearch;
+  });
+
   return (
     <div className="p-6 md:p-8 space-y-6 max-w-7xl mx-auto">
       {/* Header Bar */}
@@ -150,6 +166,46 @@ export const DeploymentsView: React.FC = () => {
             <Plus size={14} />
             <span>Launch Deployment</span>
           </button>
+        </div>
+      </div>
+
+      {/* Application Filter Toolbar */}
+      <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 bg-slate-900/60 p-3 rounded-xl border border-slate-800">
+        <div className="flex items-center gap-2 flex-1">
+          <div className="flex items-center gap-2 bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-300">
+            <Filter size={13} className="text-brand-400 shrink-0" />
+            <span className="text-slate-500 font-medium">Filter by Application:</span>
+            <select
+              value={filterAppId}
+              onChange={(e) => setFilterAppId(e.target.value)}
+              className="bg-transparent border-none text-white focus:outline-none text-xs cursor-pointer font-semibold"
+            >
+              <option value="ALL" className="bg-slate-900 text-white">All Applications ({deployments.length})</option>
+              {apps.map(a => {
+                const count = deployments.filter(d => d.application_id === a.id).length;
+                return (
+                  <option key={a.id} value={a.id} className="bg-slate-900 text-white">
+                    {a.name} ({count} releases)
+                  </option>
+                );
+              })}
+            </select>
+          </div>
+
+          <div className="relative flex-1 max-w-sm">
+            <Search size={13} className="absolute left-3 top-2.5 text-slate-500" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search by commit message or hash..."
+              className="w-full pl-8 pr-3 py-1.5 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-brand-500"
+            />
+          </div>
+        </div>
+
+        <div className="text-xs text-slate-400 flex items-center gap-3">
+          <span>Showing <strong className="text-white">{filteredDeployments.length}</strong> deployments</span>
         </div>
       </div>
 
@@ -198,16 +254,16 @@ export const DeploymentsView: React.FC = () => {
                     Loading deployment history...
                   </td>
                 </tr>
-              ) : deployments.length === 0 ? (
+              ) : filteredDeployments.length === 0 ? (
                 <tr>
                   <td colSpan={9} className="py-16 text-center text-slate-400">
                     <div className="space-y-3 max-w-sm mx-auto">
                       <div className="p-3 bg-slate-950 border border-slate-800 w-12 h-12 rounded-xl mx-auto flex items-center justify-center text-slate-400">
                         <Rocket size={24} />
                       </div>
-                      <div className="font-semibold text-white text-sm">No Deployments Executed</div>
+                      <div className="font-semibold text-white text-sm">No Matching Deployments</div>
                       <p className="text-xs text-slate-500">
-                        Execute controlled 13-step zero-downtime releases with automated rollbacks and pre-deployment backups.
+                        No deployment pipelines found matching current application or search filters.
                       </p>
                       <button
                         onClick={() => setTriggerModalOpen(true)}
@@ -220,7 +276,7 @@ export const DeploymentsView: React.FC = () => {
                   </td>
                 </tr>
               ) : (
-                deployments.map((d) => (
+                filteredDeployments.map((d) => (
                   <tr key={d.id} className="hover:bg-slate-800/40 transition-colors">
                     <td className="py-3 px-4 font-semibold text-white">
                       {d.application_name || 'Application'}

@@ -29,8 +29,8 @@ interface SidebarProps {
 export const Sidebar: React.FC<SidebarProps> = ({ currentView, onSelectView }) => {
   const commandCenterNav = [
     { id: 'overview', label: 'Overview', icon: LayoutDashboard },
-    { id: 'applications', label: 'Applications', icon: Layers },
     { id: 'servers', label: 'Servers', icon: Server },
+    { id: 'applications', label: 'Applications', icon: Layers },
     { id: 'domains', label: 'Domains & SSL', icon: Globe },
     { id: 'monitoring', label: 'Monitoring', icon: Activity },
     { id: 'deployments', label: 'Deployments', icon: Rocket },

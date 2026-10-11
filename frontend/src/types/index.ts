@@ -196,7 +196,8 @@ export interface BackupItem {
   application_name?: string;
   server_id?: string;
   server_name?: string;
-  database_type?: 'POSTGRESQL' | 'MYSQL' | 'SQLITE' | 'MONGODB';
+  database_type?: string;
+  backup_type?: string;
   database_name?: string;
   filename: string;
   file_size_mb: number;

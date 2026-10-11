@@ -552,6 +552,33 @@ class ApiClient {
     return this.request<any[]>(`/monitoring/incidents${q}`);
   }
 
+  async getLiveApplicationMonitor(appId: string) {
+    return this.request<{
+      application_id: string;
+      application_name: string;
+      server_id: string;
+      server_name: string;
+      server_ip: string;
+      framework: string;
+      port: number;
+      process_manager: string;
+      service_name?: string;
+      status: string;
+      mem_mb: number;
+      cpu_pct: number;
+      active_visitors: number;
+      recent_requests: Array<{
+        client_ip: string;
+        method: string;
+        path: string;
+        status: number;
+        raw: string;
+      }>;
+      terminal_logs: string;
+      timestamp: string;
+    }>(`/monitoring/live/${appId}`);
+  }
+
   // ==========================================
   // Domains
   // ==========================================
@@ -564,6 +591,97 @@ class ApiClient {
       method: 'POST',
       body: JSON.stringify(data),
     });
+  }
+
+  async getDomainDeepDive(id: string) {
+    return this.request<{
+      domain_id: string;
+      domain_name: string;
+      server_ip: string;
+      server_id?: string;
+      server_name?: string;
+      server_os?: string;
+      server_provider?: string;
+      application_id?: string;
+      application_name?: string;
+      language: string;
+      framework: string;
+      version?: string;
+      memory_mb: number;
+      memory_percent: number;
+      uptime_formatted: string;
+      status: string;
+      port: number;
+      root_path?: string;
+      process_manager: string;
+      service_name?: string;
+      is_container: boolean;
+      container_id?: string;
+      total_views: number;
+      active_pages: number;
+      broken_links_count: number;
+      error_rate_percent: number;
+      peak_req_per_min: number;
+      average_latency_ms: number;
+      spikes_detected: boolean;
+      config_file_path?: string;
+      config_content?: string;
+      ssl_status: string;
+      ssl_issuer?: string;
+      days_remaining: number;
+    }>(`/domains/${id}/deep-dive`);
+  }
+
+  async executeDomainServiceAction(id: string, action: string) {
+    return this.request<{
+      success: boolean;
+      action: string;
+      domain_name: string;
+      command: string;
+      stdout: string;
+      stderr: string;
+      exit_code: number;
+      duration_ms: number;
+      message: string;
+    }>(`/domains/${id}/service-action`, {
+      method: 'POST',
+      body: JSON.stringify({ action }),
+    });
+  }
+
+  async deleteDomainFromServer(id: string) {
+    return this.request<{
+      success: boolean;
+      domain_id: string;
+      domain_name: string;
+      message: string;
+      backup_path?: string;
+      syntax_valid: boolean;
+      reloaded: boolean;
+      output?: string;
+    }>(`/domains/${id}/delete-from-server`, {
+      method: 'DELETE',
+    });
+  }
+
+  async downloadDomainConfig(id: string, domainName: string) {
+    const token = this.getToken();
+    const url = `/api/domains/${id}/backup-config${token ? `?token=${encodeURIComponent(token)}` : ''}`;
+    const res = await fetch(url, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!res.ok) {
+      throw new Error('Failed to download domain config');
+    }
+    const blob = await res.blob();
+    const objectUrl = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = objectUrl;
+    a.download = `${domainName}.conf`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.URL.revokeObjectURL(objectUrl);
   }
 
   async verifyDomainSsl(id: string) {
@@ -922,6 +1040,45 @@ class ApiClient {
 
   async verifyBackup(id: string) {
     return this.request<any>(`/backups/${id}/verify`, { method: 'POST' });
+  }
+
+  async backupApplication(data: { application_id: string; include_database?: boolean; custom_label?: string }) {
+    return this.request<{
+      success: boolean;
+      backup_id: string;
+      filename: string;
+      file_size_mb: number;
+      status: string;
+      message: string;
+    }>('/backups/application', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async backupServerConfig(data: { server_id: string; custom_label?: string }) {
+    return this.request<{
+      success: boolean;
+      backup_id: string;
+      filename: string;
+      file_size_mb: number;
+      status: string;
+      message: string;
+    }>('/backups/server-config', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async getPortableRestoreScript(serverId: string) {
+    return this.request<{
+      server_id: string;
+      server_name: string;
+      backup_id?: string;
+      download_url?: string;
+      restore_command_sequence: string;
+      instructions: string;
+    }>(`/backups/portable-restore-script/${serverId}`);
   }
 
   async listAlerts(resolved?: boolean, severity?: string) {

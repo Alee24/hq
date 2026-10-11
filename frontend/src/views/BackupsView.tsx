@@ -1,7 +1,28 @@
 import React, { useEffect, useState } from 'react';
-import { Archive, Plus, RefreshCw, CheckCircle2, ShieldCheck, Database, HardDrive, Download, Trash2 } from 'lucide-react';
+import {
+  Archive,
+  Plus,
+  RefreshCw,
+  CheckCircle2,
+  ShieldCheck,
+  Database,
+  HardDrive,
+  Download,
+  Trash2,
+  Server as ServerIcon,
+  Layers,
+  RotateCcw,
+  Copy,
+  Check,
+  FileText,
+  HelpCircle,
+  ExternalLink,
+  Terminal,
+  Zap,
+  CheckSquare
+} from 'lucide-react';
 import { api } from '../api/client';
-import { BackupItem, Server } from '../types';
+import { BackupItem, Server, Application } from '../types';
 import { StatusBadge } from '../components/StatusBadge';
 import { DatabaseBackupModal } from '../components/DatabaseBackupModal';
 import { ConfirmationModal } from '../components/ConfirmationModal';
@@ -9,12 +30,28 @@ import { ConfirmationModal } from '../components/ConfirmationModal';
 export const BackupsView: React.FC = () => {
   const [backups, setBackups] = useState<BackupItem[]>([]);
   const [servers, setServers] = useState<Server[]>([]);
+  const [applications, setApplications] = useState<Application[]>([]);
+  const [selectedServer, setSelectedServer] = useState<Server | null>(null);
   const [loading, setLoading] = useState(true);
   const [verifyingId, setVerifyingId] = useState<string | null>(null);
 
   // Database Backup Modal state
   const [dbModalOpen, setDbModalOpen] = useState(false);
-  const [selectedServerForDb, setSelectedServerForDb] = useState<Server | null>(null);
+
+  // Application Backup Modal state
+  const [appBackupModalOpen, setAppBackupModalOpen] = useState(false);
+  const [selectedAppIdForBackup, setSelectedAppIdForBackup] = useState('');
+  const [includeDbInAppBackup, setIncludeDbInAppBackup] = useState(true);
+  const [appBackupRunning, setAppBackupRunning] = useState(false);
+
+  // Server Config Snapshot state
+  const [serverConfigRunning, setServerConfigRunning] = useState(false);
+
+  // Portable Restore Modal state
+  const [restoreModalOpen, setRestoreModalOpen] = useState(false);
+  const [restoreData, setRestoreData] = useState<any>(null);
+  const [loadingRestore, setLoadingRestore] = useState(false);
+  const [copiedRestoreCmd, setCopiedRestoreCmd] = useState(false);
 
   // Delete Backup Modal state
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
@@ -23,14 +60,16 @@ export const BackupsView: React.FC = () => {
 
   const loadData = async () => {
     try {
-      const [resBackups, resServers] = await Promise.all([
+      const [resBackups, resServers, resApps] = await Promise.all([
         api.listBackups(),
-        api.listServers().catch(() => [])
+        api.listServers().catch(() => []),
+        api.listApplications().catch(() => [])
       ]);
       setBackups(resBackups);
       setServers(resServers);
-      if (resServers.length > 0 && !selectedServerForDb) {
-        setSelectedServerForDb(resServers[0]);
+      setApplications(resApps);
+      if (resServers.length > 0 && !selectedServer) {
+        setSelectedServer(resServers[0]);
       }
     } catch (e) {
       console.error(e);
@@ -43,13 +82,66 @@ export const BackupsView: React.FC = () => {
     loadData();
   }, []);
 
-  const handleTriggerBackup = async () => {
+  const handleBackupApplication = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedAppIdForBackup) return;
+    setAppBackupRunning(true);
     try {
-      await api.triggerBackup();
-      alert('Snapshot task initiated. Stored to enterprise S3 storage bucket.');
-      loadData();
+      const res = await api.backupApplication({
+        application_id: selectedAppIdForBackup,
+        include_database: includeDbInAppBackup,
+      });
+      alert(res.message || 'Application backup archive generated successfully.');
+      setAppBackupModalOpen(false);
+      await loadData();
     } catch (err: any) {
-      alert(err.message || 'Backup trigger failed');
+      alert(err.message || 'Failed to create application backup');
+    } finally {
+      setAppBackupRunning(false);
+    }
+  };
+
+  const handleBackupServerConfig = async () => {
+    if (!selectedServer) {
+      alert('Please select a target server first.');
+      return;
+    }
+    setServerConfigRunning(true);
+    try {
+      const res = await api.backupServerConfig({
+        server_id: selectedServer.id,
+      });
+      alert(res.message || `Server configuration snapshot generated for ${selectedServer.name}.`);
+      await loadData();
+    } catch (err: any) {
+      alert(err.message || 'Failed to generate server configuration snapshot');
+    } finally {
+      setServerConfigRunning(false);
+    }
+  };
+
+  const handleOpenRestoreModal = async (srv: Server) => {
+    setSelectedServer(srv);
+    setRestoreModalOpen(true);
+    setLoadingRestore(true);
+    try {
+      const res = await api.getPortableRestoreScript(srv.id);
+      setRestoreData(res);
+    } catch (err: any) {
+      alert(err.message || 'Failed to generate restore script');
+    } finally {
+      setLoadingRestore(false);
+    }
+  };
+
+  const handleCopyRestoreCmd = async () => {
+    if (!restoreData?.restore_command_sequence) return;
+    try {
+      await navigator.clipboard.writeText(restoreData.restore_command_sequence);
+      setCopiedRestoreCmd(true);
+      setTimeout(() => setCopiedRestoreCmd(false), 2500);
+    } catch (e) {
+      console.error('Failed to copy', e);
     }
   };
 
@@ -89,24 +181,19 @@ export const BackupsView: React.FC = () => {
     }
   };
 
-  const handleOpenDbBackupModal = () => {
-    if (servers.length === 0) {
-      alert('No active VPS servers registered. Please register a server first under the Servers tab.');
-      return;
-    }
-    setDbModalOpen(true);
-  };
+  const matchingApps = applications.filter(a => !selectedServer || a.server_id === selectedServer.id);
 
   return (
     <div className="p-6 md:p-8 space-y-6 max-w-7xl mx-auto">
       {/* Header Bar */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-2 border-b border-slate-800">
         <div>
-          <h1 className="text-2xl font-bold text-white tracking-tight flex items-center gap-2">
-            Disaster Recovery & Backup Management
+          <h1 className="text-2xl font-bold text-white tracking-tight flex items-center gap-2.5">
+            <Archive className="text-brand-400" size={24} />
+            <span>Disaster Recovery & Multi-Tier Backup Management</span>
           </h1>
           <p className="text-xs text-slate-400 mt-1">
-            Automated database snapshots, volume archives, cloud storage retention policies, and checksum integrity verification.
+            Automated database dumps, complete application archives, full server configuration snapshots, and 1-click portable disaster recovery to new VPS nodes.
           </p>
         </div>
 
@@ -116,23 +203,138 @@ export const BackupsView: React.FC = () => {
             className="p-2 bg-slate-900 hover:bg-slate-800 border border-slate-800 rounded-lg text-slate-300 hover:text-white transition-colors"
             title="Refresh Backups"
           >
-            <RefreshCw size={14} />
+            <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
+          </button>
+        </div>
+      </div>
+
+      {/* ============================================================== */}
+      {/* SERVER SELECTION & MULTI-TIER BACKUP CONTROL BAR */}
+      {/* ============================================================== */}
+      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 md:p-6 space-y-4 shadow-xl">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-slate-800/80">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-brand-600/20 border border-brand-500/30 flex items-center justify-center text-brand-400">
+              <ShieldCheck size={20} />
+            </div>
+            <div>
+              <h2 className="text-sm font-bold text-white">Create Targeted Backup on Active Server Node</h2>
+              <p className="text-xs text-slate-400">
+                Select a VPS server to back up its databases, complete applications, or entire configuration snapshot for portable migration.
+              </p>
+            </div>
+          </div>
+
+          {/* Server Selector Dropdown */}
+          <div className="flex items-center gap-2 bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-slate-300">
+            <ServerIcon size={14} className="text-sky-400 shrink-0" />
+            <span className="text-slate-500 font-medium">Selected Server:</span>
+            <select
+              value={selectedServer?.id || ''}
+              onChange={(e) => {
+                const s = servers.find(srv => srv.id === e.target.value) || null;
+                setSelectedServer(s);
+              }}
+              className="bg-transparent border-none text-white focus:outline-none text-xs font-semibold cursor-pointer"
+            >
+              {servers.map((s) => (
+                <option key={s.id} value={s.id} className="bg-slate-900 text-white">
+                  {s.name} ({s.public_ip})
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        {/* 3 Explicit Action Buttons + Portable Restore Generator */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 pt-1">
+          {/* Button 1: Database Backup */}
+          <button
+            onClick={() => {
+              if (servers.length === 0) {
+                alert('No registered servers found.');
+                return;
+              }
+              setDbModalOpen(true);
+            }}
+            className="p-3.5 rounded-xl bg-slate-950 hover:bg-slate-800/80 border border-slate-800 text-left transition-all hover:border-sky-500/50 group space-y-1.5"
+          >
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-sky-400 flex items-center gap-1.5">
+                <Database size={14} />
+                Backup Database
+              </span>
+              <span className="text-[10px] bg-sky-950 text-sky-300 border border-sky-800 px-1.5 py-0.5 rounded font-mono">
+                SQL / Dump
+              </span>
+            </div>
+            <p className="text-[11px] text-slate-400 leading-snug">
+              PostgreSQL, MySQL, SQLite, and MongoDB databases with compression.
+            </p>
           </button>
 
+          {/* Button 2: Entire Application Backup */}
           <button
-            onClick={handleOpenDbBackupModal}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-sky-600 hover:bg-sky-500 text-white rounded-lg text-xs font-semibold shadow-sm transition-colors"
+            onClick={() => {
+              if (matchingApps.length > 0 && !selectedAppIdForBackup) {
+                setSelectedAppIdForBackup(matchingApps[0].id);
+              }
+              setAppBackupModalOpen(true);
+            }}
+            className="p-3.5 rounded-xl bg-slate-950 hover:bg-slate-800/80 border border-slate-800 text-left transition-all hover:border-brand-500/50 group space-y-1.5"
           >
-            <Database size={13} />
-            <span>Database Backup Engine</span>
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-brand-400 flex items-center gap-1.5">
+                <Layers size={14} />
+                Backup Entire Application
+              </span>
+              <span className="text-[10px] bg-brand-950 text-brand-300 border border-brand-800 px-1.5 py-0.5 rounded font-mono">
+                Code + Config
+              </span>
+            </div>
+            <p className="text-[11px] text-slate-400 leading-snug">
+              Archive codebase, configuration files, .env credentials, and databases.
+            </p>
           </button>
 
+          {/* Button 3: Server Config Snapshot */}
           <button
-            onClick={handleTriggerBackup}
-            className="flex items-center gap-1.5 px-3.5 py-1.5 bg-brand-600 hover:bg-brand-500 text-white rounded-lg text-xs font-semibold shadow-sm transition-colors"
+            onClick={handleBackupServerConfig}
+            disabled={serverConfigRunning || !selectedServer}
+            className="p-3.5 rounded-xl bg-slate-950 hover:bg-slate-800/80 border border-slate-800 text-left transition-all hover:border-emerald-500/50 group space-y-1.5 disabled:opacity-50"
           >
-            <Plus size={14} />
-            <span>Create Immediate Snapshot</span>
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-emerald-400 flex items-center gap-1.5">
+                <HardDrive size={14} className={serverConfigRunning ? 'animate-spin' : ''} />
+                {serverConfigRunning ? 'Archiving Configs...' : 'Backup Server Config Snapshot'}
+              </span>
+              <span className="text-[10px] bg-emerald-950 text-emerald-300 border border-emerald-800 px-1.5 py-0.5 rounded font-mono">
+                Apache/Nginx
+              </span>
+            </div>
+            <p className="text-[11px] text-slate-400 leading-snug">
+              Portable tarball of /etc/apache2, /etc/nginx, systemd units, and crontab.
+            </p>
+          </button>
+
+          {/* Button 4: Portable Restore Script */}
+          <button
+            onClick={() => selectedServer && handleOpenRestoreModal(selectedServer)}
+            disabled={!selectedServer}
+            className="p-3.5 rounded-xl bg-gradient-to-br from-indigo-950/60 to-purple-950/60 hover:from-indigo-900/60 hover:to-purple-900/60 border border-indigo-700/40 text-left transition-all hover:border-indigo-500 group space-y-1.5"
+          >
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-indigo-300 flex items-center gap-1.5">
+                <RotateCcw size={14} />
+                Restore to New VPS
+              </span>
+              <span className="text-[10px] bg-indigo-900/80 text-indigo-200 border border-indigo-700 px-1.5 py-0.5 rounded font-mono font-semibold">
+                1-Click Migration
+              </span>
+            </div>
+            <p className="text-[11px] text-indigo-200/80 leading-snug">
+              Copy-paste commands to extract and restore all configs to a completely new VPS.
+            </p>
           </button>
         </div>
       </div>
@@ -145,7 +347,7 @@ export const BackupsView: React.FC = () => {
               <tr className="border-b border-slate-800 bg-slate-950/60 text-slate-400 uppercase text-[11px]">
                 <th className="py-3 px-4">Archive Filename</th>
                 <th className="py-3 px-4">Target Node / App</th>
-                <th className="py-3 px-4">Engine</th>
+                <th className="py-3 px-4">Backup Type</th>
                 <th className="py-3 px-4">Size</th>
                 <th className="py-3 px-4">Storage Target</th>
                 <th className="py-3 px-4">Status</th>
@@ -164,7 +366,7 @@ export const BackupsView: React.FC = () => {
               ) : backups.length === 0 ? (
                 <tr>
                   <td colSpan={9} className="py-12 text-center text-slate-500">
-                    No backup archives found. Trigger a snapshot or database backup above to generate one.
+                    No backup archives found. Trigger a database backup, application backup, or server config snapshot above to generate one.
                   </td>
                 </tr>
               ) : (
@@ -177,18 +379,26 @@ export const BackupsView: React.FC = () => {
                       {b.server_name || b.application_name || 'System Snapshot'}
                     </td>
                     <td className="py-3 px-4">
-                      {b.database_type ? (
+                      {b.database_type === 'APPLICATION_FULL' || b.backup_type === 'APPLICATION_FULL' ? (
+                        <span className="px-2 py-0.5 rounded font-mono text-[10px] bg-brand-950/80 border border-brand-800 text-brand-400">
+                          APP FULL
+                        </span>
+                      ) : b.database_type === 'SERVER_CONFIG' || b.backup_type === 'SERVER_CONFIG' ? (
+                        <span className="px-2 py-0.5 rounded font-mono text-[10px] bg-emerald-950/80 border border-emerald-800 text-emerald-400">
+                          SERVER CONFIG
+                        </span>
+                      ) : b.database_type ? (
                         <span className="px-2 py-0.5 rounded font-mono text-[10px] bg-sky-950/80 border border-sky-800 text-sky-400">
-                          {b.database_type}
+                          DB ({b.database_type})
                         </span>
                       ) : (
-                        <span className="text-slate-500 text-[11px]">FILESYSTEM</span>
+                        <span className="text-slate-500 text-[11px]">SYSTEM FILES</span>
                       )}
                     </td>
                     <td className="py-3 px-4 mono text-slate-300 font-medium">
                       {b.file_size_mb} MB
                     </td>
-                    <td className="py-3 px-4 mono text-slate-400">
+                    <td className="py-3 px-4 mono text-slate-400 truncate max-w-[180px]">
                       {b.destination}
                     </td>
                     <td className="py-3 px-4">
@@ -212,7 +422,7 @@ export const BackupsView: React.FC = () => {
                           onClick={() => handleDownload(b.id, b.filename)}
                           disabled={downloadingId === b.id}
                           className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded text-[11px] font-medium border border-slate-700 transition-colors"
-                          title="Download Backup Archive (.sql.gz)"
+                          title="Download Backup Archive (.tar.gz / .sql.gz)"
                         >
                           <Download size={13} className={downloadingId === b.id ? 'animate-bounce' : ''} />
                         </button>
@@ -245,15 +455,141 @@ export const BackupsView: React.FC = () => {
       </div>
 
       {/* Database Backup Modal */}
-      {dbModalOpen && selectedServerForDb && (
+      {dbModalOpen && selectedServer && (
         <DatabaseBackupModal
           isOpen={dbModalOpen}
-          server={selectedServerForDb}
+          server={selectedServer}
           onClose={() => {
             setDbModalOpen(false);
             loadData();
           }}
         />
+      )}
+
+      {/* Backup Entire Application Modal */}
+      {appBackupModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 max-w-md w-full shadow-2xl space-y-4">
+            <h3 className="text-base font-bold text-white flex items-center gap-2">
+              <Layers size={18} className="text-brand-400" />
+              <span>Backup Entire Application</span>
+            </h3>
+            <p className="text-xs text-slate-400">
+              Captures application codebase, document root, .env configuration variables, and associated databases into a compressed archive.
+            </p>
+
+            <form onSubmit={handleBackupApplication} className="space-y-4 text-xs">
+              <div>
+                <label className="block text-slate-300 font-semibold mb-1">Target Application</label>
+                <select
+                  value={selectedAppIdForBackup}
+                  onChange={(e) => setSelectedAppIdForBackup(e.target.value)}
+                  required
+                  className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-slate-100 focus:outline-none focus:border-brand-500"
+                >
+                  {matchingApps.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.name} ({a.framework || 'Web App'})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  id="includeDb"
+                  checked={includeDbInAppBackup}
+                  onChange={(e) => setIncludeDbInAppBackup(e.target.checked)}
+                  className="w-4 h-4 rounded bg-slate-950 border-slate-800 text-brand-600 focus:ring-brand-500"
+                />
+                <label htmlFor="includeDb" className="text-slate-300 cursor-pointer">
+                  Include mapped database dump in the backup archive
+                </label>
+              </div>
+
+              <div className="flex justify-end gap-3 pt-3 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setAppBackupModalOpen(false)}
+                  className="px-4 py-2 bg-slate-800 text-slate-300 rounded-lg hover:bg-slate-700"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={appBackupRunning}
+                  className="px-4 py-2 bg-brand-600 hover:bg-brand-500 text-white rounded-lg font-semibold flex items-center gap-1.5 disabled:opacity-50"
+                >
+                  {appBackupRunning ? <RefreshCw size={13} className="animate-spin" /> : <Archive size={13} />}
+                  <span>{appBackupRunning ? 'Generating...' : 'Create Application Archive'}</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Portable Restore & Disaster Recovery Modal */}
+      {restoreModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 max-w-2xl w-full shadow-2xl space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-lg bg-indigo-600/20 border border-indigo-500/30 flex items-center justify-center text-indigo-400">
+                  <RotateCcw size={16} />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white">Restore Configurations to a Brand New VPS</h3>
+                  <p className="text-[11px] text-slate-400">Source Node: {selectedServer?.name} ({selectedServer?.public_ip})</p>
+                </div>
+              </div>
+              <button onClick={() => setRestoreModalOpen(false)} className="text-slate-400 hover:text-white">
+                ✕
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-300 leading-relaxed">
+              When migrating to a new VPS, simply copy the configuration archive to your new server and run the command sequence below.
+              The Apache configurations will automatically restore to <code className="text-sky-300">/etc/apache2/</code>, Nginx to <code className="text-sky-300">/etc/nginx/</code>, and systemd units to <code className="text-sky-300">/etc/systemd/system/</code>.
+            </p>
+
+            <div className="relative bg-black/90 rounded-xl border border-slate-800 p-4 font-mono text-xs text-indigo-300/90 leading-relaxed max-h-72 overflow-y-auto">
+              <pre className="whitespace-pre-wrap">
+                {loadingRestore ? 'Generating portable restore command sequence...' : restoreData?.restore_command_sequence}
+              </pre>
+            </div>
+
+            <div className="flex items-center justify-between pt-2">
+              <button
+                onClick={handleCopyRestoreCmd}
+                className="px-3.5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors shadow-sm"
+              >
+                {copiedRestoreCmd ? <Check size={14} className="text-emerald-300" /> : <Copy size={14} />}
+                <span>{copiedRestoreCmd ? 'Copied to Clipboard' : 'Copy Restore Sequence'}</span>
+              </button>
+
+              <div className="flex items-center gap-2">
+                {restoreData?.download_url && (
+                  <a
+                    href={restoreData.download_url}
+                    download
+                    className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-semibold flex items-center gap-1.5 border border-slate-700 transition-colors"
+                  >
+                    <Download size={14} />
+                    <span>Download Archive</span>
+                  </a>
+                )}
+                <button
+                  onClick={() => setRestoreModalOpen(false)}
+                  className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs font-semibold"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Delete Backup Confirmation Modal */}

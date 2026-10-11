@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 
 from backend.app.core.database import get_db
 from backend.app.core.deps import get_current_user, require_roles
-from backend.app.models.entities import User, Application, Server, Deployment, AuditLog
+from backend.app.models.entities import User, Application, Server, Deployment, AuditLog, AppLog, ServerTerminalLog
 from backend.app.schemas.api_schemas import (
     GitRepoStatusResponse,
     GitCommitInfo,
@@ -242,9 +242,29 @@ async def execute_git_action_endpoint(
             }
         )
         db.add(audit)
-        await db.commit()
-    elif res.get("repo_dir"):
-        await db.commit()
+
+    # Record in AppLog for Centralized Logs view
+    app_log = AppLog(
+        application_id=app.id,
+        server_id=server.id,
+        severity="INFO" if res.get("success") else "ERROR",
+        category="git",
+        message=f"Git command executed on {app.name}: {res.get('command') or f'git {payload.action}'} (Exit {res.get('exit_code', 0)})\n{(res.get('stdout') or res.get('stderr') or res.get('message') or '')[:400]}",
+        user=current_user.username
+    )
+    db.add(app_log)
+
+    term_log = ServerTerminalLog(
+        server_id=server.id,
+        user_id=current_user.id,
+        username=current_user.username,
+        command=res.get("command", f"git {payload.action}"),
+        output=(res.get("stdout") or res.get("stderr") or "")[:4000],
+        exit_code=res.get("exit_code", 0),
+        execution_duration_ms=res.get("duration_ms", 0)
+    )
+    db.add(term_log)
+    await db.commit()
 
     return GitActionResponse(**res)
 

@@ -72,7 +72,10 @@ export const LogsView: React.FC = () => {
 
   const categories = [
     'all',
+    'terminal',
+    'git',
     'application',
+    'server',
     'nginx',
     'apache',
     'systemd',
