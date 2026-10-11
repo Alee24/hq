@@ -1006,6 +1006,116 @@ async def test_git_pull_deploy_action_flow(monkeypatch):
         assert app_data["last_deployment_at"] is not None
 
 
+@pytest.mark.asyncio
+async def test_ai_provider_response_parsers_and_gemini_edge_cases():
+    from backend.app.services.ai_diagnostics import (
+        extract_gemini_text, extract_openai_text, extract_anthropic_text,
+        test_ai_key_connectivity
+    )
+
+    # 1. Standard Gemini text response
+    std_data = {
+        "candidates": [
+            {"content": {"parts": [{"text": "OK"}], "role": "model"}, "finishReason": "STOP"}
+        ]
+    }
+    txt, err = extract_gemini_text(std_data)
+    assert txt == "OK"
+    assert err is None
+
+    # 2. Multi-part Gemini response (thought chunk + text chunk)
+    multi_data = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {"thought": "Evaluating ping... All good."},
+                        {"text": "OK"}
+                    ],
+                    "role": "model"
+                },
+                "finishReason": "STOP"
+            }
+        ]
+    }
+    txt, err = extract_gemini_text(multi_data)
+    assert txt == "OK"
+    assert err is None
+
+    # 3. Thought-only Gemini response (reasoning model fallback)
+    thought_data = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [{"thought": "Diagnosis complete: all checks normal."}],
+                    "role": "model"
+                },
+                "finishReason": "STOP"
+            }
+        ]
+    }
+    txt, err = extract_gemini_text(thought_data)
+    assert txt == "Diagnosis complete: all checks normal."
+    assert err is None
+
+    # 4. Critical Edge Case: Missing 'parts' key due to MAX_TOKENS exhaustion
+    # Previously this crashed with KeyError: 'parts'
+    no_parts_data = {
+        "candidates": [
+            {
+                "content": {"role": "model"},
+                "finishReason": "MAX_TOKENS"
+            }
+        ]
+    }
+    txt, err = extract_gemini_text(no_parts_data)
+    assert txt is None
+    assert "MAX_TOKENS" in err
+
+    # 5. Safety blocked response (no content key at all)
+    safety_data = {
+        "candidates": [
+            {
+                "finishReason": "SAFETY"
+            }
+        ]
+    }
+    txt, err = extract_gemini_text(safety_data)
+    assert txt is None
+    assert "SAFETY" in err
+
+    # 6. Prompt blocked in promptFeedback
+    prompt_blocked = {
+        "promptFeedback": {
+            "blockReason": "PROHIBITED_CONTENT"
+        }
+    }
+    txt, err = extract_gemini_text(prompt_blocked)
+    assert txt is None
+    assert "PROHIBITED_CONTENT" in err
+
+    # 7. OpenAI safe extraction
+    oa_data = {
+        "choices": [
+            {"message": {"content": "OK", "role": "assistant"}, "finish_reason": "stop"}
+        ]
+    }
+    txt, err = extract_openai_text(oa_data)
+    assert txt == "OK"
+    assert err is None
+
+    # 8. Anthropic safe extraction
+    ant_data = {
+        "content": [
+            {"type": "text", "text": "OK"}
+        ]
+    }
+    txt, err = extract_anthropic_text(ant_data)
+    assert txt == "OK"
+    assert err is None
+
+
+
 
 
 

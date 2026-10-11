@@ -63,6 +63,126 @@ AI_KEYS_MAP = {
     }
 }
 
+def extract_gemini_text(data: Any) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Safely and defensively extracts response text from a Gemini generateContent response JSON.
+    Returns (extracted_text, failure_reason_if_any).
+    Handles:
+    - Normal text responses in content.parts[0].text
+    - Multi-part responses (thinking/reasoning parts + final text part)
+    - Thought-only responses when reasoning is enabled
+    - finishReason: MAX_TOKENS, SAFETY, RECITATION, BLOCKLIST, OTHER
+    - promptFeedback blockReason (e.g. SAFETY, PROHIBITED_CONTENT)
+    - Error payloads in 200 responses
+    """
+    if not isinstance(data, dict):
+        return None, "Response is not a valid JSON object."
+
+    # Check for top-level error object
+    if "error" in data:
+        err = data["error"]
+        err_msg = err.get("message") if isinstance(err, dict) else str(err)
+        return None, f"Gemini error: {err_msg}"
+
+    # Check promptFeedback
+    feedback = data.get("promptFeedback")
+    if isinstance(feedback, dict) and feedback.get("blockReason"):
+        return None, f"Prompt blocked by Gemini safety filter: {feedback.get('blockReason')}"
+
+    candidates = data.get("candidates")
+    if not candidates or not isinstance(candidates, list) or len(candidates) == 0:
+        return None, "No response candidates returned by Gemini."
+
+    cand = candidates[0]
+    if not isinstance(cand, dict):
+        return None, "Candidate entry is not a valid object."
+
+    finish_reason = cand.get("finishReason")
+    content = cand.get("content")
+
+    # If content is present, extract from parts
+    if isinstance(content, dict):
+        parts = content.get("parts")
+        if isinstance(parts, list) and len(parts) > 0:
+            text_chunks = []
+            thought_chunks = []
+            for p in parts:
+                if isinstance(p, dict):
+                    if "text" in p and isinstance(p["text"], str) and p["text"]:
+                        text_chunks.append(p["text"])
+                    elif "thought" in p and isinstance(p["thought"], str) and p["thought"]:
+                        thought_chunks.append(p["thought"])
+
+            if text_chunks:
+                return "".join(text_chunks).strip(), None
+
+            if thought_chunks:
+                return "".join(thought_chunks).strip(), None
+
+    # If no text was found, inspect finishReason
+    if finish_reason:
+        if finish_reason == "MAX_TOKENS":
+            return None, "Token limit reached before output text was generated (MAX_TOKENS)."
+        elif finish_reason == "SAFETY":
+            return None, "Response was blocked by Gemini safety settings (SAFETY)."
+        elif finish_reason == "RECITATION":
+            return None, "Response was blocked due to recitation check (RECITATION)."
+        else:
+            return None, f"Gemini generation halted with finish reason: {finish_reason}"
+
+    return None, "Response candidate contains no text parts."
+
+
+def extract_openai_text(data: Any) -> Tuple[Optional[str], Optional[str]]:
+    """Safely extracts text from OpenAI / DeepSeek completion JSON."""
+    if not isinstance(data, dict):
+        return None, "Response is not a valid JSON object."
+    if "error" in data:
+        err = data["error"]
+        msg = err.get("message") if isinstance(err, dict) else str(err)
+        return None, f"API error: {msg}"
+    choices = data.get("choices")
+    if not choices or not isinstance(choices, list) or len(choices) == 0:
+        return None, "No choices returned in API response."
+    choice = choices[0]
+    if not isinstance(choice, dict):
+        return None, "Choice item is not a valid object."
+    message = choice.get("message")
+    if isinstance(message, dict):
+        content = message.get("content")
+        if isinstance(content, str) and content.strip():
+            return content.strip(), None
+    finish_reason = choice.get("finish_reason")
+    if finish_reason:
+        return None, f"Generation stopped with finish reason: {finish_reason}"
+    return None, "No message content found in choice."
+
+
+def extract_anthropic_text(data: Any) -> Tuple[Optional[str], Optional[str]]:
+    """Safely extracts text from Anthropic Claude messages JSON."""
+    if not isinstance(data, dict):
+        return None, "Response is not a valid JSON object."
+    if "error" in data:
+        err = data["error"]
+        msg = err.get("message") if isinstance(err, dict) else str(err)
+        return None, f"Anthropic error: {msg}"
+    content_list = data.get("content")
+    if not content_list or not isinstance(content_list, list) or len(content_list) == 0:
+        return None, "No content blocks returned by Anthropic."
+    text_chunks = []
+    for block in content_list:
+        if isinstance(block, dict) and block.get("type") == "text" and "text" in block:
+            text_chunks.append(block["text"])
+        elif isinstance(block, dict) and "text" in block and isinstance(block["text"], str):
+            text_chunks.append(block["text"])
+    if text_chunks:
+        return "".join(text_chunks).strip(), None
+    stop_reason = data.get("stop_reason")
+    if stop_reason:
+        return None, f"Anthropic stopped with reason: {stop_reason}"
+    return None, "No text blocks found in Anthropic content."
+
+
 async def get_raw_ai_key(db: AsyncSession, provider: str) -> Optional[str]:
     """Retrieves raw API key from database SystemSetting, falling back to process environment."""
     meta = AI_KEYS_MAP.get(provider.lower())
@@ -181,27 +301,30 @@ async def test_ai_key_connectivity(
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             if p == "gemini":
-                # Google Gemini with multi-model fallback chain
+                # Google Gemini with multi-model fallback chain and safe response extraction
                 last_err = ""
-                sample = ""
                 for cand_model in GEMINI_MODELS_CHAIN:
                     url = f"https://generativelanguage.googleapis.com/v1beta/models/{cand_model}:generateContent?key={resolved_key}"
                     body = {
                         "contents": [{"parts": [{"text": "Respond with the single word: OK"}]}],
-                        "generationConfig": {"temperature": 0.0, "maxOutputTokens": 10}
+                        "generationConfig": {"temperature": 0.0, "maxOutputTokens": 200}
                     }
                     resp = await client.post(url, json=body)
                     elapsed = int((time.time() - start_t) * 1000)
                     if resp.status_code == 200:
                         data = resp.json()
-                        sample = data["candidates"][0]["content"]["parts"][0]["text"].strip()
-                        return AiKeysTestResponse(
-                            success=True,
-                            provider=provider,
-                            message=f"Successfully authenticated with {meta['display_name']} ({cand_model}).",
-                            response_sample=sample,
-                            latency_ms=elapsed
-                        )
+                        sample, parse_err = extract_gemini_text(data)
+                        if sample:
+                            return AiKeysTestResponse(
+                                success=True,
+                                provider=provider,
+                                message=f"Successfully authenticated with {meta['display_name']} ({cand_model}).",
+                                response_sample=sample,
+                                latency_ms=elapsed
+                            )
+                        else:
+                            last_err = f"{cand_model} response format note: {parse_err}"
+                            continue
                     elif resp.status_code == 404:
                         last_err = f"HTTP 404 on {cand_model}: {resp.text[:150]}"
                         continue
@@ -213,7 +336,7 @@ async def test_ai_key_connectivity(
                 return AiKeysTestResponse(
                     success=False,
                     provider=provider,
-                    message=f"{meta['display_name']} authentication failed: {last_err}",
+                    message=f"{meta['display_name']} authentication failed: {last_err or 'No compatible model succeeded.'}",
                     latency_ms=elapsed
                 )
 
@@ -224,21 +347,29 @@ async def test_ai_key_connectivity(
                 body = {
                     "model": meta["model"],
                     "messages": [{"role": "user", "content": "Respond with the single word: OK"}],
-                    "max_tokens": 10,
+                    "max_tokens": 100,
                     "temperature": 0.0
                 }
                 resp = await client.post(url, json=body, headers=headers)
                 elapsed = int((time.time() - start_t) * 1000)
                 if resp.status_code == 200:
                     data = resp.json()
-                    sample = data["choices"][0]["message"]["content"].strip()
-                    return AiKeysTestResponse(
-                        success=True,
-                        provider=provider,
-                        message=f"Successfully authenticated with OpenAI ({meta['model']}).",
-                        response_sample=sample,
-                        latency_ms=elapsed
-                    )
+                    sample, parse_err = extract_openai_text(data)
+                    if sample:
+                        return AiKeysTestResponse(
+                            success=True,
+                            provider=provider,
+                            message=f"Successfully authenticated with OpenAI ({meta['model']}).",
+                            response_sample=sample,
+                            latency_ms=elapsed
+                        )
+                    else:
+                        return AiKeysTestResponse(
+                            success=False,
+                            provider=provider,
+                            message=f"OpenAI response format issue: {parse_err}",
+                            latency_ms=elapsed
+                        )
                 else:
                     return AiKeysTestResponse(
                         success=False,
@@ -254,21 +385,29 @@ async def test_ai_key_connectivity(
                 body = {
                     "model": meta["model"],
                     "messages": [{"role": "user", "content": "Respond with the single word: OK"}],
-                    "max_tokens": 10,
+                    "max_tokens": 100,
                     "temperature": 0.0
                 }
                 resp = await client.post(url, json=body, headers=headers)
                 elapsed = int((time.time() - start_t) * 1000)
                 if resp.status_code == 200:
                     data = resp.json()
-                    sample = data["choices"][0]["message"]["content"].strip()
-                    return AiKeysTestResponse(
-                        success=True,
-                        provider=provider,
-                        message=f"Successfully authenticated with DeepSeek ({meta['model']}).",
-                        response_sample=sample,
-                        latency_ms=elapsed
-                    )
+                    sample, parse_err = extract_openai_text(data)
+                    if sample:
+                        return AiKeysTestResponse(
+                            success=True,
+                            provider=provider,
+                            message=f"Successfully authenticated with DeepSeek ({meta['model']}).",
+                            response_sample=sample,
+                            latency_ms=elapsed
+                        )
+                    else:
+                        return AiKeysTestResponse(
+                            success=False,
+                            provider=provider,
+                            message=f"DeepSeek response format issue: {parse_err}",
+                            latency_ms=elapsed
+                        )
                 else:
                     return AiKeysTestResponse(
                         success=False,
@@ -287,21 +426,29 @@ async def test_ai_key_connectivity(
                 }
                 body = {
                     "model": meta["model"],
-                    "max_tokens": 10,
+                    "max_tokens": 100,
                     "messages": [{"role": "user", "content": "Respond with the single word: OK"}]
                 }
                 resp = await client.post(url, json=body, headers=headers)
                 elapsed = int((time.time() - start_t) * 1000)
                 if resp.status_code == 200:
                     data = resp.json()
-                    sample = data["content"][0]["text"].strip()
-                    return AiKeysTestResponse(
-                        success=True,
-                        provider=provider,
-                        message=f"Successfully authenticated with Anthropic Claude ({meta['model']}).",
-                        response_sample=sample,
-                        latency_ms=elapsed
-                    )
+                    sample, parse_err = extract_anthropic_text(data)
+                    if sample:
+                        return AiKeysTestResponse(
+                            success=True,
+                            provider=provider,
+                            message=f"Successfully authenticated with Anthropic Claude ({meta['model']}).",
+                            response_sample=sample,
+                            latency_ms=elapsed
+                        )
+                    else:
+                        return AiKeysTestResponse(
+                            success=False,
+                            provider=provider,
+                            message=f"Anthropic Claude response format issue: {parse_err}",
+                            latency_ms=elapsed
+                        )
                 else:
                     return AiKeysTestResponse(
                         success=False,
@@ -310,12 +457,30 @@ async def test_ai_key_connectivity(
                         latency_ms=elapsed
                     )
 
-    except Exception as e:
+    except httpx.TimeoutException:
         elapsed = int((time.time() - start_t) * 1000)
         return AiKeysTestResponse(
             success=False,
             provider=provider,
-            message=f"Connection error connecting to {meta['display_name']}: {str(e)}",
+            message=f"Connection timed out while reaching {meta['display_name']} API (15s timeout). Please verify network and server internet connectivity.",
+            latency_ms=elapsed
+        )
+    except httpx.ConnectError as ce:
+        elapsed = int((time.time() - start_t) * 1000)
+        return AiKeysTestResponse(
+            success=False,
+            provider=provider,
+            message=f"Network connection failed reaching {meta['display_name']} endpoint: {str(ce)}",
+            latency_ms=elapsed
+        )
+    except Exception as e:
+        elapsed = int((time.time() - start_t) * 1000)
+        err_type = type(e).__name__
+        err_detail = str(e) or repr(e)
+        return AiKeysTestResponse(
+            success=False,
+            provider=provider,
+            message=f"Error validating {meta['display_name']} connection ({err_type}): {err_detail}",
             latency_ms=elapsed
         )
 
@@ -351,7 +516,9 @@ async def call_ai_model_for_diagnostics(
                 resp = await client.post(url, json=body)
                 if resp.status_code == 200:
                     data = resp.json()
-                    return data["candidates"][0]["content"]["parts"][0]["text"], cand_model
+                    extracted, _ = extract_gemini_text(data)
+                    if extracted:
+                        return extracted, cand_model
                 elif resp.status_code == 404:
                     continue
                 else:
@@ -372,7 +539,9 @@ async def call_ai_model_for_diagnostics(
             resp = await client.post(base_url, json=body, headers=headers)
             if resp.status_code == 200:
                 data = resp.json()
-                return data["choices"][0]["message"]["content"], model_name
+                extracted, _ = extract_openai_text(data)
+                if extracted:
+                    return extracted, model_name
 
         elif p == "anthropic":
             url = "https://api.anthropic.com/v1/messages"
@@ -390,7 +559,9 @@ async def call_ai_model_for_diagnostics(
             resp = await client.post(url, json=body, headers=headers)
             if resp.status_code == 200:
                 data = resp.json()
-                return data["content"][0]["text"], model_name
+                extracted, _ = extract_anthropic_text(data)
+                if extracted:
+                    return extracted, model_name
 
     return None, model_name
 
