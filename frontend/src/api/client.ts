@@ -885,7 +885,7 @@ class ApiClient {
   }
 
   async executeGitAction(appId: string, data: {
-    action: 'pull' | 'fetch' | 'reset_hard' | 'status' | 'diff' | 'log' | 'custom';
+    action: 'pull' | 'pull_deploy' | 'fetch' | 'reset_hard' | 'status' | 'diff' | 'log' | 'custom';
     branch?: string;
     custom_command?: string;
   }) {

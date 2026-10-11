@@ -21,7 +21,8 @@ import {
   Sparkles,
   Server as ServerIcon,
   ChevronRight,
-  Layers
+  Layers,
+  Rocket
 } from 'lucide-react';
 import { api } from '../api/client';
 import { Application } from '../types';
@@ -159,7 +160,7 @@ export const GitView: React.FC = () => {
   };
 
   const handleExecuteAction = async (
-    action: 'pull' | 'fetch' | 'reset_hard' | 'status' | 'diff' | 'log' | 'custom',
+    action: 'pull' | 'pull_deploy' | 'fetch' | 'reset_hard' | 'status' | 'diff' | 'log' | 'custom',
     customCmd?: string
   ) => {
     if (!selectedApp) return;
@@ -514,10 +515,20 @@ export const GitView: React.FC = () => {
                     </span>
 
                     <button
+                      onClick={() => handleExecuteAction('pull_deploy')}
+                      disabled={Boolean(activeAction)}
+                      className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 disabled:opacity-50 text-white rounded-lg text-xs font-bold transition-all shadow-sm active:scale-95 border border-emerald-500/30"
+                      title="Pulls latest Git changes and runs docker compose build --no-cache && docker compose up -d && docker image prune -f"
+                    >
+                      <Rocket size={12} className={activeAction === 'pull_deploy' ? 'animate-spin' : ''} />
+                      <span>{activeAction === 'pull_deploy' ? 'Deploying...' : 'Pull & Update Code'}</span>
+                    </button>
+
+                    <button
                       onClick={() => loadGitStatus(selectedApp.id)}
                       disabled={statusLoading}
                       className="flex items-center gap-1.5 px-3 py-1.5 bg-brand-600 hover:bg-brand-500 disabled:opacity-50 text-white rounded-lg text-xs font-semibold transition-colors"
-                      title="Execute all Git commands for selected application"
+                      title="Execute all Git commands and refresh live state for selected application"
                     >
                       <RefreshCw size={12} className={statusLoading ? 'animate-spin' : ''} />
                       <span>{statusLoading ? 'Running...' : 'Run All Git Commands'}</span>
@@ -598,20 +609,35 @@ export const GitView: React.FC = () => {
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-2 shrink-0">
+                    <div className="flex flex-wrap items-center gap-2 shrink-0">
+                      <button
+                        onClick={() => handleExecuteAction('pull_deploy')}
+                        disabled={Boolean(activeAction)}
+                        className="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-emerald-600 via-teal-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 disabled:opacity-50 text-white rounded-lg text-xs font-bold shadow-lg shadow-emerald-950/50 transition-all active:scale-95 border border-emerald-400/40 ring-1 ring-emerald-400/20"
+                        title="Pulls latest changes, runs: docker compose build --no-cache && docker compose up -d && docker image prune -f, and automatically refreshes application status"
+                      >
+                        <Rocket size={14} className={activeAction === 'pull_deploy' ? 'animate-spin' : ''} />
+                        <span>
+                          {activeAction === 'pull_deploy'
+                            ? `Pulling & Deploying (${selectedApp.name})...`
+                            : `Pull & Update Code (Docker Deploy)`}
+                        </span>
+                      </button>
+
                       <button
                         onClick={() => handleExecuteAction('pull')}
-                        disabled={activeAction === 'pull'}
-                        className="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white rounded-lg text-xs font-bold shadow-md transition-all active:scale-95"
+                        disabled={Boolean(activeAction)}
+                        className="flex items-center gap-1.5 px-3.5 py-2.5 bg-slate-800 hover:bg-slate-750 disabled:opacity-50 text-slate-200 border border-slate-700 rounded-lg text-xs font-semibold transition-colors"
+                        title="Only executes git pull without rebuilding Docker containers"
                       >
-                        <Download size={14} className={activeAction === 'pull' ? 'animate-spin' : ''} />
-                        <span>{activeAction === 'pull' ? `Pulling ${selectedApp.name}...` : `Pull Latest Changes (${selectedApp.name})`}</span>
+                        <Download size={13} className={activeAction === 'pull' ? 'animate-spin' : ''} />
+                        <span>{activeAction === 'pull' ? `Pulling ${selectedApp.name}...` : `Pull Git Only`}</span>
                       </button>
 
                       <button
                         onClick={() => handleExecuteAction('reset_hard')}
-                        disabled={activeAction === 'reset_hard'}
-                        className="flex items-center gap-1.5 px-3 py-2.5 bg-rose-950/80 hover:bg-rose-900 text-rose-300 border border-rose-800 rounded-lg text-xs font-semibold transition-colors"
+                        disabled={Boolean(activeAction)}
+                        className="flex items-center gap-1.5 px-3 py-2.5 bg-rose-950/80 hover:bg-rose-900 disabled:opacity-50 text-rose-300 border border-rose-800 rounded-lg text-xs font-semibold transition-colors"
                         title="Executes `git fetch origin && git reset --hard origin/<branch>`"
                       >
                         <RotateCcw size={13} className={activeAction === 'reset_hard' ? 'animate-spin' : ''} />
@@ -698,19 +724,38 @@ export const GitView: React.FC = () => {
                   )}
                 </div>
               ) : (
-                <div className="p-3.5 rounded-xl bg-emerald-950/30 border border-emerald-800/40 flex items-center justify-between text-xs text-emerald-300">
+                <div className="p-3.5 rounded-xl bg-emerald-950/30 border border-emerald-800/40 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-emerald-300">
                   <div className="flex items-center gap-2">
-                    <CheckCircle2 size={16} className="text-emerald-400" />
+                    <CheckCircle2 size={16} className="text-emerald-400 shrink-0" />
                     <span>Working copy for <strong>{selectedApp.name}</strong> ({gitStatus.repo_dir}) is fully synchronized with origin/{gitStatus.branch}.</span>
                   </div>
-                  <button
-                    onClick={() => handleExecuteAction('pull')}
-                    disabled={activeAction === 'pull'}
-                    className="px-3 py-1.5 bg-emerald-900/60 hover:bg-emerald-800 text-emerald-200 rounded text-[11px] font-semibold border border-emerald-700/60 transition-colors flex items-center gap-1.5"
-                  >
-                    <Download size={12} className={activeAction === 'pull' ? 'animate-spin' : ''} />
-                    <span>{activeAction === 'pull' ? 'Pulling...' : `Pull Latest Changes (${selectedApp.name})`}</span>
-                  </button>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      onClick={() => handleExecuteAction('pull_deploy')}
+                      disabled={Boolean(activeAction)}
+                      className="px-3.5 py-1.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 disabled:opacity-50 text-white rounded-lg text-[11px] font-bold border border-emerald-500/40 shadow-sm transition-all flex items-center gap-1.5"
+                      title="Pulls origin and runs docker compose build --no-cache && docker compose up -d && docker image prune -f"
+                    >
+                      <Rocket size={12} className={activeAction === 'pull_deploy' ? 'animate-spin' : ''} />
+                      <span>{activeAction === 'pull_deploy' ? 'Deploying...' : 'Pull & Update Code (Deploy)'}</span>
+                    </button>
+                    <button
+                      onClick={() => handleExecuteAction('pull')}
+                      disabled={Boolean(activeAction)}
+                      className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 disabled:opacity-50 text-slate-300 rounded-lg text-[11px] font-semibold border border-slate-700 transition-colors flex items-center gap-1.5"
+                    >
+                      <Download size={12} className={activeAction === 'pull' ? 'animate-spin' : ''} />
+                      <span>{activeAction === 'pull' ? 'Pulling...' : `Pull Git Only`}</span>
+                    </button>
+                    <button
+                      onClick={() => loadGitStatus(selectedApp.id)}
+                      disabled={statusLoading}
+                      className="p-1.5 bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-white rounded-lg border border-slate-800 transition-colors"
+                      title="Refresh Git Status"
+                    >
+                      <RefreshCw size={12} className={statusLoading ? 'animate-spin' : ''} />
+                    </button>
+                  </div>
                 </div>
               )}
 
@@ -757,8 +802,15 @@ export const GitView: React.FC = () => {
                       icon: GitCommit,
                     },
                     {
+                      key: 'pull_deploy' as const,
+                      title: 'Pull & Update Code',
+                      subtitle: 'Pull + Docker Compose Rebuild',
+                      defaultCmd: `git pull origin ${gitStatus.branch || 'main'} && docker compose build --no-cache && docker compose up -d && docker image prune -f`,
+                      icon: Rocket,
+                    },
+                    {
                       key: 'pull' as const,
-                      title: 'Pull Latest Changes',
+                      title: 'Pull Git Changes',
                       subtitle: `Sync Only ${selectedApp.name}`,
                       defaultCmd: `git pull origin ${gitStatus.branch || 'main'}`,
                       icon: Download,
@@ -793,7 +845,9 @@ export const GitView: React.FC = () => {
                             onClick={() => handleExecuteAction(card.key)}
                             disabled={Boolean(activeAction) || (!gitStatus.is_git_repo && card.key !== 'status')}
                             className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold flex items-center gap-1 shrink-0 transition-colors ${
-                              card.key === 'pull'
+                              card.key === 'pull_deploy'
+                                ? 'bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white shadow-sm'
+                                : card.key === 'pull'
                                 ? 'bg-emerald-600 hover:bg-emerald-500 text-white'
                                 : card.key === 'reset_hard'
                                 ? 'bg-rose-950 hover:bg-rose-900 text-rose-300 border border-rose-800'

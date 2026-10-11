@@ -928,6 +928,85 @@ async def test_ai_keys_and_health_diagnostics_engine():
         assert "total_checks" in trig_data["diagnostics"]
 
 
+@pytest.mark.asyncio
+async def test_git_pull_deploy_action_flow(monkeypatch):
+    from unittest.mock import MagicMock
+    from backend.app.api import git as git_module
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        token = await get_admin_token(ac)
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # 1. Register test server
+        srv_res = await ac.post("/api/servers", json={
+            "public_ip": "10.0.0.155",
+            "name": "Pull-Deploy-Server",
+            "ssh_password": "TestPassword!2026"
+        }, headers=headers)
+        assert srv_res.status_code == 200
+        srv_id = srv_res.json()["id"]
+
+        # 2. Register test application
+        app_res = await ac.post("/api/applications", json={
+            "name": "Afera-Academy-Suite",
+            "domain": "afera.kkdes.co.ke",
+            "server_id": srv_id,
+            "port": 3000,
+            "app_type": "Docker Container",
+            "framework": "Next.js / Docker",
+            "git_branch": "main",
+            "current_version": "v1.0.0",
+            "service_name": "afera-web"
+        }, headers=headers)
+        assert app_res.status_code == 200
+        app_id = app_res.json()["id"]
+
+        # 3. Mock execute_remote_git_action to return simulated pull + docker build output
+        def mock_git_action(server, app, action, branch=None, custom_command=None):
+            return {
+                "success": True,
+                "application_id": app.id,
+                "action": action,
+                "command": f"git -C /var/www/AFERA pull origin main && cd /var/www/AFERA && docker compose build --no-cache && docker compose up -d && docker image prune -f",
+                "stdout": "Updating 15af457..9381585\nFast-forward\n[HQ Docker Build & Swap Pipeline]\nSuccessfully built image\nContainer afera-web Started",
+                "stderr": "",
+                "exit_code": 0,
+                "duration_ms": 3200,
+                "new_commit": "9381585abcd1234",
+                "new_version": "v1.1.0",
+                "update_available": False,
+                "repo_dir": "/var/www/AFERA",
+                "branch": "main",
+                "message": f"Pull & Docker Deploy executed for {app.name} (/var/www/AFERA) on branch 'main'"
+            }
+
+        monkeypatch.setattr(git_module, "execute_remote_git_action", mock_git_action)
+
+        # 4. Execute POST /api/git/action/{app_id} with action="pull_deploy"
+        act_res = await ac.post(f"/api/git/action/{app_id}", json={
+            "action": "pull_deploy",
+            "branch": "main"
+        }, headers=headers)
+        assert act_res.status_code == 200
+        data = act_res.json()
+        assert data["success"] is True
+        assert data["action"] == "pull_deploy"
+        assert "docker compose build --no-cache" in data["command"]
+        assert "Container afera-web Started" in data["stdout"]
+        assert data["new_commit"] == "9381585abcd1234"
+        assert data["new_version"] == "v1.1.0"
+        assert "Pull & Docker Deploy" in data["message"]
+
+        # 5. Verify application updated in DB
+        get_app = await ac.get(f"/api/applications/{app_id}", headers=headers)
+        assert get_app.status_code == 200
+        app_data = get_app.json()
+        assert app_data["current_commit"] == "9381585abcd1234"
+        assert app_data["current_version"] == "v1.1.0"
+        assert app_data["last_deployment_at"] is not None
+
+
+
 
 
 

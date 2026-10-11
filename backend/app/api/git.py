@@ -202,7 +202,7 @@ async def execute_git_action_endpoint(
         app.root_path = res["repo_dir"]
 
     act = payload.action.lower().strip()
-    if res.get("success") and act in ["pull", "reset_hard"]:
+    if res.get("success") and act in ["pull", "reset_hard", "pull_deploy", "pull_and_deploy", "deploy_docker"]:
         new_commit = res.get("new_commit")
         new_ver = res.get("new_version")
         if new_commit:
@@ -212,13 +212,15 @@ async def execute_git_action_endpoint(
             app.current_version = new_ver
         app.last_deployment_at = datetime.now(timezone.utc).replace(tzinfo=None)
 
+        act_label = "PULL & DOCKER DEPLOY" if act in ["pull_deploy", "pull_and_deploy", "deploy_docker"] else act.upper()
+
         # Record deployment
         dep = Deployment(
             application_id=app.id,
             environment=app.environment or "production",
             branch=payload.branch or app.git_branch or "main",
             commit_hash=new_commit or app.current_commit or "HEAD",
-            commit_message=f"Git {act.upper()}: live origin sync on {server.name}",
+            commit_message=f"Git {act_label}: live origin sync & Docker rebuild on {server.name}",
             commit_author=current_user.username,
             status="SUCCESS",
             deployed_by=current_user.username,

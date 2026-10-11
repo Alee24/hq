@@ -130,7 +130,7 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
   };
 
   const handleExecuteGitAction = async (
-    action: 'pull' | 'fetch' | 'reset_hard' | 'status' | 'diff' | 'log' | 'custom',
+    action: 'pull' | 'pull_deploy' | 'fetch' | 'reset_hard' | 'status' | 'diff' | 'log' | 'custom',
     customCmd?: string
   ) => {
     if (!app) return;
@@ -1501,19 +1501,36 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
                         </div>
                       </div>
 
-                      <div className="flex items-center gap-2 shrink-0">
+                      <div className="flex flex-wrap items-center gap-2 shrink-0">
+                        <button
+                          onClick={() => handleExecuteGitAction('pull_deploy')}
+                          disabled={Boolean(gitActionLoading)}
+                          className="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-emerald-600 via-teal-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 disabled:opacity-50 text-white rounded-lg text-xs font-bold shadow-lg shadow-emerald-950/50 transition-all active:scale-95 border border-emerald-400/40 ring-1 ring-emerald-400/20"
+                          title="Pulls latest changes and executes: docker compose build --no-cache && docker compose up -d && docker image prune -f"
+                        >
+                          <Rocket size={14} className={gitActionLoading === 'pull_deploy' ? 'animate-spin' : ''} />
+                          <span>
+                            {gitActionLoading === 'pull_deploy'
+                              ? `Pulling & Deploying (${app.name})...`
+                              : `Pull & Update Code (Docker Deploy)`}
+                          </span>
+                        </button>
+
                         <button
                           onClick={() => handleExecuteGitAction('pull')}
                           disabled={Boolean(gitActionLoading)}
-                          className="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white rounded-lg text-xs font-bold shadow-md transition-all active:scale-95"
+                          className="flex items-center gap-1.5 px-3.5 py-2.5 bg-slate-800 hover:bg-slate-750 disabled:opacity-50 text-slate-200 border border-slate-700 rounded-lg text-xs font-semibold transition-colors"
+                          title="Only runs git pull origin without rebuilding Docker containers"
                         >
-                          <Download size={14} className={gitActionLoading === 'pull' ? 'animate-spin' : ''} />
-                          <span>{gitActionLoading === 'pull' ? `Pulling ${app.name}...` : `Pull Latest Changes (${app.name})`}</span>
+                          <Download size={13} className={gitActionLoading === 'pull' ? 'animate-spin' : ''} />
+                          <span>{gitActionLoading === 'pull' ? `Pulling ${app.name}...` : `Pull Git Only`}</span>
                         </button>
+
                         <button
                           onClick={() => handleExecuteGitAction('reset_hard')}
                           disabled={Boolean(gitActionLoading)}
-                          className="flex items-center gap-1.5 px-3 py-2.5 bg-rose-950/80 hover:bg-rose-900 text-rose-300 border border-rose-800 rounded-lg text-xs font-semibold transition-colors"
+                          className="flex items-center gap-1.5 px-3 py-2.5 bg-rose-950/80 hover:bg-rose-900 disabled:opacity-50 text-rose-300 border border-rose-800 rounded-lg text-xs font-semibold transition-colors"
+                          title="Executes `git fetch origin && git reset --hard origin/<branch>`"
                         >
                           <RotateCcw size={13} className={gitActionLoading === 'reset_hard' ? 'animate-spin' : ''} />
                           <span>Force Reset</span>
@@ -1599,19 +1616,38 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
                     )}
                   </div>
                 ) : (
-                  <div className="p-3.5 rounded-xl bg-emerald-950/30 border border-emerald-800/40 flex items-center justify-between text-xs text-emerald-300">
+                  <div className="p-3.5 rounded-xl bg-emerald-950/30 border border-emerald-800/40 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-emerald-300">
                     <div className="flex items-center gap-2">
-                      <CheckCircle2 size={16} className="text-emerald-400" />
+                      <CheckCircle2 size={16} className="text-emerald-400 shrink-0" />
                       <span>Working copy for <strong>{app.name}</strong> ({gitStatus.repo_dir}) is fully synchronized with origin/{gitStatus.branch}. No pending changes.</span>
                     </div>
-                    <button
-                      onClick={() => handleExecuteGitAction('pull')}
-                      disabled={Boolean(gitActionLoading)}
-                      className="px-3 py-1.5 bg-emerald-900/60 hover:bg-emerald-800 text-emerald-200 rounded text-[11px] font-semibold border border-emerald-700/60 transition-colors flex items-center gap-1.5"
-                    >
-                      <Download size={12} className={gitActionLoading === 'pull' ? 'animate-spin' : ''} />
-                      <span>{gitActionLoading === 'pull' ? 'Pulling...' : `Pull Latest Changes (${app.name})`}</span>
-                    </button>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        onClick={() => handleExecuteGitAction('pull_deploy')}
+                        disabled={Boolean(gitActionLoading)}
+                        className="px-3.5 py-1.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 disabled:opacity-50 text-white rounded-lg text-[11px] font-bold border border-emerald-500/40 shadow-sm transition-all flex items-center gap-1.5"
+                        title="Pulls latest changes and executes: docker compose build --no-cache && docker compose up -d && docker image prune -f"
+                      >
+                        <Rocket size={12} className={gitActionLoading === 'pull_deploy' ? 'animate-spin' : ''} />
+                        <span>{gitActionLoading === 'pull_deploy' ? 'Deploying...' : 'Pull & Update Code (Deploy)'}</span>
+                      </button>
+                      <button
+                        onClick={() => handleExecuteGitAction('pull')}
+                        disabled={Boolean(gitActionLoading)}
+                        className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 disabled:opacity-50 text-slate-300 rounded-lg text-[11px] font-semibold border border-slate-700 transition-colors flex items-center gap-1.5"
+                      >
+                        <Download size={12} className={gitActionLoading === 'pull' ? 'animate-spin' : ''} />
+                        <span>{gitActionLoading === 'pull' ? 'Pulling...' : `Pull Git Only`}</span>
+                      </button>
+                      <button
+                        onClick={() => runAllGitCommands()}
+                        disabled={gitAllRunning}
+                        className="p-1.5 bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-white rounded-lg border border-slate-800 transition-colors"
+                        title="Refresh Git Status"
+                      >
+                        <RefreshCw size={12} className={gitAllRunning ? 'animate-spin' : ''} />
+                      </button>
+                    </div>
                   </div>
                 )}
 
@@ -1662,8 +1698,16 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
                         icon: Clock,
                       },
                       {
+                        key: 'pull_deploy' as const,
+                        title: 'Pull & Update Code',
+                        subtitle: 'Pull + Docker Rebuild & Swap',
+                        defaultCmd: `git pull origin ${gitStatus.branch || 'main'} && docker compose build --no-cache && docker compose up -d && docker image prune -f`,
+                        accent: 'emerald',
+                        icon: Rocket,
+                      },
+                      {
                         key: 'pull' as const,
-                        title: 'Pull Latest Changes',
+                        title: 'Pull Git Changes',
                         subtitle: `Sync Only ${app.name}`,
                         defaultCmd: `git pull origin ${gitStatus.branch || 'main'}`,
                         accent: 'brand',
@@ -1700,7 +1744,9 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
                               onClick={() => handleExecuteGitAction(card.key)}
                               disabled={Boolean(gitActionLoading) || (!gitStatus.is_git_repo && card.key !== 'status')}
                               className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold flex items-center gap-1 shrink-0 transition-colors ${
-                                card.key === 'pull'
+                                card.key === 'pull_deploy'
+                                  ? 'bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white shadow-sm'
+                                  : card.key === 'pull'
                                   ? 'bg-emerald-600 hover:bg-emerald-500 text-white'
                                   : card.key === 'reset_hard'
                                   ? 'bg-rose-950 hover:bg-rose-900 text-rose-300 border border-rose-800'

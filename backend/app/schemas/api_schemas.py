@@ -495,7 +495,7 @@ class GitRepoStatusResponse(BaseModel):
     server_ip: Optional[str] = None
 
 class GitActionRequest(BaseModel):
-    action: str = "pull" # "pull", "fetch", "reset_hard", "status", "diff", "log", "custom"
+    action: str = "pull" # "pull", "pull_deploy", "fetch", "reset_hard", "status", "diff", "log", "custom"
     branch: Optional[str] = None
     custom_command: Optional[str] = None
 

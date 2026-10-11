@@ -2101,6 +2101,17 @@ if target_dir and os.path.isdir(os.path.join(target_dir, '.git')):
         'success': True
     }
 
+    # 7. pull_deploy card readiness summary
+    res['command_outputs']['pull_deploy'] = {
+        'action': 'pull_deploy',
+        'command': f'git -C {target_dir} pull origin {branch} && docker compose build --no-cache && docker compose up -d && docker image prune -f',
+        'stdout': f"Pull latest origin/{branch} and rebuild containers: docker compose build --no-cache && docker compose up -d && docker image prune -f",
+        'stderr': '',
+        'exit_code': 0,
+        'duration_ms': 1,
+        'success': True
+    }
+
 print(json.dumps(res))
 """
 
@@ -2322,7 +2333,91 @@ else:
             err_log.append(p.stderr.strip())
         restore_env_files(env_bk)
 
-    elif act == 'fetch':
+    elif act in ['pull_deploy', 'pull_and_deploy', 'deploy_docker']:
+        cmd_display = f"git -C {target_dir} pull origin {target_branch} && cd {target_dir} && docker compose build --no-cache && docker compose up -d && docker image prune -f"
+        env_bk = backup_env_files()
+        subprocess.run(['git', '-C', target_dir, 'fetch', 'origin', target_branch], capture_output=True, text=True, timeout=20)
+        p = subprocess.run(['git', '-C', target_dir, 'pull', '--no-edit', 'origin', target_branch], capture_output=True, text=True, timeout=35)
+        if p.returncode != 0:
+            st = subprocess.run(['git', '-C', target_dir, 'stash', 'push', '--include-untracked', '-m', 'hq-auto-stash-before-pull'], capture_output=True, text=True, timeout=15)
+            out_log.append(f"[HQ Safe-Pull] Stashed local modified files in {target_dir} to allow clean fast-forward pull.")
+            if st.stdout.strip():
+                out_log.append(st.stdout.strip())
+            p2 = subprocess.run(['git', '-C', target_dir, 'pull', '--no-edit', 'origin', target_branch], capture_output=True, text=True, timeout=35)
+            if p2.returncode != 0:
+                p3 = subprocess.run(['git', '-C', target_dir, 'reset', '--hard', f'origin/{target_branch}'], capture_output=True, text=True, timeout=20)
+                exit_code = p3.returncode
+                if p3.stdout.strip():
+                    out_log.append(p3.stdout.strip())
+                if p3.stderr.strip():
+                    err_log.append(p3.stderr.strip())
+            else:
+                exit_code = 0
+                if p2.stdout.strip():
+                    out_log.append(p2.stdout.strip())
+                if p2.stderr.strip():
+                    out_log.append(p2.stderr.strip())
+        else:
+            exit_code = 0
+            if p.stdout.strip():
+                out_log.append(p.stdout.strip())
+            if p.stderr.strip():
+                out_log.append(p.stderr.strip())
+        restore_env_files(env_bk)
+
+        # Locate docker compose file directory
+        compose_dir = target_dir
+        compose_candidate = None
+        for f in ['docker-compose.yml', 'docker-compose.yaml', 'compose.yml', 'compose.yaml']:
+            if os.path.isfile(os.path.join(target_dir, f)):
+                compose_candidate = os.path.join(target_dir, f)
+                compose_dir = target_dir
+                break
+        
+        if not compose_candidate:
+            for root, dirs, files in os.walk(target_dir):
+                depth = root[len(target_dir):].count(os.sep)
+                if depth > 2 or '.git' in root or 'node_modules' in root:
+                    continue
+                for f in ['docker-compose.yml', 'docker-compose.yaml', 'compose.yml', 'compose.yaml']:
+                    if f in files:
+                        compose_candidate = os.path.join(root, f)
+                        compose_dir = root
+                        break
+                if compose_candidate:
+                    break
+
+        cmd_display = f"git -C {target_dir} pull origin {target_branch} && cd {compose_dir} && docker compose build --no-cache && docker compose up -d && docker image prune -f"
+        out_log.append(f"\\n--- [HQ Docker Rebuild & Swap Pipeline] ---")
+        out_log.append(f"Directory: {compose_dir}")
+        out_log.append("Command: docker compose build --no-cache && docker compose up -d && docker image prune -f\\n")
+
+        deploy_sh = f'''
+cd "{compose_dir}" && \\
+if docker compose version >/dev/null 2>&1; then
+    DC="docker compose"
+elif which docker-compose >/dev/null 2>&1; then
+    DC="docker-compose"
+else
+    DC="docker compose"
+fi
+$DC build --no-cache && \\
+$DC up -d && \\
+(docker image prune -f || true)
+'''
+        p_dep = subprocess.run(deploy_sh, shell=True, executable='/bin/bash', capture_output=True, text=True, timeout=240)
+        if p_dep.returncode != 0:
+            exit_code = p_dep.returncode
+            if p_dep.stdout.strip():
+                out_log.append(p_dep.stdout.strip())
+            if p_dep.stderr.strip():
+                err_log.append(p_dep.stderr.strip())
+        else:
+            if p_dep.stdout.strip():
+                out_log.append(p_dep.stdout.strip())
+            if p_dep.stderr.strip():
+                out_log.append(p_dep.stderr.strip())
+            out_log.append("\\n[HQ Success] Code pulled and Docker Compose containers rebuilt and deployed successfully.")
         cmd_display = f"git -C {target_dir} fetch origin --prune && git -C {target_dir} remote -v && git -C {target_dir} branch -vv"
         p1 = subprocess.run(['git', '-C', target_dir, 'fetch', 'origin', '--prune'], capture_output=True, text=True, timeout=15)
         p2 = subprocess.run(['git', '-C', target_dir, 'remote', '-v'], capture_output=True, text=True, timeout=5)
@@ -2414,7 +2509,8 @@ print(json.dumps({
     script_b64 = base64.b64encode(vps_action_py.encode("utf-8")).decode("ascii")
     exec_cmd = f"python3 -c \"import base64, json; payload = json.loads(base64.b64decode('{payload_b64}')); exec(base64.b64decode('{script_b64}'), {{'payload': payload}})\""
 
-    res = execute_remote_command(server, exec_cmd, timeout=45)
+    cmd_timeout = 300 if act in ['pull_deploy', 'pull_and_deploy', 'deploy_docker'] else 45
+    res = execute_remote_command(server, exec_cmd, timeout=cmd_timeout)
     if res.get("stdout"):
         try:
             raw = res["stdout"].strip()
@@ -2423,6 +2519,7 @@ print(json.dumps({
                 if isinstance(parsed, dict) and "command" in parsed:
                     detected_dir = parsed.get("repo_dir") or app.root_path or f"/var/www/{(app.name or 'app').lower()}"
                     active_branch = parsed.get("branch") or app.git_branch or "main"
+                    act_label = "Pull & Docker Deploy" if act in ['pull_deploy', 'pull_and_deploy', 'deploy_docker'] else f"Git '{act}'"
                     return {
                         "success": bool(parsed.get("success", False)),
                         "application_id": app.id,
@@ -2437,17 +2534,22 @@ print(json.dumps({
                         "update_available": bool(parsed.get("update_available", False)),
                         "repo_dir": detected_dir,
                         "branch": active_branch,
-                        "message": f"Git '{act}' executed for {app.name} ({detected_dir}) on branch '{active_branch}'"
+                        "message": f"{act_label} executed for {app.name} ({detected_dir}) on branch '{active_branch}'"
                     }
         except Exception:
             pass
 
     fallback_dir = getattr(app, "root_path", None) or f"/var/www/{(app.name or 'app').lower()}"
+    fallback_cmd = (
+        f"git -C {fallback_dir} pull origin main && cd {fallback_dir} && docker compose build --no-cache && docker compose up -d && docker image prune -f"
+        if act in ['pull_deploy', 'pull_and_deploy', 'deploy_docker']
+        else f"git -C {fallback_dir} {act}"
+    )
     return {
         "success": res.get("success", False),
         "application_id": app.id,
         "action": act,
-        "command": f"git -C {fallback_dir} {act}",
+        "command": fallback_cmd,
         "stdout": res.get("stdout", ""),
         "stderr": res.get("stderr", ""),
         "exit_code": res.get("exit_code", 1),
