@@ -573,7 +573,88 @@ def generate_license(req: GenerateLicenseRequest):
         "public_key": spki_pub_b64
     }
 
+def push_license_enforcement_to_clients(license_id: str, is_revoke: bool, reason: Optional[str] = None):
+    """
+    Instantly pushes revocation or restoration signal to locally hosted and remote client nodes:
+    1. Manages disk lock seal marker (.lockdown_sealed) on host filesystem.
+    2. Issues instant HTTP push triggers to running application containers.
+    """
+    import urllib.request
+    import urllib.error
+
+    # Candidate host data directories for Smart Campus and installed client applications
+    target_data_dirs = [
+        "/var/www/smartcampus/backend/data",
+        "/var/www/smartcampus/data",
+        "/var/www/smartcampus/backend"
+    ]
+
+    # 1. Host disk marker management
+    if is_revoke:
+        seal_payload = {
+            "status": "SUSPENDED",
+            "reason": "REVOKED_BY_VENDOR_PORTAL",
+            "license_id": license_id,
+            "portal_reason": reason or "Terms violation or non-payment",
+            "sealed_at": datetime.now(timezone.utc).isoformat(),
+            "warning": "ALL DATA AND MUTATIONS ARE CRYPTOGRAPHICALLY FROZEN UNTIL LICENSED."
+        }
+        raw_seal = json.dumps(seal_payload, indent=2)
+        for d in target_data_dirs:
+            if os.path.exists(d):
+                for fname in [".lockdown_sealed", ".lockdown", ".revoked"]:
+                    fpath = os.path.join(d, fname)
+                    try:
+                        with open(fpath, "w", encoding="utf-8") as f:
+                            f.write(raw_seal)
+                        logger.warning(f"🔒 [Lockdown] Cryptographic seal written to host path {fpath}")
+                    except Exception as e:
+                        logger.error(f"Failed writing lock seal to {fpath}: {e}")
+    else:
+        # Restoration: wipe all lock seal markers
+        for d in target_data_dirs:
+            if os.path.exists(d):
+                for fname in [".lockdown_sealed", ".lockdown", ".revoked"]:
+                    fpath = os.path.join(d, fname)
+                    try:
+                        if os.path.exists(fpath):
+                            os.remove(fpath)
+                            logger.info(f"🔓 [Lockdown] Lock seal marker disengaged from host path {fpath}")
+                    except Exception as e:
+                        logger.error(f"Failed removing lock seal at {fpath}: {e}")
+
+    # 2. Instant HTTP Push Signal to Client Services
+    # Smart Campus backend runs on port 971 on host (0.0.0.0:971 -> container port 8000)
+    endpoints = [
+        ("http://127.0.0.1:971/api/license/enforce-suspension" if is_revoke else "http://127.0.0.1:971/api/license/restore"),
+        ("http://127.0.0.1:971/license/enforce-suspension" if is_revoke else "http://127.0.0.1:971/license/restore"),
+        ("http://127.0.0.1:971/api/license/verify-online" if not is_revoke else None),
+        ("http://127.0.0.1:971/license/verify-online" if not is_revoke else None),
+    ]
+
+    push_payload = json.dumps({
+        "license_id": license_id,
+        "action": "revoke" if is_revoke else "restore",
+        "reason": reason or ("Terms violation or non-payment" if is_revoke else "Restored by authority")
+    }).encode("utf-8")
+
+    for ep in endpoints:
+        if not ep:
+            continue
+        try:
+            h_req = urllib.request.Request(
+                ep,
+                data=push_payload,
+                headers={"Content-Type": "application/json", "User-Agent": "HQ-Licensing-Authority/1.0"},
+                method="POST"
+            )
+            with urllib.request.urlopen(h_req, timeout=2.0) as resp:
+                logger.info(f"📡 [Push Signal] Dispatched instant {'suspension' if is_revoke else 'restoration'} trigger to {ep}: HTTP {resp.status}")
+        except Exception as ex:
+            logger.debug(f"Push signal probe note for {ep}: {ex}")
+
 @app.post("/api/v1/licenses/{license_id}/revoke")
+@app.post("/api/licenses/{license_id}/revoke")
 def toggle_license_revoke(license_id: str, req: RevokeRequest):
     with get_db() as conn:
         lic = conn.execute("SELECT * FROM licenses WHERE license_id = ?", (license_id,)).fetchone()
@@ -599,6 +680,12 @@ def toggle_license_revoke(license_id: str, req: RevokeRequest):
         conn.commit()
 
     logger.info(f"🔄 License {license_id} status changed: is_revoked={bool(new_status)} ({act_status})")
+
+    # Instant Real-Time Enforcement & Client Push Signal
+    try:
+        push_license_enforcement_to_clients(license_id, is_revoke, reason_val)
+    except Exception as exc:
+        logger.error(f"Error executing push enforcement for {license_id}: {exc}")
 
     broadcast_sync({
         "type": "LICENSE_STATUS_CHANGED",

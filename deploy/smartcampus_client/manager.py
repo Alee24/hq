@@ -88,6 +88,7 @@ class LicenseStatus(BaseModel):
     portal_url: str = LICENSING_PORTAL_DEFAULT_URL
     portal_connected: bool = False
     is_revoked_by_portal: bool = False
+    portal_reason: Optional[str] = None
     # Central Command Center attributes
     license_id: Optional[str] = None
     installation_limit: int = 1
@@ -441,16 +442,18 @@ class LicenseManager:
                                         logger.debug(f"[Licensing] Synchronous reactivation probe non-fatal error: {probe_err}")
 
                                 if is_lock_sealed():
+                                    portal_reason_val = sdata.get("portal_reason") or sdata.get("reason") or "Terms violation or non-payment"
                                     status = LicenseStatus(
                                         is_valid=False,
-                                        status="LOCKED",
+                                        status="SUSPENDED",
                                         is_locked=True,
                                         is_revoked_by_portal=True,
                                         lock_reason="REVOKED_BY_VENDOR_PORTAL",
+                                        portal_reason=portal_reason_val,
                                         license_id=self._get_active_license_id() or sdata.get("license_id"),
                                         message=(
-                                            f"SYSTEM SUSPENDED: License has been remotely suspended by software vendor. "
-                                            f"Please contact technical administration to restore activation."
+                                            f"APPLICATION SUSPENDED BY HQ: {portal_reason_val}. "
+                                            f"Access has been disabled from Central Command Center."
                                         ),
                                         server_machine_id=server_mid,
                                         command_center_url=LICENSING_PORTAL_DEFAULT_URL,
@@ -927,14 +930,33 @@ class LicenseManager:
                         if data.get("is_revoked"):
                             # Remote Kill-Switch Enforced!
                             reason = data.get("reason", "Revoked by Central Licensing Portal")
-                            logger.error(f"[Licensing] REMOTE REVOCATION ENFORCED FROM VENDOR PORTAL: {reason}")
+                            logger.error(f"[Licensing] REMOTE SUSPENSION ENFORCED FROM HQ: {reason} (License ID: {lic_id})")
                             engage_lock_seal("REVOKED_BY_VENDOR_PORTAL", mid, license_id=lic_id)
+                            for p in LOCK_SEAL_PATHS:
+                                if os.path.exists(p):
+                                    try:
+                                        with open(p, "r", encoding="utf-8") as f:
+                                            sd = json.load(f)
+                                        sd["portal_reason"] = reason
+                                        with open(p, "w", encoding="utf-8") as f:
+                                            json.dump(sd, f, indent=2)
+                                    except Exception:
+                                        pass
                             self._cached_status = None
                             cur = self.validate_license(force_refresh=True)
                             cur.is_locked = True
                             cur.is_revoked_by_portal = True
                             cur.lock_reason = "REVOKED_BY_VENDOR_PORTAL"
-                            return {"success": False, "is_revoked": True, "reason": reason}
+                            cur.portal_reason = reason
+                            cur.status = "SUSPENDED"
+                            cur.message = f"APPLICATION SUSPENDED BY HQ: {reason}. Access has been disabled from Central Command Center."
+                            return {
+                                "success": False,
+                                "is_revoked": True,
+                                "status": "SUSPENDED",
+                                "license_id": lic_id,
+                                "reason": reason
+                            }
                         else:
                             # Heartbeat success - Authority verified or restored!
                             disengage_lock_seal()

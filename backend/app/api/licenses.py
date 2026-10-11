@@ -400,6 +400,90 @@ async def revoke_license(
     )
     await db.commit()
 
+    # Synchronize with standalone command_center.db if present
+    import sqlite3
+    db_path = "/opt/command_center/command_center.db" if os.path.exists("/opt/command_center/command_center.db") else ("./command_center.db" if os.path.exists("./command_center.db") else None)
+    if db_path:
+        try:
+            with sqlite3.connect(db_path) as conn:
+                is_rev_int = 0 if is_reinstating else 1
+                act_st = 'ACTIVE' if is_reinstating else 'REVOKED'
+                conn.execute(
+                    "UPDATE licenses SET is_revoked = ?, revocation_reason = ? WHERE license_id = ? OR license_id = ?",
+                    (is_rev_int, reason if not is_reinstating else None, lic.license_key, license_id)
+                )
+                conn.execute(
+                    "UPDATE activations SET status = ? WHERE license_id = ? OR license_id = ?",
+                    (act_st, lic.license_key, license_id)
+                )
+                conn.commit()
+        except Exception as e:
+            logger.debug(f"SQLite sync note: {e}")
+
+    # Push instant revocation/restoration signal & manage lock seal
+    is_revoke_bool = not is_reinstating
+    target_data_dirs = [
+        "/var/www/smartcampus/backend/data",
+        "/var/www/smartcampus/data",
+        "/var/www/smartcampus/backend"
+    ]
+    if is_revoke_bool:
+        seal_payload = {
+            "status": "SUSPENDED",
+            "reason": "REVOKED_BY_VENDOR_PORTAL",
+            "license_id": lic.license_key or license_id,
+            "portal_reason": reason or "Terms violation or non-payment",
+            "sealed_at": datetime.now(timezone.utc).isoformat(),
+            "warning": "ALL DATA AND MUTATIONS ARE CRYPTOGRAPHICALLY FROZEN UNTIL LICENSED."
+        }
+        raw_seal = json.dumps(seal_payload, indent=2)
+        for d in target_data_dirs:
+            if os.path.exists(d):
+                for fname in [".lockdown_sealed", ".lockdown", ".revoked"]:
+                    fpath = os.path.join(d, fname)
+                    try:
+                        with open(fpath, "w", encoding="utf-8") as f:
+                            f.write(raw_seal)
+                    except Exception:
+                        pass
+    else:
+        for d in target_data_dirs:
+            if os.path.exists(d):
+                for fname in [".lockdown_sealed", ".lockdown", ".revoked"]:
+                    fpath = os.path.join(d, fname)
+                    try:
+                        if os.path.exists(fpath):
+                            os.remove(fpath)
+                    except Exception:
+                        pass
+
+    # Instant HTTP push
+    import urllib.request
+    endpoints = [
+        ("http://127.0.0.1:971/api/license/enforce-suspension" if is_revoke_bool else "http://127.0.0.1:971/api/license/restore"),
+        ("http://127.0.0.1:971/license/enforce-suspension" if is_revoke_bool else "http://127.0.0.1:971/license/restore"),
+        ("http://172.17.0.1:971/api/license/enforce-suspension" if is_revoke_bool else "http://172.17.0.1:971/api/license/restore"),
+        ("http://host.docker.internal:971/api/license/enforce-suspension" if is_revoke_bool else "http://host.docker.internal:971/api/license/restore"),
+    ]
+    push_payload = json.dumps({
+        "license_id": lic.license_key or license_id,
+        "action": "revoke" if is_revoke_bool else "restore",
+        "reason": reason or ("Terms violation or non-payment" if is_revoke_bool else "Restored by authority")
+    }).encode("utf-8")
+
+    for ep in endpoints:
+        try:
+            h_req = urllib.request.Request(
+                ep,
+                data=push_payload,
+                headers={"Content-Type": "application/json", "User-Agent": "HQ-Licensing-Authority/1.0"},
+                method="POST"
+            )
+            with urllib.request.urlopen(h_req, timeout=1.5) as resp:
+                pass
+        except Exception:
+            pass
+
     return {"success": True, "license_id": lic.id, "status": new_status, "action": action}
 
 @router.post("/{license_id}/renew")

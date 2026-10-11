@@ -15,7 +15,14 @@ logger = logging.getLogger("smartcampus.licensing.lockdown")
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 LOCK_SEAL_PATHS = [
     os.path.join(BASE_DIR, "data", ".lockdown_sealed"),
+    os.path.join(BASE_DIR, "data", ".lockdown"),
+    os.path.join(BASE_DIR, "data", ".revoked"),
     "/app/data/.lockdown_sealed",
+    "/app/data/.lockdown",
+    "/app/data/.revoked",
+    "/var/www/smartcampus/backend/data/.lockdown_sealed",
+    "/var/www/smartcampus/backend/data/.lockdown",
+    "/var/www/smartcampus/backend/data/.revoked",
 ]
 
 VENDOR_CONTACTS = {
