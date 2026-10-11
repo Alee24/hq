@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Settings, Shield, Bell, Database, Lock, Save, CheckCircle2, AlertTriangle, RefreshCw } from 'lucide-react';
 import { api } from '../api/client';
+import { Button, InputField } from '../components/common';
 
 export const SystemSettingsView: React.FC = () => {
   const [webhookUrl, setWebhookUrl] = useState('');
@@ -104,36 +105,27 @@ export const SystemSettingsView: React.FC = () => {
               Monitoring & Polling Parameters
             </h3>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
-              <div>
-                <label className="block text-slate-300 font-semibold mb-1">
-                  Synthetic Check Interval (Seconds)
-                </label>
-                <input
-                  type="number"
-                  min="10"
-                  max="3600"
-                  required
-                  value={monitorInterval}
-                  onChange={(e) => setMonitorInterval(Number(e.target.value))}
-                  className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-slate-100 focus:outline-none focus:border-brand-500"
-                />
-                <span className="text-[11px] text-slate-500 mt-1 block">Frequency of background node probes (10s – 3600s).</span>
-              </div>
-              <div>
-                <label className="block text-slate-300 font-semibold mb-1">
-                  Session Idle Timeout (Minutes)
-                </label>
-                <input
-                  type="number"
-                  min="15"
-                  max="10080"
-                  required
-                  value={sessionTimeout}
-                  onChange={(e) => setSessionTimeout(Number(e.target.value))}
-                  className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-slate-100 focus:outline-none focus:border-brand-500"
-                />
-                <span className="text-[11px] text-slate-500 mt-1 block">JWT authentication token validity window.</span>
-              </div>
+              <InputField
+                label="Synthetic Check Interval (Seconds)"
+                helperText="Frequency of background node probes (10s – 3600s)."
+                type="number"
+                min={10}
+                max={3600}
+                required
+                value={String(monitorInterval)}
+                onChange={(e) => setMonitorInterval(Number(e.target.value))}
+              />
+
+              <InputField
+                label="Session Idle Timeout (Minutes)"
+                helperText="JWT authentication token validity window."
+                type="number"
+                min={15}
+                max={10080}
+                required
+                value={String(sessionTimeout)}
+                onChange={(e) => setSessionTimeout(Number(e.target.value))}
+              />
             </div>
           </div>
 
@@ -143,21 +135,17 @@ export const SystemSettingsView: React.FC = () => {
               <Bell size={16} className="text-amber-400" />
               Global Notification Webhook Dispatcher
             </h3>
-            <div className="space-y-2 text-xs">
-              <label className="block text-slate-300 font-semibold">
-                Outgoing Webhook Endpoint (Slack / Discord / Teams / Custom)
-              </label>
-              <input
+            <div className="text-xs">
+              <InputField
+                label="Outgoing Webhook Endpoint (Slack / Discord / Teams / Custom)"
+                helperText="High-severity alerts, failed deployments, and server health drops will dispatch standardized JSON payloads to this endpoint."
                 type="url"
                 required
                 value={webhookUrl}
                 onChange={(e) => setWebhookUrl(e.target.value)}
                 placeholder="https://hooks.slack.com/services/..."
-                className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-slate-100 mono focus:outline-none focus:border-brand-500"
+                className="mono"
               />
-              <p className="text-[11px] text-slate-500">
-                High-severity alerts, failed deployments, and server health drops will dispatch standardized JSON payloads to this endpoint.
-              </p>
             </div>
           </div>
 
@@ -213,14 +201,14 @@ export const SystemSettingsView: React.FC = () => {
                 <CheckCircle2 size={14} /> Settings permanently saved to database
               </span>
             )}
-            <button
+            <Button
               type="submit"
-              disabled={saving}
-              className="flex items-center gap-2 px-5 py-2.5 bg-brand-600 hover:bg-brand-500 disabled:opacity-50 text-white rounded-lg text-xs font-semibold shadow-sm transition-colors"
+              variant="primary"
+              isLoading={saving}
+              leftIcon={<Save size={14} />}
             >
-              {saving ? <RefreshCw size={14} className="animate-spin" /> : <Save size={14} />}
-              <span>{saving ? 'Saving...' : 'Save Configuration'}</span>
-            </button>
+              Save Configuration
+            </Button>
           </div>
         </form>
       )}

@@ -26,6 +26,7 @@ import { BackupItem, Server, Application } from '../types';
 import { StatusBadge } from '../components/StatusBadge';
 import { DatabaseBackupModal } from '../components/DatabaseBackupModal';
 import { ConfirmationModal } from '../components/ConfirmationModal';
+import { Button, SelectField, ModalShell } from '../components/common';
 
 export const BackupsView: React.FC = () => {
   const [backups, setBackups] = useState<BackupItem[]>([]);
@@ -467,130 +468,103 @@ export const BackupsView: React.FC = () => {
       )}
 
       {/* Backup Entire Application Modal */}
-      {appBackupModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in">
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 max-w-md w-full shadow-2xl space-y-4">
-            <h3 className="text-base font-bold text-white flex items-center gap-2">
-              <Layers size={18} className="text-brand-400" />
-              <span>Backup Entire Application</span>
-            </h3>
-            <p className="text-xs text-slate-400">
-              Captures application codebase, document root, .env configuration variables, and associated databases into a compressed archive.
-            </p>
+      <ModalShell
+        isOpen={appBackupModalOpen}
+        onClose={() => setAppBackupModalOpen(false)}
+        title="Backup Entire Application"
+        description="Captures application codebase, document root, .env configuration variables, and associated databases into a compressed archive."
+        icon={Layers}
+        size="md"
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setAppBackupModalOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="primary"
+              type="submit"
+              form="app-backup-form"
+              isLoading={appBackupRunning}
+              leftIcon={<Archive size={13} />}
+            >
+              Create Application Archive
+            </Button>
+          </>
+        }
+      >
+        <form id="app-backup-form" onSubmit={handleBackupApplication} className="space-y-4 text-xs">
+          <SelectField
+            label="Target Application"
+            isRequired
+            value={selectedAppIdForBackup}
+            onChange={(e) => setSelectedAppIdForBackup(e.target.value)}
+          >
+            {matchingApps.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.name} ({a.framework || 'Web App'})
+              </option>
+            ))}
+          </SelectField>
 
-            <form onSubmit={handleBackupApplication} className="space-y-4 text-xs">
-              <div>
-                <label className="block text-slate-300 font-semibold mb-1">Target Application</label>
-                <select
-                  value={selectedAppIdForBackup}
-                  onChange={(e) => setSelectedAppIdForBackup(e.target.value)}
-                  required
-                  className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-slate-100 focus:outline-none focus:border-brand-500"
-                >
-                  {matchingApps.map((a) => (
-                    <option key={a.id} value={a.id}>
-                      {a.name} ({a.framework || 'Web App'})
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  id="includeDb"
-                  checked={includeDbInAppBackup}
-                  onChange={(e) => setIncludeDbInAppBackup(e.target.checked)}
-                  className="w-4 h-4 rounded bg-slate-950 border-slate-800 text-brand-600 focus:ring-brand-500"
-                />
-                <label htmlFor="includeDb" className="text-slate-300 cursor-pointer">
-                  Include mapped database dump in the backup archive
-                </label>
-              </div>
-
-              <div className="flex justify-end gap-3 pt-3 border-t border-slate-800">
-                <button
-                  type="button"
-                  onClick={() => setAppBackupModalOpen(false)}
-                  className="px-4 py-2 bg-slate-800 text-slate-300 rounded-lg hover:bg-slate-700"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={appBackupRunning}
-                  className="px-4 py-2 bg-brand-600 hover:bg-brand-500 text-white rounded-lg font-semibold flex items-center gap-1.5 disabled:opacity-50"
-                >
-                  {appBackupRunning ? <RefreshCw size={13} className="animate-spin" /> : <Archive size={13} />}
-                  <span>{appBackupRunning ? 'Generating...' : 'Create Application Archive'}</span>
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
+          <label className="flex items-center gap-2 cursor-pointer select-none text-slate-300">
+            <input
+              type="checkbox"
+              id="includeDb"
+              checked={includeDbInAppBackup}
+              onChange={(e) => setIncludeDbInAppBackup(e.target.checked)}
+              className="rounded bg-slate-950 border-slate-800 text-brand-600 focus:ring-brand-500"
+            />
+            <span>Include mapped database dump in the backup archive</span>
+          </label>
+        </form>
+      </ModalShell>
 
       {/* Portable Restore & Disaster Recovery Modal */}
-      {restoreModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in">
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 max-w-2xl w-full shadow-2xl space-y-4">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
-              <div className="flex items-center gap-2.5">
-                <div className="w-8 h-8 rounded-lg bg-indigo-600/20 border border-indigo-500/30 flex items-center justify-center text-indigo-400">
-                  <RotateCcw size={16} />
-                </div>
-                <div>
-                  <h3 className="text-base font-bold text-white">Restore Configurations to a Brand New VPS</h3>
-                  <p className="text-[11px] text-slate-400">Source Node: {selectedServer?.name} ({selectedServer?.public_ip})</p>
-                </div>
-              </div>
-              <button onClick={() => setRestoreModalOpen(false)} className="text-slate-400 hover:text-white">
-                ✕
-              </button>
-            </div>
-
-            <p className="text-xs text-slate-300 leading-relaxed">
-              When migrating to a new VPS, simply copy the configuration archive to your new server and run the command sequence below.
-              The Apache configurations will automatically restore to <code className="text-sky-300">/etc/apache2/</code>, Nginx to <code className="text-sky-300">/etc/nginx/</code>, and systemd units to <code className="text-sky-300">/etc/systemd/system/</code>.
-            </p>
-
-            <div className="relative bg-black/90 rounded-xl border border-slate-800 p-4 font-mono text-xs text-indigo-300/90 leading-relaxed max-h-72 overflow-y-auto">
-              <pre className="whitespace-pre-wrap">
-                {loadingRestore ? 'Generating portable restore command sequence...' : restoreData?.restore_command_sequence}
-              </pre>
-            </div>
-
-            <div className="flex items-center justify-between pt-2">
-              <button
-                onClick={handleCopyRestoreCmd}
-                className="px-3.5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors shadow-sm"
-              >
-                {copiedRestoreCmd ? <Check size={14} className="text-emerald-300" /> : <Copy size={14} />}
-                <span>{copiedRestoreCmd ? 'Copied to Clipboard' : 'Copy Restore Sequence'}</span>
-              </button>
-
-              <div className="flex items-center gap-2">
-                {restoreData?.download_url && (
-                  <a
-                    href={restoreData.download_url}
-                    download
-                    className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-semibold flex items-center gap-1.5 border border-slate-700 transition-colors"
-                  >
-                    <Download size={14} />
-                    <span>Download Archive</span>
-                  </a>
-                )}
-                <button
-                  onClick={() => setRestoreModalOpen(false)}
-                  className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs font-semibold"
+      <ModalShell
+        isOpen={restoreModalOpen}
+        onClose={() => setRestoreModalOpen(false)}
+        title="Restore Configurations to a Brand New VPS"
+        description={`Source Node: ${selectedServer?.name} (${selectedServer?.public_ip})`}
+        icon={RotateCcw}
+        size="xl"
+        footer={
+          <div className="flex items-center justify-between w-full">
+            <Button
+              variant="primary"
+              onClick={handleCopyRestoreCmd}
+              leftIcon={copiedRestoreCmd ? <Check size={14} className="text-emerald-300" /> : <Copy size={14} />}
+            >
+              {copiedRestoreCmd ? 'Copied to Clipboard' : 'Copy Restore Sequence'}
+            </Button>
+            <div className="flex items-center gap-2">
+              {restoreData?.download_url && (
+                <a
+                  href={restoreData.download_url}
+                  download
+                  className="px-3.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-semibold flex items-center gap-1.5 border border-slate-700 transition-colors focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:outline-none"
                 >
-                  Close
-                </button>
-              </div>
+                  <Download size={14} />
+                  <span>Download Archive</span>
+                </a>
+              )}
+              <Button variant="secondary" onClick={() => setRestoreModalOpen(false)}>
+                Close
+              </Button>
             </div>
           </div>
+        }
+      >
+        <p className="text-xs text-slate-300 leading-relaxed mb-3">
+          When migrating to a new VPS, simply copy the configuration archive to your new server and run the command sequence below.
+          The Apache configurations will automatically restore to <code className="text-sky-300 mono bg-slate-950 px-1 py-0.5 rounded border border-slate-800">/etc/apache2/</code>, Nginx to <code className="text-sky-300 mono bg-slate-950 px-1 py-0.5 rounded border border-slate-800">/etc/nginx/</code>, and systemd units to <code className="text-sky-300 mono bg-slate-950 px-1 py-0.5 rounded border border-slate-800">/etc/systemd/system/</code>.
+        </p>
+
+        <div className="bg-black/90 rounded-xl border border-slate-800 p-4 font-mono text-xs text-indigo-300/90 leading-relaxed max-h-72 overflow-y-auto select-text">
+          <pre className="whitespace-pre-wrap">
+            {loadingRestore ? 'Generating portable restore command sequence...' : restoreData?.restore_command_sequence}
+          </pre>
         </div>
-      )}
+      </ModalShell>
 
       {/* Delete Backup Confirmation Modal */}
       {backupToDelete && (

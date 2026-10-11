@@ -37,6 +37,7 @@ import { api } from '../api/client';
 import { DomainItem, Server } from '../types';
 import { StatusBadge } from '../components/StatusBadge';
 import { ConfirmationModal } from '../components/ConfirmationModal';
+import { Button, InputField, ModalShell } from '../components/common';
 
 interface SslTerminalOutput {
   command: string;
@@ -1021,55 +1022,43 @@ export const DomainsView: React.FC = () => {
       </div>
 
       {/* Add Domain Modal */}
-      {createModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200">
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 max-w-md w-full shadow-2xl">
-            <h2 className="text-lg font-bold text-white mb-2">Register Monitored Domain</h2>
-            <p className="text-xs text-slate-400 mb-4">
-              Add a new domain name to monitor TLS/SSL certificates, DNS resolution, and manage remote VirtualHost configurations.
-            </p>
-            <form onSubmit={handleCreateDomain} className="space-y-4 text-xs">
-              <div>
-                <label className="block text-slate-300 font-semibold mb-1">Fully Qualified Domain Name</label>
-                <input
-                  type="text"
-                  required
-                  value={newDomain}
-                  onChange={(e) => setNewDomain(e.target.value)}
-                  placeholder="e.g. portal.kkdes.co.ke"
-                  className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-slate-100 placeholder-slate-600 focus:outline-none focus:border-brand-500"
-                />
-              </div>
-              <div>
-                <label className="block text-slate-300 font-semibold mb-1">Target Hosting Server IP</label>
-                <input
-                  type="text"
-                  required
-                  value={newIp}
-                  onChange={(e) => setNewIp(e.target.value)}
-                  placeholder="e.g. 185.192.97.84"
-                  className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-slate-100 placeholder-slate-600 focus:outline-none focus:border-brand-500"
-                />
-              </div>
-              <div className="flex justify-end gap-3 pt-3 border-t border-slate-800">
-                <button
-                  type="button"
-                  onClick={() => setCreateModalOpen(false)}
-                  className="px-4 py-2 bg-slate-800 text-slate-300 rounded-lg hover:bg-slate-700 transition-colors"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="px-4 py-2 bg-brand-600 hover:bg-brand-500 text-white rounded-lg font-semibold transition-colors"
-                >
-                  Add Domain
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
+      <ModalShell
+        isOpen={createModalOpen}
+        onClose={() => setCreateModalOpen(false)}
+        title="Register Monitored Domain"
+        description="Add a new domain name to monitor TLS/SSL certificates, DNS resolution, and manage remote VirtualHost configurations."
+        icon={Globe}
+        size="md"
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setCreateModalOpen(false)}>
+              Cancel
+            </Button>
+            <Button variant="primary" type="submit" form="add-domain-form">
+              Add Domain
+            </Button>
+          </>
+        }
+      >
+        <form id="add-domain-form" onSubmit={handleCreateDomain} className="space-y-4 text-xs">
+          <InputField
+            label="Fully Qualified Domain Name"
+            isRequired
+            value={newDomain}
+            onChange={(e) => setNewDomain(e.target.value)}
+            placeholder="e.g. portal.kkdes.co.ke"
+          />
+
+          <InputField
+            label="Target Hosting Server IP"
+            isRequired
+            value={newIp}
+            onChange={(e) => setNewIp(e.target.value)}
+            placeholder="e.g. 185.192.97.84"
+            className="mono"
+          />
+        </form>
+      </ModalShell>
 
       {/* Delete / Teardown Configuration from Server Modal */}
       {selectedDomainForTeardown && (

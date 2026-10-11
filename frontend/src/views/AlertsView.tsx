@@ -3,6 +3,7 @@ import { Bell, CheckCircle2, RefreshCw, Plus, AlertTriangle, XCircle, Sliders, T
 import { api } from '../api/client';
 import { AlertItem, AlertRuleItem } from '../types';
 import { StatusBadge } from '../components/StatusBadge';
+import { Button, InputField, SelectField, ModalShell } from '../components/common';
 
 export const AlertsView: React.FC = () => {
   const [alerts, setAlerts] = useState<AlertItem[]>([]);
@@ -237,80 +238,68 @@ export const AlertsView: React.FC = () => {
       </div>
 
       {/* Create Rule Modal */}
-      {createRuleModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm">
-          <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-xl p-6 space-y-4">
-            <h3 className="text-base font-semibold text-white">Create Threshold Alert Rule</h3>
-            <form onSubmit={handleCreateRule} className="space-y-3 text-xs">
-              <div>
-                <label className="block text-slate-300 font-semibold mb-1">Rule Name</label>
-                <input
-                  type="text"
-                  required
-                  value={ruleName}
-                  onChange={(e) => setRuleName(e.target.value)}
-                  placeholder="e.g. Critical High RAM"
-                  className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-slate-100"
-                />
-              </div>
+      <ModalShell
+        isOpen={createRuleModalOpen}
+        onClose={() => setCreateRuleModalOpen(false)}
+        title="Create Threshold Alert Rule"
+        description="Configure automated alerting when system vitals or SSL days breach defined parameters."
+        icon={Sliders}
+        size="md"
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setCreateRuleModalOpen(false)}>
+              Cancel
+            </Button>
+            <Button variant="primary" type="submit" form="create-rule-form">
+              Save Rule
+            </Button>
+          </>
+        }
+      >
+        <form id="create-rule-form" onSubmit={handleCreateRule} className="space-y-4 text-xs">
+          <InputField
+            label="Rule Name"
+            isRequired
+            value={ruleName}
+            onChange={(e) => setRuleName(e.target.value)}
+            placeholder="e.g. Critical High RAM"
+          />
 
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-slate-300 font-semibold mb-1">Metric</label>
-                  <select
-                    value={metricName}
-                    onChange={(e) => setMetricName(e.target.value)}
-                    className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-slate-100"
-                  >
-                    <option value="cpu">CPU Utilization</option>
-                    <option value="ram">RAM Utilization</option>
-                    <option value="disk">Disk Capacity</option>
-                    <option value="ssl_days">SSL Days Left</option>
-                  </select>
-                </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <SelectField
+              label="Metric"
+              isRequired
+              value={metricName}
+              onChange={(e) => setMetricName(e.target.value)}
+              options={[
+                { value: 'cpu', label: 'CPU Utilization' },
+                { value: 'ram', label: 'RAM Utilization' },
+                { value: 'disk', label: 'Disk Capacity' },
+                { value: 'ssl_days', label: 'SSL Days Left' },
+              ]}
+            />
 
-                <div>
-                  <label className="block text-slate-300 font-semibold mb-1">Threshold (%)</label>
-                  <input
-                    type="number"
-                    value={threshold}
-                    onChange={(e) => setThreshold(Number(e.target.value))}
-                    className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-slate-100"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-slate-300 font-semibold mb-1">Severity</label>
-                <select
-                  value={severity}
-                  onChange={(e) => setSeverity(e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-slate-100"
-                >
-                  <option value="WARNING">WARNING</option>
-                  <option value="CRITICAL">CRITICAL</option>
-                </select>
-              </div>
-
-              <div className="flex justify-end gap-3 pt-3 border-t border-slate-800">
-                <button
-                  type="button"
-                  onClick={() => setCreateRuleModalOpen(false)}
-                  className="px-4 py-2 bg-slate-800 text-slate-300 rounded-lg"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="px-4 py-2 bg-brand-600 text-white rounded-lg font-semibold"
-                >
-                  Save Rule
-                </button>
-              </div>
-            </form>
+            <InputField
+              label="Threshold (%)"
+              isRequired
+              type="number"
+              value={String(threshold)}
+              onChange={(e) => setThreshold(Number(e.target.value))}
+            />
           </div>
-        </div>
-      )}
+
+          <SelectField
+            label="Severity"
+            isRequired
+            value={severity}
+            onChange={(e) => setSeverity(e.target.value)}
+            options={[
+              { value: 'WARNING', label: 'WARNING' },
+              { value: 'CRITICAL', label: 'CRITICAL' },
+            ]}
+          />
+        </form>
+      </ModalShell>
     </div>
   );
 };

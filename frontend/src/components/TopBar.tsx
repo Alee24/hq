@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import {
+  Menu,
   Search,
   Bell,
   Sun,
@@ -20,6 +21,7 @@ interface TopBarProps {
   onOpenSearch: () => void;
   onOpenWizard: () => void;
   onNavigate: (view: string) => void;
+  onToggleMobileMenu?: () => void;
   activeAlertsCount?: number;
 }
 
@@ -27,6 +29,7 @@ export const TopBar: React.FC<TopBarProps> = ({
   onOpenSearch,
   onOpenWizard,
   onNavigate,
+  onToggleMobileMenu,
   activeAlertsCount = 0,
 }) => {
   const { user, logout } = useAuth();
@@ -37,38 +40,50 @@ export const TopBar: React.FC<TopBarProps> = ({
   const [notificationsOpen, setNotificationsOpen] = useState(false);
 
   return (
-    <header className="h-14 bg-slate-900 border-b border-slate-800 px-5 flex items-center justify-between shrink-0 select-none z-10">
-      {/* Left side: Search & Environment */}
-      <div className="flex items-center gap-4">
+    <header className="h-14 bg-slate-900 border-b border-slate-800 px-3 sm:px-5 flex items-center justify-between shrink-0 select-none z-10">
+      {/* Left side: Hamburger (Mobile) + Search + Environment */}
+      <div className="flex items-center gap-2 sm:gap-4">
+        {/* Mobile Menu Button */}
+        {onToggleMobileMenu && (
+          <button
+            onClick={onToggleMobileMenu}
+            className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg md:hidden transition-colors focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:outline-none"
+            aria-label="Open navigation menu"
+          >
+            <Menu size={20} />
+          </button>
+        )}
+
         {/* Omni Search Button */}
         <button
           onClick={onOpenSearch}
-          className="flex items-center gap-3 px-3 py-1.5 bg-slate-950 border border-slate-800 hover:border-slate-700 text-slate-400 hover:text-slate-200 rounded-lg text-xs transition-colors w-64 md:w-80 text-left"
-          title="Open Global Search"
+          className="flex items-center gap-2 sm:gap-3 px-2.5 sm:px-3 py-1.5 bg-slate-950 border border-slate-800 hover:border-slate-700 text-slate-400 hover:text-slate-200 rounded-lg text-xs transition-colors w-36 sm:w-64 md:w-72 lg:w-80 text-left focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:outline-none"
+          title="Open Global Search (Ctrl+K)"
         >
           <Search size={15} className="shrink-0 text-slate-400" />
-          <span className="flex-1 truncate">Search applications, servers, IPs...</span>
-          <kbd className="hidden sm:inline-block px-1.5 py-0.5 bg-slate-800 text-[10px] text-slate-400 border border-slate-700 rounded mono">
+          <span className="flex-1 truncate hidden sm:inline">Search applications, servers, IPs...</span>
+          <span className="flex-1 truncate sm:hidden">Search...</span>
+          <kbd className="hidden md:inline-block px-1.5 py-0.5 bg-slate-800 text-[10px] text-slate-400 border border-slate-700 rounded mono">
             Ctrl+K
           </kbd>
         </button>
 
-        {/* Environment Selector */}
-        <div className="flex items-center gap-1.5 bg-slate-950 border border-slate-800 rounded-lg p-1 text-xs">
-          <Layers size={13} className="text-slate-400 ml-1.5 shrink-0" />
+        {/* Environment Selector (Hidden on extra-small mobile, visible on sm+) */}
+        <div className="hidden sm:flex items-center gap-1 bg-slate-950 border border-slate-800 rounded-lg p-1 text-xs">
+          <Layers size={13} className="text-slate-400 ml-1 shrink-0" />
           {(['all', 'production', 'staging', 'development'] as const).map((env) => {
             const isActive = environment === env;
             return (
               <button
                 key={env}
                 onClick={() => setEnvironment(env)}
-                className={`px-2.5 py-0.5 rounded-md font-medium capitalize transition-colors ${
+                className={`px-2 py-0.5 rounded-md font-medium capitalize transition-colors text-[11px] focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:outline-none ${
                   isActive
                     ? 'bg-brand-600 text-white shadow-sm'
                     : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
                 }`}
               >
-                {env === 'all' ? 'All Envs' : env}
+                {env === 'all' ? 'All' : env === 'production' ? 'Prod' : env === 'staging' ? 'Stage' : 'Dev'}
               </button>
             );
           })}
@@ -76,21 +91,21 @@ export const TopBar: React.FC<TopBarProps> = ({
       </div>
 
       {/* Right side: Health, Setup Wizard, Theme, Notifications, Profile */}
-      <div className="flex items-center gap-3">
-        {/* System Health Indicator */}
+      <div className="flex items-center gap-1.5 sm:gap-3">
+        {/* System Health Indicator (Desktop) */}
         <button
           onClick={() => onNavigate('system-health')}
-          className="hidden lg:flex items-center gap-2 px-2.5 py-1 rounded-full bg-emerald-950/80 border border-emerald-800/80 text-emerald-300 text-xs font-medium hover:bg-emerald-900/40 transition-colors"
+          className="hidden xl:flex items-center gap-2 px-2.5 py-1 rounded-full bg-emerald-950/80 border border-emerald-800/80 text-emerald-300 text-xs font-medium hover:bg-emerald-900/40 transition-colors focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:outline-none"
           title="System Health Status"
         >
           <Activity size={13} />
           <span>Systems Normal</span>
         </button>
 
-        {/* Setup Wizard launcher */}
+        {/* Setup Wizard launcher (Tablet/Desktop) */}
         <button
           onClick={onOpenWizard}
-          className="hidden md:flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 hover:text-white text-xs font-medium transition-colors"
+          className="hidden lg:flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 hover:text-white text-xs font-medium transition-colors focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:outline-none"
           title="Launch Setup Wizard"
         >
           <Sparkles size={13} className="text-amber-400" />
@@ -100,8 +115,9 @@ export const TopBar: React.FC<TopBarProps> = ({
         {/* Theme Toggle */}
         <button
           onClick={toggleTheme}
-          className="p-2 text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded-lg transition-colors"
+          className="p-2 text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded-lg transition-colors focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:outline-none"
           title={`Switch to ${theme === 'dark' ? 'Light' : 'Dark'} Mode`}
+          aria-label="Toggle color theme"
         >
           {theme === 'dark' ? <Sun size={17} /> : <Moon size={17} />}
         </button>
@@ -110,8 +126,9 @@ export const TopBar: React.FC<TopBarProps> = ({
         <div className="relative">
           <button
             onClick={() => setNotificationsOpen(prev => !prev)}
-            className="p-2 text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded-lg transition-colors relative"
+            className="p-2 text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded-lg transition-colors relative focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:outline-none"
             title="Notifications & Alerts"
+            aria-label="View notifications and alerts"
           >
             <Bell size={17} />
             {activeAlertsCount > 0 && (
@@ -121,7 +138,7 @@ export const TopBar: React.FC<TopBarProps> = ({
 
           {notificationsOpen && (
             <div
-              className="absolute right-0 mt-2 w-80 bg-slate-900 border border-slate-800 rounded-xl shadow-2xl p-3 z-30 animate-in fade-in duration-100"
+              className="absolute right-0 mt-2 w-72 sm:w-80 bg-slate-900 border border-slate-800 rounded-xl shadow-2xl p-3 z-30 animate-in fade-in duration-100"
               onMouseLeave={() => setNotificationsOpen(false)}
             >
               <div className="flex items-center justify-between pb-2 border-b border-slate-800 mb-2">
@@ -167,12 +184,13 @@ export const TopBar: React.FC<TopBarProps> = ({
         <div className="relative">
           <button
             onClick={() => setUserDropdownOpen(prev => !prev)}
-            className="flex items-center gap-2 pl-2 pr-3 py-1 bg-slate-950 hover:bg-slate-800/80 border border-slate-800 rounded-lg text-xs transition-colors"
+            className="flex items-center gap-1.5 sm:gap-2 pl-1.5 sm:pl-2 pr-2 sm:pr-3 py-1 bg-slate-950 hover:bg-slate-800/80 border border-slate-800 rounded-lg text-xs transition-colors focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:outline-none"
+            aria-label="User account menu"
           >
             <div className="w-6 h-6 rounded-full bg-brand-700 flex items-center justify-center text-white font-semibold text-xs">
               {user?.username?.[0]?.toUpperCase() || 'A'}
             </div>
-            <div className="text-left hidden sm:block">
+            <div className="text-left hidden md:block">
               <div className="font-medium text-slate-200 leading-tight">{user?.username || 'Admin'}</div>
               <div className="text-[10px] text-slate-400 font-mono leading-tight">{user?.role || 'SUPER_ADMIN'}</div>
             </div>

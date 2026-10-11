@@ -7,10 +7,8 @@ import {
   Rocket,
   ShieldAlert,
   Clock,
-  ArrowUpRight,
   RefreshCw,
   GitPullRequest,
-  CheckCircle2,
   AlertTriangle,
   XCircle,
   ShieldCheck,
@@ -18,6 +16,8 @@ import {
 } from 'lucide-react';
 import { api } from '../api/client';
 import { StatusBadge } from '../components/StatusBadge';
+import { Button } from '../components/common/Button';
+import { SkeletonLoader } from '../components/common/SkeletonLoader';
 import { useWebSocket } from '../context/WebSocketContext';
 
 interface DashboardViewProps {
@@ -67,11 +67,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
 
   if (loading && !data) {
     return (
-      <div className="p-8 space-y-6">
+      <div className="p-4 sm:p-6 md:p-8 space-y-6 max-w-7xl mx-auto">
         <div className="h-8 w-48 bg-slate-800 rounded animate-pulse" />
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           {[1, 2, 3, 4].map(i => (
-            <div key={i} className="h-28 bg-slate-900 border border-slate-800 rounded-xl animate-pulse" />
+            <SkeletonLoader key={i} variant="card" />
           ))}
         </div>
       </div>
@@ -87,11 +87,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
   const incidents = data?.incidents || [];
 
   return (
-    <div className="p-6 md:p-8 space-y-6 max-w-7xl mx-auto">
+    <div className="p-4 sm:p-6 md:p-8 space-y-6 max-w-7xl mx-auto">
       {/* Top Banner / Actions */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-2 border-b border-slate-800">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-3 border-b border-slate-800">
         <div>
-          <h1 className="text-2xl font-bold text-white tracking-tight flex items-center gap-2">
+          <h1 className="text-xl sm:text-2xl font-bold text-white tracking-tight flex items-center gap-2">
             Central Infrastructure Command Center
           </h1>
           <p className="text-xs text-slate-400 mt-1">
@@ -99,32 +99,42 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
           </p>
         </div>
 
-        <div className="flex items-center gap-3">
-          <button
+        <div className="flex items-center gap-2.5 sm:gap-3 flex-wrap">
+          <Button
             onClick={handleRefresh}
-            disabled={refreshing}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-900 hover:bg-slate-800 border border-slate-800 rounded-lg text-xs font-medium text-slate-300 hover:text-white transition-colors"
+            isLoading={refreshing}
+            variant="secondary"
+            size="sm"
+            leftIcon={<RefreshCw size={13} />}
           >
-            <RefreshCw size={13} className={refreshing ? 'animate-spin' : ''} />
-            <span>Refresh Telemetry</span>
-          </button>
+            Refresh Telemetry
+          </Button>
 
-          <button
+          <Button
             onClick={() => onNavigate('deployments')}
-            className="flex items-center gap-1.5 px-3.5 py-1.5 bg-brand-600 hover:bg-brand-500 text-white rounded-lg text-xs font-medium shadow-sm transition-colors"
+            variant="primary"
+            size="sm"
+            leftIcon={<Rocket size={13} />}
           >
-            <Rocket size={13} />
-            <span>Deploy Pipeline</span>
-          </button>
+            Deploy Pipeline
+          </Button>
         </div>
       </div>
 
-      {/* Primary KPI Grid (Section 3 Spec) */}
+      {/* Primary KPI Grid */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {/* Applications Metric Card */}
         <div
+          role="button"
+          tabIndex={0}
           onClick={() => onNavigate('applications')}
-          className="p-5 rounded-xl bg-slate-900 border border-slate-800 hover:border-slate-700 cursor-pointer transition-all space-y-3 group"
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              onNavigate('applications');
+            }
+          }}
+          className="p-5 rounded-xl bg-slate-900 border border-slate-800 hover:border-slate-700 cursor-pointer transition-all space-y-3 group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 shadow-sm"
         >
           <div className="flex items-center justify-between text-xs text-slate-400">
             <span className="font-semibold uppercase tracking-wider text-[11px]">Applications</span>
@@ -134,7 +144,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
             <div className="text-3xl font-bold text-white mono">{apps.total}</div>
             <div className="text-xs text-slate-400 mt-1">Total Managed Applications</div>
           </div>
-          <div className="pt-2 border-t border-slate-800/80 flex items-center gap-2 text-xs">
+          <div className="pt-2 border-t border-slate-800/80 flex items-center gap-2 text-xs flex-wrap">
             <span className="flex items-center gap-1 text-emerald-400 font-medium">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" /> {apps.online} Online
             </span>
@@ -153,8 +163,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
 
         {/* Servers Metric Card */}
         <div
+          role="button"
+          tabIndex={0}
           onClick={() => onNavigate('servers')}
-          className="p-5 rounded-xl bg-slate-900 border border-slate-800 hover:border-slate-700 cursor-pointer transition-all space-y-3 group"
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              onNavigate('servers');
+            }
+          }}
+          className="p-5 rounded-xl bg-slate-900 border border-slate-800 hover:border-slate-700 cursor-pointer transition-all space-y-3 group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 shadow-sm"
         >
           <div className="flex items-center justify-between text-xs text-slate-400">
             <span className="font-semibold uppercase tracking-wider text-[11px]">VPS Servers</span>
@@ -175,8 +193,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
 
         {/* Average Uptime Metric Card */}
         <div
+          role="button"
+          tabIndex={0}
           onClick={() => onNavigate('monitoring')}
-          className="p-5 rounded-xl bg-slate-900 border border-slate-800 hover:border-slate-700 cursor-pointer transition-all space-y-3 group"
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              onNavigate('monitoring');
+            }
+          }}
+          className="p-5 rounded-xl bg-slate-900 border border-slate-800 hover:border-slate-700 cursor-pointer transition-all space-y-3 group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 shadow-sm"
         >
           <div className="flex items-center justify-between text-xs text-slate-400">
             <span className="font-semibold uppercase tracking-wider text-[11px]">Cluster SLA Uptime</span>
@@ -194,8 +220,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
 
         {/* Cryptographic Licenses Metric Card */}
         <div
+          role="button"
+          tabIndex={0}
           onClick={() => onNavigate('licenses')}
-          className="p-5 rounded-xl bg-slate-900 border border-slate-800 hover:border-slate-700 cursor-pointer transition-all space-y-3 group"
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              onNavigate('licenses');
+            }
+          }}
+          className="p-5 rounded-xl bg-slate-900 border border-slate-800 hover:border-slate-700 cursor-pointer transition-all space-y-3 group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 shadow-sm"
         >
           <div className="flex items-center justify-between text-xs text-slate-400">
             <span className="font-semibold uppercase tracking-wider text-[11px]">Licenses</span>
@@ -205,7 +239,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
             <div className="text-3xl font-bold text-white mono">{lics.total}</div>
             <div className="text-xs text-slate-400 mt-1">Cryptographic Digital Entitlements</div>
           </div>
-          <div className="pt-2 border-t border-slate-800/80 flex items-center gap-2 text-xs">
+          <div className="pt-2 border-t border-slate-800/80 flex items-center gap-2 text-xs flex-wrap">
             <span className="text-emerald-400 font-medium">{lics.valid} Valid</span>
             {lics.expiring_soon > 0 && (
               <span className="text-amber-400 font-medium">• {lics.expiring_soon} Expiring</span>
@@ -218,7 +252,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
       </div>
 
       {/* Secondary Quick Metrics Row */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
         <div className="p-3.5 rounded-lg bg-slate-900/60 border border-slate-800 flex items-center justify-between">
           <div>
             <div className="text-xs text-slate-400">Deployments Today</div>
@@ -255,15 +289,15 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
       {/* Main Operational Split: Recent Deployments & Active Alerts */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Active Alerts Panel */}
-        <div className="p-5 rounded-xl bg-slate-900 border border-slate-800 space-y-4">
+        <div className="p-5 rounded-xl bg-slate-900 border border-slate-800 space-y-4 shadow-sm">
           <div className="flex items-center justify-between">
             <h3 className="text-sm font-semibold text-white flex items-center gap-2">
-              <span className="w-2 h-2 rounded-full bg-rose-500" />
+              <span className="w-2 h-2 rounded-full bg-rose-500 animate-pulse" />
               Active System Alerts ({alerts.length})
             </h3>
             <button
               onClick={() => onNavigate('alerts')}
-              className="text-xs text-brand-400 hover:text-brand-300 font-medium flex items-center gap-1"
+              className="text-xs text-brand-400 hover:text-brand-300 font-medium flex items-center gap-1 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-500 rounded px-1"
             >
               <span>Manage Alerts</span>
               <ChevronRight size={14} />
@@ -302,7 +336,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
         </div>
 
         {/* Recent Deployments Panel */}
-        <div className="p-5 rounded-xl bg-slate-900 border border-slate-800 space-y-4">
+        <div className="p-5 rounded-xl bg-slate-900 border border-slate-800 space-y-4 shadow-sm">
           <div className="flex items-center justify-between">
             <h3 className="text-sm font-semibold text-white flex items-center gap-2">
               <Rocket size={16} className="text-brand-400" />
@@ -310,7 +344,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
             </h3>
             <button
               onClick={() => onNavigate('deployments')}
-              className="text-xs text-brand-400 hover:text-brand-300 font-medium flex items-center gap-1"
+              className="text-xs text-brand-400 hover:text-brand-300 font-medium flex items-center gap-1 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-500 rounded px-1"
             >
               <span>View All</span>
               <ChevronRight size={14} />
@@ -326,9 +360,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
               deps.recent.map((d: any) => (
                 <div
                   key={d.id}
-                  className="p-3 rounded-lg bg-slate-950 border border-slate-800/80 hover:border-slate-700 transition-colors flex items-center justify-between"
+                  className="p-3 rounded-lg bg-slate-950 border border-slate-800/80 hover:border-slate-700 transition-colors flex items-center justify-between gap-3"
                 >
-                  <div className="space-y-1 min-w-0 pr-3">
+                  <div className="space-y-1 min-w-0 pr-2">
                     <div className="flex items-center gap-2">
                       <span className="font-mono text-xs text-brand-400 font-semibold px-1.5 py-0.5 bg-brand-950/80 rounded border border-brand-800/80">
                         {d.commit_hash}
@@ -350,9 +384,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
       </div>
 
       {/* Incident History & Maintenance Bar */}
-      <div className="p-4 rounded-xl bg-slate-900 border border-slate-800 flex flex-col md:flex-row md:items-center justify-between gap-4">
+      <div className="p-4 rounded-xl bg-slate-900 border border-slate-800 flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-sm">
         <div className="flex items-center gap-3">
-          <div className="p-2.5 rounded-lg bg-slate-950 text-slate-400 border border-slate-800">
+          <div className="p-2.5 rounded-lg bg-slate-950 text-slate-400 border border-slate-800 shrink-0">
             <Clock size={18} />
           </div>
           <div>
@@ -362,12 +396,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate }) => {
             </div>
           </div>
         </div>
-        <button
+        <Button
           onClick={() => onNavigate('monitoring')}
-          className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium rounded-lg transition-colors border border-slate-700 shrink-0 text-center"
+          variant="secondary"
+          size="sm"
         >
           View Incident Timeline
-        </button>
+        </Button>
       </div>
     </div>
   );

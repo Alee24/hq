@@ -18,6 +18,7 @@ import { DeploymentItem, Application } from '../types';
 import { StatusBadge } from '../components/StatusBadge';
 import { ConfirmationModal } from '../components/ConfirmationModal';
 import { useWebSocket } from '../context/WebSocketContext';
+import { Button, InputField, SelectField, ModalShell } from '../components/common';
 
 export const DeploymentsView: React.FC = () => {
   const [deployments, setDeployments] = useState<DeploymentItem[]>([]);
@@ -328,100 +329,93 @@ export const DeploymentsView: React.FC = () => {
       </div>
 
       {/* Trigger New Deployment Modal */}
-      {triggerModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm">
-          <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-xl p-6 space-y-4">
-            <h3 className="text-base font-semibold text-white">Launch Deployment Pipeline</h3>
-            <form onSubmit={handleLaunchDeployment} className="space-y-3 text-xs">
-              <div>
-                <label className="block text-slate-300 font-semibold mb-1">Target Application</label>
-                <select
-                  value={selectedAppId}
-                  onChange={(e) => setSelectedAppId(e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-slate-100"
-                >
-                  {apps.map((a) => (
-                    <option key={a.id} value={a.id}>
-                      {a.name} ({a.environment})
-                    </option>
-                  ))}
-                </select>
-              </div>
+      <ModalShell
+        isOpen={triggerModalOpen}
+        onClose={() => setTriggerModalOpen(false)}
+        title="Launch Deployment Pipeline"
+        description="Trigger zero-downtime 13-step pipeline with automated health verification."
+        icon={Rocket}
+        size="md"
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setTriggerModalOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="primary"
+              type="submit"
+              form="deploy-form"
+              isLoading={deploying}
+            >
+              Execute 13-Step Pipeline
+            </Button>
+          </>
+        }
+      >
+        <form id="deploy-form" onSubmit={handleLaunchDeployment} className="space-y-3.5 text-xs">
+          <SelectField
+            label="Target Application"
+            isRequired
+            value={selectedAppId}
+            onChange={(e) => setSelectedAppId(e.target.value)}
+          >
+            {apps.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.name} ({a.environment})
+              </option>
+            ))}
+          </SelectField>
 
-              <div>
-                <label className="block text-slate-300 font-semibold mb-1">Environment</label>
-                <select
-                  value={env}
-                  onChange={(e) => setEnv(e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-slate-100"
-                >
-                  <option value="production">Production</option>
-                  <option value="staging">Staging</option>
-                  <option value="development">Development</option>
-                </select>
-              </div>
+          <SelectField
+            label="Environment"
+            isRequired
+            value={env}
+            onChange={(e) => setEnv(e.target.value)}
+            options={[
+              { value: 'production', label: 'Production' },
+              { value: 'staging', label: 'Staging' },
+              { value: 'development', label: 'Development' },
+            ]}
+          />
 
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-slate-300 font-semibold mb-1">Git Branch / Tag</label>
-                  <input
-                    type="text"
-                    value={branch}
-                    onChange={(e) => setBranch(e.target.value)}
-                    className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-slate-100"
-                  />
-                </div>
-                <div>
-                  <label className="block text-slate-300 font-semibold mb-1">Commit Hash</label>
-                  <input
-                    type="text"
-                    value={commitHash}
-                    onChange={(e) => setCommitHash(e.target.value)}
-                    className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-slate-100 font-mono"
-                  />
-                </div>
-              </div>
-
-              <div className="space-y-2 pt-2 border-t border-slate-800 text-slate-300">
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={runTests}
-                    onChange={(e) => setRunTests(e.target.checked)}
-                    className="rounded bg-slate-950 border-slate-800 text-brand-600"
-                  />
-                  <span>Run automated unit & integration tests</span>
-                </label>
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={createBackup}
-                    onChange={(e) => setCreateBackup(e.target.checked)}
-                    className="rounded bg-slate-950 border-slate-800 text-brand-600"
-                  />
-                  <span>Create pre-deployment safety snapshot backup</span>
-                </label>
-              </div>
-
-              <div className="flex justify-end gap-3 pt-3 border-t border-slate-800">
-                <button
-                  type="button"
-                  onClick={() => setTriggerModalOpen(false)}
-                  className="px-4 py-2 bg-slate-800 text-slate-300 rounded-lg"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="px-4 py-2 bg-brand-600 text-white rounded-lg font-semibold"
-                >
-                  Execute 13-Step Pipeline
-                </button>
-              </div>
-            </form>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <InputField
+              label="Git Branch / Tag"
+              isRequired
+              value={branch}
+              onChange={(e) => setBranch(e.target.value)}
+            />
+            <InputField
+              label="Commit Hash"
+              isRequired
+              value={commitHash}
+              onChange={(e) => setCommitHash(e.target.value)}
+              className="mono"
+            />
           </div>
-        </div>
-      )}
+
+          <div className="space-y-2 pt-2 border-t border-slate-800 text-slate-300">
+            <label className="flex items-center gap-2 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={runTests}
+                onChange={(e) => setRunTests(e.target.checked)}
+                className="rounded bg-slate-950 border-slate-800 text-brand-600 focus:ring-brand-500"
+              />
+              <span>Run automated unit & integration tests</span>
+            </label>
+            <label className="flex items-center gap-2 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={createBackup}
+                onChange={(e) => setCreateBackup(e.target.checked)}
+                className="rounded bg-slate-950 border-slate-800 text-brand-600 focus:ring-brand-500"
+              />
+              <span>Create pre-deployment safety snapshot backup</span>
+            </label>
+          </div>
+        </form>
+      </ModalShell>
 
       {/* Rollback Confirmation Modal */}
       <ConfirmationModal
@@ -437,19 +431,22 @@ export const DeploymentsView: React.FC = () => {
 
       {/* Log Modal */}
       {logModalContent && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
-          <div className="w-full max-w-2xl bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-4">
-            <div className="flex items-center justify-between pb-2 border-b border-slate-800">
-              <h4 className="text-sm font-semibold text-white">Deployment Pipeline Audit Log</h4>
-              <button onClick={() => setLogModalContent(null)} className="text-xs text-slate-400 hover:text-white">
-                Close
-              </button>
-            </div>
-            <pre className="p-3 bg-slate-950 border border-slate-800 rounded-lg text-xs font-mono text-slate-300 max-h-96 overflow-y-auto whitespace-pre-wrap">
-              {logModalContent}
-            </pre>
-          </div>
-        </div>
+        <ModalShell
+          isOpen={Boolean(logModalContent)}
+          onClose={() => setLogModalContent(null)}
+          title="Deployment Pipeline Audit Log"
+          icon={FileText}
+          size="lg"
+          footer={
+            <Button variant="secondary" onClick={() => setLogModalContent(null)}>
+              Close
+            </Button>
+          }
+        >
+          <pre className="p-3.5 bg-slate-950 border border-slate-800 rounded-lg text-xs font-mono text-slate-300 max-h-96 overflow-y-auto whitespace-pre-wrap leading-relaxed select-text">
+            {logModalContent}
+          </pre>
+        </ModalShell>
       )}
     </div>
   );

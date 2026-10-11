@@ -121,7 +121,8 @@ export const GlobalSearchModal: React.FC<GlobalSearchModalProps> = ({ isOpen, on
           </kbd>
           <button
             onClick={onClose}
-            className="p-1 text-slate-400 hover:text-slate-200 rounded-md transition-colors"
+            className="p-1.5 text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded-md transition-colors focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:outline-none"
+            aria-label="Close search dialog"
           >
             <X size={18} />
           </button>

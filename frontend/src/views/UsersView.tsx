@@ -3,6 +3,7 @@ import { Users as UsersIcon, Shield, RefreshCw, Plus, Trash2 } from 'lucide-reac
 import { api } from '../api/client';
 import { User, UserRole } from '../types';
 import { ConfirmationModal } from '../components/ConfirmationModal';
+import { Button, InputField, SelectField, ModalShell } from '../components/common';
 
 export const UsersView: React.FC = () => {
   const [users, setUsers] = useState<User[]>([]);
@@ -203,93 +204,69 @@ export const UsersView: React.FC = () => {
       </div>
 
       {/* Create User Modal */}
-      {createModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm">
-          <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-xl p-6 space-y-4">
-            <h3 className="text-base font-semibold text-white">Create Enterprise User Account</h3>
-            <form onSubmit={handleCreateUser} className="space-y-3 text-xs">
-              <div>
-                <label className="block text-slate-300 font-semibold mb-1">Username</label>
-                <input
-                  type="text"
-                  required
-                  value={newUsername}
-                  onChange={(e) => setNewUsername(e.target.value)}
-                  placeholder="e.g. dev_lead"
-                  className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-slate-100"
-                />
-              </div>
+      <ModalShell
+        isOpen={createModalOpen}
+        onClose={() => setCreateModalOpen(false)}
+        title="Create Enterprise User Account"
+        description="Provision identity credentials and assign Role-Based Access Control permissions."
+        icon={UsersIcon}
+        size="md"
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setCreateModalOpen(false)}>
+              Cancel
+            </Button>
+            <Button variant="primary" type="submit" form="create-user-form">
+              Create User
+            </Button>
+          </>
+        }
+      >
+        <form id="create-user-form" onSubmit={handleCreateUser} className="space-y-4 text-xs">
+          <InputField
+            label="Username"
+            isRequired
+            value={newUsername}
+            onChange={(e) => setNewUsername(e.target.value)}
+            placeholder="e.g. dev_lead"
+          />
 
-              <div>
-                <label className="block text-slate-300 font-semibold mb-1">Email Address</label>
-                <input
-                  type="email"
-                  required
-                  value={newEmail}
-                  onChange={(e) => setNewEmail(e.target.value)}
-                  placeholder="e.g. dev@enterprise.net"
-                  className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-slate-100"
-                />
-              </div>
+          <InputField
+            label="Email Address"
+            isRequired
+            type="email"
+            value={newEmail}
+            onChange={(e) => setNewEmail(e.target.value)}
+            placeholder="e.g. dev@enterprise.net"
+          />
 
-              <div>
-                <label className="block text-slate-300 font-semibold mb-1">Full Name</label>
-                <input
-                  type="text"
-                  required
-                  value={newFullName}
-                  onChange={(e) => setNewFullName(e.target.value)}
-                  placeholder="e.g. Jane Doe"
-                  className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-slate-100"
-                />
-              </div>
+          <InputField
+            label="Full Name"
+            isRequired
+            value={newFullName}
+            onChange={(e) => setNewFullName(e.target.value)}
+            placeholder="e.g. Jane Doe"
+          />
 
-              <div>
-                <label className="block text-slate-300 font-semibold mb-1">Initial Password</label>
-                <input
-                  type="password"
-                  required
-                  value={newPassword}
-                  onChange={(e) => setNewPassword(e.target.value)}
-                  placeholder="••••••••••••"
-                  className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-slate-100"
-                />
-              </div>
+          <InputField
+            label="Initial Password"
+            isRequired
+            type="password"
+            value={newPassword}
+            onChange={(e) => setNewPassword(e.target.value)}
+            placeholder="••••••••••••"
+          />
 
-              <div>
-                <label className="block text-slate-300 font-semibold mb-1">Assigned RBAC Role</label>
-                <select
-                  value={newRole}
-                  onChange={(e) => setNewRole(e.target.value as UserRole)}
-                  className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-slate-100 font-mono"
-                >
-                  {roles.map((r) => (
-                    <option key={r} value={r}>
-                      {r}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="flex justify-end gap-3 pt-3 border-t border-slate-800">
-                <button
-                  type="button"
-                  onClick={() => setCreateModalOpen(false)}
-                  className="px-4 py-2 bg-slate-800 text-slate-300 rounded-lg"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="px-4 py-2 bg-brand-600 text-white rounded-lg font-semibold"
-                >
-                  Create User
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
+          <SelectField
+            label="Assigned RBAC Role"
+            isRequired
+            value={newRole}
+            onChange={(e) => setNewRole(e.target.value as UserRole)}
+            className="mono"
+            options={roles.map((r) => ({ value: r, label: r }))}
+          />
+        </form>
+      </ModalShell>
 
       {/* Delete User Confirmation Modal */}
       {selectedUserForDelete && (

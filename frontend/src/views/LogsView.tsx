@@ -3,6 +3,7 @@ import { FileText, Search, Download, RefreshCw, Terminal, Filter, Radio } from '
 import { api } from '../api/client';
 import { LogItem, Application, Server } from '../types';
 import { useWebSocket } from '../context/WebSocketContext';
+import { Button } from '../components/common';
 
 export const LogsView: React.FC = () => {
   const [logs, setLogs] = useState<LogItem[]>([]);
@@ -101,34 +102,33 @@ export const LogsView: React.FC = () => {
           </p>
         </div>
 
-        <div className="flex items-center gap-2.5">
-          <button
+        <div className="flex items-center gap-2.5 flex-wrap">
+          <Button
+            variant={liveStream ? 'success' : 'secondary'}
+            size="sm"
             onClick={() => setLiveStream(!liveStream)}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
-              liveStream
-                ? 'bg-emerald-950/80 text-emerald-300 border-emerald-800'
-                : 'bg-slate-900 text-slate-400 border-slate-800'
-            }`}
+            leftIcon={<Radio size={13} className={liveStream ? 'animate-pulse' : ''} />}
           >
-            <Radio size={13} className={liveStream ? 'animate-pulse text-emerald-400' : ''} />
-            <span>{liveStream ? 'Live Stream Active' : 'Live Stream Paused'}</span>
-          </button>
+            {liveStream ? 'Live Stream Active' : 'Live Stream Paused'}
+          </Button>
 
-          <button
+          <Button
+            variant="secondary"
+            size="sm"
             onClick={() => handleExport('csv')}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-slate-300 rounded-lg text-xs font-semibold border border-slate-800 transition-colors"
+            leftIcon={<Download size={13} />}
           >
-            <Download size={13} />
-            <span>Export CSV</span>
-          </button>
+            Export CSV
+          </Button>
 
-          <button
+          <Button
+            variant="secondary"
+            size="sm"
             onClick={() => handleExport('json')}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-slate-300 rounded-lg text-xs font-semibold border border-slate-800 transition-colors"
+            leftIcon={<Download size={13} />}
           >
-            <Download size={13} />
-            <span>Export JSON</span>
-          </button>
+            Export JSON
+          </Button>
         </div>
       </div>
 

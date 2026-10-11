@@ -36,6 +36,7 @@ export const MainAppShell: React.FC = () => {
 
   const [searchModalOpen, setSearchModalOpen] = useState(false);
   const [wizardModalOpen, setWizardModalOpen] = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   // Keyboard shortcut Ctrl+K / Cmd+K
   useEffect(() => {
@@ -65,6 +66,7 @@ export const MainAppShell: React.FC = () => {
   }
 
   const navigateTo = (view: string, id?: string) => {
+    setMobileMenuOpen(false);
     if (view === 'applications' && id) {
       setSelectedAppId(id);
       setCurrentView('application-detail');
@@ -90,6 +92,8 @@ export const MainAppShell: React.FC = () => {
             : currentView
         }
         onSelectView={(v) => navigateTo(v)}
+        isOpen={mobileMenuOpen}
+        onClose={() => setMobileMenuOpen(false)}
       />
 
       {/* Main Content Area */}
@@ -99,6 +103,7 @@ export const MainAppShell: React.FC = () => {
           onOpenSearch={() => setSearchModalOpen(true)}
           onOpenWizard={() => setWizardModalOpen(true)}
           onNavigate={(v) => navigateTo(v)}
+          onToggleMobileMenu={() => setMobileMenuOpen(prev => !prev)}
           activeAlertsCount={1}
         />
 

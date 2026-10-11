@@ -26,6 +26,7 @@ import { Application, ApplicationComponent } from '../types';
 import { StatusBadge } from '../components/StatusBadge';
 import { ConfirmationModal } from '../components/ConfirmationModal';
 import { useEnvironment } from '../context/EnvironmentContext';
+import { Button, InputField, SelectField, ModalShell, EmptyState } from '../components/common';
 
 interface ApplicationsViewProps {
   onSelectApp: (appId: string) => void;
@@ -782,69 +783,51 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
 
       {/* Container Logs Viewer Modal */}
       {logsModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
-          <div className="w-full max-w-3xl bg-slate-900 border border-slate-800 rounded-xl shadow-2xl flex flex-col max-h-[85vh]">
-            {/* Modal Header */}
-            <div className="flex items-center justify-between p-4 border-b border-slate-800 bg-slate-950/70">
-              <div className="flex items-center gap-2">
-                <Terminal size={16} className="text-brand-400" />
-                <div>
-                  <h3 className="text-sm font-bold text-white">
-                    Logs &mdash; {logsModal.componentName}
-                  </h3>
-                  <p className="text-[11px] text-slate-400">
-                    Application Suite: {logsModal.appName}
-                  </p>
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => {
-                    const matchedApp = apps.find((a) => a.name === logsModal.appName);
-                    if (matchedApp) {
-                      handleViewComponentLogs(matchedApp, logsModal.componentName);
-                    }
-                  }}
-                  disabled={logsModal.loading}
-                  className="p-1.5 hover:bg-slate-800 rounded text-slate-400 hover:text-white transition-colors"
-                  title="Refresh logs"
-                >
-                  <RefreshCw size={14} className={logsModal.loading ? 'animate-spin' : ''} />
-                </button>
-                <button
-                  onClick={() => setLogsModal(null)}
-                  className="p-1.5 hover:bg-slate-800 rounded text-slate-400 hover:text-white transition-colors"
-                  title="Close"
-                >
-                  <X size={16} />
-                </button>
-              </div>
-            </div>
-
-            {/* Terminal Body */}
-            <div className="flex-1 p-4 overflow-y-auto bg-black font-mono text-xs text-slate-300 whitespace-pre-wrap leading-relaxed select-text">
-              {logsModal.loading ? (
-                <div className="flex items-center justify-center py-12 text-slate-500">
-                  <RotateCw size={16} className="animate-spin mr-2" />
-                  <span>Streaming terminal stdout/stderr from container...</span>
-                </div>
-              ) : (
-                logsModal.logs
-              )}
-            </div>
-
-            {/* Modal Footer */}
-            <div className="flex items-center justify-between p-3 border-t border-slate-800 bg-slate-950/60 text-[11px] text-slate-400">
-              <span>Showing last 100 stdout lines from Docker daemon.</span>
-              <button
-                onClick={() => setLogsModal(null)}
-                className="px-3 py-1 bg-slate-800 hover:bg-slate-700 text-white rounded font-medium transition-colors"
-              >
+        <ModalShell
+          isOpen={Boolean(logsModal)}
+          onClose={() => setLogsModal(null)}
+          title={`Logs — ${logsModal.componentName}`}
+          description={`Application Suite: ${logsModal.appName}`}
+          icon={Terminal}
+          size="xl"
+          footer={
+            <div className="flex items-center justify-between w-full">
+              <span className="text-[11px] text-slate-400">
+                Showing last 100 stdout lines from Docker daemon.
+              </span>
+              <Button variant="secondary" onClick={() => setLogsModal(null)}>
                 Close
-              </button>
+              </Button>
             </div>
+          }
+        >
+          <div className="flex items-center justify-end mb-2">
+            <Button
+              variant="outline"
+              size="xs"
+              onClick={() => {
+                const matchedApp = apps.find((a) => a.name === logsModal.appName);
+                if (matchedApp) {
+                  handleViewComponentLogs(matchedApp, logsModal.componentName);
+                }
+              }}
+              isLoading={logsModal.loading}
+              leftIcon={<RefreshCw size={12} />}
+            >
+              Refresh Logs
+            </Button>
           </div>
-        </div>
+          <div className="p-4 rounded-lg bg-black border border-slate-800 font-mono text-xs text-slate-300 whitespace-pre-wrap leading-relaxed select-text max-h-96 overflow-y-auto">
+            {logsModal.loading ? (
+              <div className="flex items-center justify-center py-12 text-slate-500">
+                <RotateCw size={16} className="animate-spin mr-2" />
+                <span>Streaming terminal stdout/stderr from container...</span>
+              </div>
+            ) : (
+              logsModal.logs || 'No logs available.'
+            )}
+          </div>
+        </ModalShell>
       )}
 
       {/* Confirmation Safeguard Modal for Production Restart */}
@@ -872,94 +855,74 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
       />
 
       {/* Create Application Modal */}
-      {createModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm">
-          <div className="w-full max-w-lg bg-slate-900 border border-slate-800 rounded-xl shadow-2xl p-6 space-y-4">
-            <h3 className="text-base font-semibold text-white">Register New Application</h3>
-            <form onSubmit={handleCreateApp} className="space-y-3 text-xs">
-              <div>
-                <label className="block text-slate-300 font-semibold mb-1">Application Name</label>
-                <input
-                  type="text"
-                  required
-                  value={newName}
-                  onChange={(e) => setNewName(e.target.value)}
-                  placeholder="e.g. Student Portal"
-                  className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-slate-100"
-                />
-              </div>
+      <ModalShell
+        isOpen={createModalOpen}
+        onClose={() => setCreateModalOpen(false)}
+        title="Register New Application"
+        description="Attach a web application, API, or service to the Command Center."
+        icon={Layers}
+        size="md"
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setCreateModalOpen(false)}>
+              Cancel
+            </Button>
+            <Button variant="primary" type="submit" form="create-app-form">
+              Register Application
+            </Button>
+          </>
+        }
+      >
+        <form id="create-app-form" onSubmit={handleCreateApp} className="space-y-4 text-xs">
+          <InputField
+            label="Application Name"
+            isRequired
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            placeholder="e.g. Student Portal"
+          />
 
-              <div>
-                <label className="block text-slate-300 font-semibold mb-1">Domain Name</label>
-                <input
-                  type="text"
-                  required
-                  value={newDomain}
-                  onChange={(e) => setNewDomain(e.target.value)}
-                  placeholder="e.g. portal.example.com"
-                  className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-slate-100"
-                />
-              </div>
+          <InputField
+            label="Domain Name"
+            isRequired
+            value={newDomain}
+            onChange={(e) => setNewDomain(e.target.value)}
+            placeholder="e.g. portal.example.com"
+          />
 
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-slate-300 font-semibold mb-1">Port</label>
-                  <input
-                    type="number"
-                    value={newPort}
-                    onChange={(e) => setNewPort(Number(e.target.value))}
-                    className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-slate-100"
-                  />
-                </div>
-                <div>
-                  <label className="block text-slate-300 font-semibold mb-1">Environment</label>
-                  <select
-                    value={newEnvironment}
-                    onChange={(e) => setNewEnvironment(e.target.value)}
-                    className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-slate-100"
-                  >
-                    <option value="production">Production</option>
-                    <option value="staging">Staging</option>
-                    <option value="development">Development</option>
-                  </select>
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-slate-300 font-semibold mb-1">Hosting Server</label>
-                <select
-                  value={newServerId}
-                  onChange={(e) => setNewServerId(e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-slate-100"
-                >
-                  <option value="">None (Unassigned / Cloud / External)</option>
-                  {serversList.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.name} ({s.public_ip})
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="flex justify-end gap-3 pt-3 border-t border-slate-800">
-                <button
-                  type="button"
-                  onClick={() => setCreateModalOpen(false)}
-                  className="px-4 py-2 bg-slate-800 text-slate-300 rounded-lg hover:bg-slate-700"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="px-4 py-2 bg-brand-600 text-white rounded-lg hover:bg-brand-500 font-semibold"
-                >
-                  Register Application
-                </button>
-              </div>
-            </form>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <InputField
+              label="Port"
+              type="number"
+              value={String(newPort)}
+              onChange={(e) => setNewPort(Number(e.target.value))}
+            />
+            <SelectField
+              label="Environment"
+              value={newEnvironment}
+              onChange={(e) => setNewEnvironment(e.target.value)}
+              options={[
+                { value: 'production', label: 'Production' },
+                { value: 'staging', label: 'Staging' },
+                { value: 'development', label: 'Development' },
+              ]}
+            />
           </div>
-        </div>
-      )}
+
+          <SelectField
+            label="Hosting Server"
+            value={newServerId}
+            onChange={(e) => setNewServerId(e.target.value)}
+          >
+            <option value="">None (Unassigned / Cloud / External)</option>
+            {serversList.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name} ({s.public_ip})
+              </option>
+            ))}
+          </SelectField>
+        </form>
+      </ModalShell>
     </div>
   );
 };

@@ -25,6 +25,7 @@ import {
 } from 'lucide-react';
 
 import { api } from '../api/client';
+import { Button, InputField, SelectField, ModalShell } from '../components/common';
 
 export const LicensesView: React.FC = () => {
   const [loading, setLoading] = useState(true);
@@ -631,184 +632,149 @@ export const LicensesView: React.FC = () => {
       </div>
 
       {/* 1-Click License Generator Modal */}
-      {genModalOpen && (
-        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-lg p-6 shadow-2xl space-y-5">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
-              <h3 className="text-base font-bold text-white flex items-center gap-2">
-                <Key size={16} className="text-emerald-400" />
-                <span>{targetAlertId ? 'License & Activate Alert Node' : 'Generate Asymmetric Signed License'}</span>
-              </h3>
-              <button
+      <ModalShell
+        isOpen={genModalOpen}
+        onClose={() => {
+          setGenModalOpen(false);
+          setTargetAlertId(null);
+        }}
+        title={targetAlertId ? 'License & Activate Alert Node' : 'Generate Asymmetric Signed License'}
+        icon={Key}
+        iconClassName="text-emerald-400 bg-emerald-950/80 border-emerald-800/80"
+        size="md"
+        footer={
+          !generatedCert ? (
+            <>
+              <Button
+                variant="secondary"
                 onClick={() => {
                   setGenModalOpen(false);
                   setTargetAlertId(null);
                 }}
-                className="text-slate-400 hover:text-white text-sm"
               >
-                ✕
-              </button>
+                Cancel
+              </Button>
+              <Button
+                variant="success"
+                type="submit"
+                form="license-gen-form"
+                isLoading={generating}
+              >
+                {generating
+                  ? 'Cryptographically Signing...'
+                  : targetAlertId
+                  ? '⚡ Sign & Activate Node'
+                  : 'Sign & Issue Certificate'}
+              </Button>
+            </>
+          ) : (
+            <div className="flex items-center justify-between w-full">
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="secondary"
+                  onClick={handleCopyCert}
+                  leftIcon={copiedCert ? <Check size={13} /> : <Copy size={13} />}
+                >
+                  {copiedCert ? 'Copied!' : 'Copy Certificate'}
+                </Button>
+                <Button
+                  variant="success"
+                  onClick={handleDownloadCert}
+                  leftIcon={<Download size={13} />}
+                >
+                  Download .lic File
+                </Button>
+              </div>
+              <Button
+                variant="secondary"
+                onClick={() => setGenModalOpen(false)}
+              >
+                Close
+              </Button>
+            </div>
+          )
+        }
+      >
+        {!generatedCert ? (
+          <form id="license-gen-form" onSubmit={handleGenerateLicense} className="space-y-4 text-xs">
+            <InputField
+              label="Customer / Institution Name"
+              isRequired
+              value={genCustomer}
+              onChange={(e) => setGenCustomer(e.target.value)}
+              placeholder="e.g. RU Smart Campus"
+            />
+
+            <InputField
+              label="Contact Email"
+              isRequired
+              type="email"
+              value={genEmail}
+              onChange={(e) => setGenEmail(e.target.value)}
+              placeholder="e.g. licensing@ru.ac.ke"
+            />
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <InputField
+                label="Product Name"
+                value={genProduct}
+                onChange={(e) => setGenProduct(e.target.value)}
+              />
+              <SelectField
+                label="Tier"
+                value={genTier}
+                onChange={(e) => setGenTier(e.target.value)}
+                options={[
+                  { value: 'Enterprise', label: 'Enterprise' },
+                  { value: 'Standard', label: 'Standard' },
+                  { value: 'Perpetual', label: 'Perpetual' },
+                  { value: 'Trial', label: 'Trial' },
+                ]}
+              />
             </div>
 
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <InputField
+                label="Node Quota (Max Concurrent)"
+                type="number"
+                min={1}
+                max={100}
+                value={String(genLimit)}
+                onChange={(e) => setGenLimit(Number(e.target.value))}
+              />
+              <InputField
+                label="Validity (Days)"
+                type="number"
+                min={1}
+                max={3650}
+                value={String(genDays)}
+                onChange={(e) => setGenDays(Number(e.target.value))}
+              />
+            </div>
+          </form>
+        ) : (
+          <div className="space-y-4 text-xs">
+            <div className="flex items-center gap-2 text-emerald-400 font-semibold">
+              <CheckCircle2 size={16} />
+              <span>
+                License Issued Successfully: <strong className="font-mono text-white">{generatedLicId}</strong>
+              </span>
+            </div>
 
-            {!generatedCert ? (
-              <form onSubmit={handleGenerateLicense} className="space-y-4">
-                <div>
-                  <label className="block text-xs font-semibold text-slate-300 mb-1">
-                    Customer / Institution Name *
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    value={genCustomer}
-                    onChange={(e) => setGenCustomer(e.target.value)}
-                    placeholder="e.g. RU Smart Campus"
-                    className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold text-slate-300 mb-1">
-                    Contact Email *
-                  </label>
-                  <input
-                    type="email"
-                    required
-                    value={genEmail}
-                    onChange={(e) => setGenEmail(e.target.value)}
-                    placeholder="e.g. licensing@ru.ac.ke"
-                    className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
-                  />
-                </div>
-
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-300 mb-1">
-                      Product Name
-                    </label>
-                    <input
-                      type="text"
-                      value={genProduct}
-                      onChange={(e) => setGenProduct(e.target.value)}
-                      className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-300 mb-1">Tier</label>
-                    <select
-                      value={genTier}
-                      onChange={(e) => setGenTier(e.target.value)}
-                      className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-xs text-white focus:outline-none focus:border-emerald-500"
-                    >
-                      <option value="Enterprise">Enterprise</option>
-                      <option value="Standard">Standard</option>
-                      <option value="Perpetual">Perpetual</option>
-                      <option value="Trial">Trial</option>
-                    </select>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-300 mb-1">
-                      Node Quota (Max Concurrent)
-                    </label>
-                    <input
-                      type="number"
-                      min="1"
-                      max="100"
-                      value={genLimit}
-                      onChange={(e) => setGenLimit(Number(e.target.value))}
-                      className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-xs text-white focus:outline-none focus:border-emerald-500"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-300 mb-1">
-                      Validity (Days)
-                    </label>
-                    <input
-                      type="number"
-                      min="1"
-                      max="3650"
-                      value={genDays}
-                      onChange={(e) => setGenDays(Number(e.target.value))}
-                      className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-xs text-white focus:outline-none focus:border-emerald-500"
-                    />
-                  </div>
-                </div>
-
-                <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-800">
-                  <button
-                    type="button"
-                    onClick={() => setGenModalOpen(false)}
-                    className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs font-semibold transition-colors"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={generating}
-                    className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-semibold shadow-md transition-colors disabled:opacity-60"
-                  >
-                    {generating
-                      ? 'Cryptographically Signing...'
-                      : targetAlertId
-                      ? '⚡ Sign & Activate Node'
-                      : 'Sign & Issue Certificate'}
-                  </button>
-
-                </div>
-              </form>
-            ) : (
-              <div className="space-y-4">
-                <div className="flex items-center gap-2 text-emerald-400 text-xs font-semibold">
-                  <CheckCircle2 size={16} />
-                  <span>
-                    License Issued Successfully: <strong className="font-mono text-white">{generatedLicId}</strong>
-                  </span>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold text-slate-400 mb-1">
-                    Signed Certificate (.lic payload):
-                  </label>
-                  <textarea
-                    readOnly
-                    value={generatedCert}
-                    rows={8}
-                    className="w-full p-3 font-mono text-[11px] bg-slate-950 border border-slate-800 rounded-lg text-emerald-300 select-all focus:outline-none"
-                  />
-                </div>
-
-                <div className="flex items-center justify-between gap-3 pt-2">
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={handleCopyCert}
-                      className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-xs font-semibold transition-colors"
-                    >
-                      {copiedCert ? <Check size={13} /> : <Copy size={13} />}
-                      <span>{copiedCert ? 'Copied!' : 'Copy Certificate'}</span>
-                    </button>
-                    <button
-                      onClick={handleDownloadCert}
-                      className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-semibold transition-colors"
-                    >
-                      <Download size={13} />
-                      <span>Download .lic File</span>
-                    </button>
-                  </div>
-                  <button
-                    onClick={() => setGenModalOpen(false)}
-                    className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs font-semibold transition-colors"
-                  >
-                    Close
-                  </button>
-                </div>
-              </div>
-            )}
+            <div>
+              <label className="block text-xs font-semibold text-slate-400 mb-1">
+                Signed Certificate (.lic payload):
+              </label>
+              <textarea
+                readOnly
+                value={generatedCert}
+                rows={8}
+                className="w-full p-3 font-mono text-[11px] bg-slate-950 border border-slate-800 rounded-lg text-emerald-300 select-all focus:outline-none"
+              />
+            </div>
           </div>
-        </div>
-      )}
+        )}
+      </ModalShell>
     </div>
   );
 };
