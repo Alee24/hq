@@ -33,7 +33,8 @@ import {
   AlertOctagon,
   Copy,
   Box,
-  CheckCircle
+  CheckCircle,
+  Sparkles
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -50,6 +51,7 @@ import { StatusBadge } from '../components/StatusBadge';
 import { ConfirmationModal } from '../components/ConfirmationModal';
 import { ServerTerminalModal } from '../components/ServerTerminalModal';
 import { ServerConnectionModal } from '../components/ServerConnectionModal';
+import { CommandAuditModal, CommandExecutionData } from '../components/CommandAuditModal';
 
 interface ServerDetailViewProps {
   serverId: string;
@@ -151,6 +153,10 @@ export const ServerDetailView: React.FC<ServerDetailViewProps> = ({
   const [serviceActionName, setServiceActionName] = useState<string | undefined>(undefined);
   const [toastMessage, setToastMessage] = useState<{ text: string; type: 'success' | 'error' | 'info' } | null>(null);
 
+  // AI Command Audit Modal State
+  const [auditModalOpen, setAuditModalOpen] = useState(false);
+  const [auditExecutionData, setAuditExecutionData] = useState<CommandExecutionData | null>(null);
+
   const showToast = (text: string, type: 'success' | 'error' | 'info' = 'success') => {
     setToastMessage({ text, type });
     setTimeout(() => setToastMessage(null), 5000);
@@ -230,7 +236,7 @@ export const ServerDetailView: React.FC<ServerDetailViewProps> = ({
     try {
       const res = await api.executeServiceAction(serverId, serviceName, action);
       showToast(res.message || `${serviceName} ${action} executed`, res.success ? 'success' : 'error');
-      if (res.stdout || res.stderr) {
+      if (res.stdout || res.stderr || res.command) {
         setTerminalOutput({
           command: res.command,
           stdout: res.stdout,
@@ -239,6 +245,21 @@ export const ServerDetailView: React.FC<ServerDetailViewProps> = ({
           duration_ms: 120,
           executed_at: new Date().toISOString()
         });
+
+        // Open AI Audit Modal
+        setAuditExecutionData({
+          command: res.command || `systemctl ${action} ${serviceName}`,
+          stdout: res.stdout || '',
+          stderr: res.stderr || '',
+          exit_code: res.success ? 0 : 1,
+          duration_ms: 120,
+          server_id: server?.id,
+          server_name: server?.name,
+          server_ip: server?.public_ip,
+          context_type: `SERVICE_${action.toUpperCase()}`,
+          title: `Service Action: ${serviceName} (${action})`
+        });
+        setAuditModalOpen(true);
       }
       loadProcesses();
       loadDockerSuite();
@@ -402,6 +423,21 @@ export const ServerDetailView: React.FC<ServerDetailViewProps> = ({
       setTerminalOutput(res);
       showToast(`Command '${res.command}' executed (${res.duration_ms}ms)`, res.exit_code === 0 ? 'success' : 'error');
 
+      // Pop open AI Command Audit Modal
+      setAuditExecutionData({
+        command: res.command,
+        stdout: res.stdout || '',
+        stderr: res.stderr || '',
+        exit_code: res.exit_code,
+        duration_ms: res.duration_ms,
+        server_id: server?.id,
+        server_name: server?.name,
+        server_ip: server?.public_ip,
+        context_type: key === 'TOP_CPU' ? 'SPIKE_INVESTIGATION' : key,
+        title: key === 'TOP_CPU' ? 'High CPU Spike Investigation' : `Command: ${res.command}`
+      });
+      setAuditModalOpen(true);
+
       // Refresh terminal history logs
       loadTerminalLogs();
 
@@ -424,6 +460,21 @@ export const ServerDetailView: React.FC<ServerDetailViewProps> = ({
         [key]: errorObj
       }));
       showToast(err.message || 'Command execution failed', 'error');
+
+      // Pop open AI Command Audit Modal for error interpretation
+      setAuditExecutionData({
+        command: custom || key,
+        stdout: '',
+        stderr: err.message || 'Command execution failed on VPS',
+        exit_code: 1,
+        duration_ms: 0,
+        server_id: server?.id,
+        server_name: server?.name,
+        server_ip: server?.public_ip,
+        context_type: key,
+        title: `Command Failed: ${custom || key}`
+      });
+      setAuditModalOpen(true);
     } finally {
       setTroubleshootRunning(null);
     }
@@ -569,6 +620,28 @@ export const ServerDetailView: React.FC<ServerDetailViewProps> = ({
                 <div className="flex items-center gap-1">
                   <button
                     onClick={() => {
+                      setAuditExecutionData({
+                        command: cardResp.command,
+                        stdout: cardResp.stdout,
+                        stderr: cardResp.stderr,
+                        exit_code: cardResp.exit_code,
+                        duration_ms: cardResp.duration_ms,
+                        server_id: server?.id,
+                        server_name: server?.name,
+                        server_ip: server?.public_ip,
+                        context_type: c.key,
+                        title: `${c.title} — AI Diagnostic`
+                      });
+                      setAuditModalOpen(true);
+                    }}
+                    className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-brand-950 text-brand-300 border border-brand-800/80 hover:bg-brand-900 transition-colors"
+                    title="Open AI Diagnostics and Root-Cause Interpretation"
+                  >
+                    <Sparkles size={10} className="text-brand-400" />
+                    <span>AI Audit</span>
+                  </button>
+                  <button
+                    onClick={() => {
                       navigator.clipboard.writeText(cardResp.stdout || cardResp.stderr || cardResp.command);
                       setCopiedKey(c.key);
                       setTimeout(() => setCopiedKey(null), 2000);
@@ -614,6 +687,27 @@ export const ServerDetailView: React.FC<ServerDetailViewProps> = ({
                     Command executed successfully with zero errors.
                   </div>
                 )}
+                <button
+                  onClick={() => {
+                    setAuditExecutionData({
+                      command: cardResp.command,
+                      stdout: cardResp.stdout,
+                      stderr: cardResp.stderr,
+                      exit_code: cardResp.exit_code,
+                      duration_ms: cardResp.duration_ms,
+                      server_id: server?.id,
+                      server_name: server?.name,
+                      server_ip: server?.public_ip,
+                      context_type: c.key,
+                      title: `${c.title} — AI Diagnostic`
+                    });
+                    setAuditModalOpen(true);
+                  }}
+                  className="mt-2 w-full flex items-center justify-center gap-1.5 py-1 px-2 rounded bg-brand-900/40 hover:bg-brand-900/70 border border-brand-800/60 text-brand-200 text-[10px] font-semibold transition-colors"
+                >
+                  <Sparkles size={11} className="text-brand-400" />
+                  <span>View AI Root-Cause & Fix Interpretation</span>
+                </button>
               </div>
             </div>
           )}
@@ -733,22 +827,24 @@ export const ServerDetailView: React.FC<ServerDetailViewProps> = ({
               Analyze Spikes in Detail &rarr;
             </button>
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs pt-1">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5 text-xs pt-1">
             {spikes.slice(0, 2).map((s: any) => (
-              <div key={s.id} className="p-2.5 rounded-lg bg-slate-950/80 border border-rose-900/60 flex items-center justify-between">
-                <div>
-                  <div className="font-mono font-semibold text-rose-300">
+              <div key={s.id} className="p-2.5 rounded-lg bg-slate-950/80 border border-rose-900/60 flex items-center justify-between gap-3 min-w-0">
+                <div className="min-w-0 flex-1">
+                  <div className="font-mono font-semibold text-rose-300 truncate">
                     {s.metric} Spike: {s.current_value} (Threshold {s.threshold})
                   </div>
-                  <div className="text-[11px] text-slate-300 mt-0.5">
+                  <div className="text-[11px] text-slate-300 mt-0.5 truncate">
                     Offender: <span className="font-mono text-white font-bold">{s.process_name}</span> (PID {s.pid}) • User {s.user}
                   </div>
                 </div>
                 <button
                   onClick={() => handleRunTroubleshoot('TOP_CPU')}
-                  className="px-2 py-1 bg-rose-900/80 hover:bg-rose-800 text-rose-100 rounded text-[11px] font-medium"
+                  className="px-2.5 py-1.5 bg-rose-900/90 hover:bg-rose-800 text-rose-100 rounded-lg text-[11px] font-semibold shrink-0 flex items-center gap-1.5 transition-colors shadow-sm"
+                  title="Audit Spike and Run Diagnostics"
                 >
-                  Investigate
+                  <Sparkles size={11} className="text-rose-300" />
+                  <span>Investigate</span>
                 </button>
               </div>
             ))}
@@ -781,7 +877,7 @@ export const ServerDetailView: React.FC<ServerDetailViewProps> = ({
       )}
 
       {/* Navigation Tabs */}
-      <div className="flex border-b border-slate-800 gap-1 overflow-x-auto text-xs font-medium">
+      <div className="flex flex-wrap border-b border-slate-800 gap-1 text-xs font-medium">
         <button
           onClick={() => setActiveTab('overview')}
           className={`px-4 py-2.5 border-b-2 flex items-center gap-2 transition-colors whitespace-nowrap ${
@@ -2477,6 +2573,15 @@ export const ServerDetailView: React.FC<ServerDetailViewProps> = ({
         confirmKeyword={serviceActionName ? 'RESTART' : 'REBOOT'}
         confirmButtonText={serviceActionName ? 'Restart Service' : 'Reboot Server Node'}
         isDestructive={true}
+      />
+
+      <CommandAuditModal
+        isOpen={auditModalOpen}
+        onClose={() => setAuditModalOpen(false)}
+        executionData={auditExecutionData}
+        onRunFix={async (fixCommand) => {
+          await handleRunTroubleshoot('CUSTOM', fixCommand);
+        }}
       />
     </div>
   );

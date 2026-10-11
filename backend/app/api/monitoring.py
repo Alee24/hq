@@ -10,11 +10,11 @@ from backend.app.models.entities import (
 )
 from backend.app.schemas.api_schemas import (
     MonitoringCheckCreate, MonitoringResultResponse, IncidentResponse,
-    AiDiagnosticResponse
+    AiDiagnosticResponse, CommandAuditRequest, CommandAuditResponse
 )
 from backend.app.services.monitoring_engine import execute_monitoring_cycle
 from backend.app.services.remote_executor import execute_remote_command
-from backend.app.services.ai_diagnostics import run_ai_health_diagnostics
+from backend.app.services.ai_diagnostics import run_ai_health_diagnostics, audit_terminal_command_output
 import json
 import base64
 import re
@@ -135,6 +135,26 @@ async def ai_diagnose_health(
     (Gemini, OpenAI, DeepSeek, or Claude), and returns structured explanations and fixes.
     """
     return await run_ai_health_diagnostics(db=db, current_user=current_user, provider_override=provider)
+
+
+@router.post("/ai-audit-command", response_model=CommandAuditResponse)
+async def ai_audit_command(
+    req: CommandAuditRequest,
+    provider: Optional[str] = Query(None, description="Optional AI provider override (gemini, openai, deepseek, anthropic)"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Audits a terminal command's execution output, explains the root cause of any error or output,
+    and provides clear solutions and executable fix commands using AI models or DevOps expert rules.
+    """
+    return await audit_terminal_command_output(
+        db=db,
+        req=req,
+        current_user=current_user,
+        provider_override=provider
+    )
+
 
 
 @router.get("/incidents", response_model=List[IncidentResponse])

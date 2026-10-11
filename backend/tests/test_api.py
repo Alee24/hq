@@ -1167,3 +1167,48 @@ async def test_domain_vps_association_and_server_teardown():
         assert verify_res.status_code == 200
         remaining_ids = [d["id"] for d in verify_res.json()]
         assert dom_id not in remaining_ids
+
+
+@pytest.mark.asyncio
+async def test_ai_audit_command_endpoint():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        token = await get_admin_token(ac)
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # 1. Test audit on successful command (exit_code 0)
+        audit_res = await ac.post("/api/monitoring/ai-audit-command", json={
+            "command": "ps aux --sort=-%cpu | head -20",
+            "stdout": "USER PID %CPU %MEM COMMAND\nroot 1234 95.2 3.1 node /app/server.js",
+            "stderr": "",
+            "exit_code": 0,
+            "duration_ms": 320,
+            "server_name": "Test-Node-1",
+            "context_type": "SPIKE_INVESTIGATION"
+        }, headers=headers)
+        assert audit_res.status_code == 200
+        data = audit_res.json()
+        assert data["command"] == "ps aux --sort=-%cpu | head -20"
+        assert data["exit_code"] == 0
+        assert data["status_level"] in ["SUCCESS", "WARNING", "ERROR"]
+        assert len(data["reason"]) > 0
+        assert len(data["solution"]) > 0
+        assert "suggested_command" in data
+        assert "provider_used" in data
+
+        # 2. Test audit on failed command (exit_code 1)
+        err_res = await ac.post("/api/monitoring/ai-audit-command", json={
+            "command": "apache2ctl configtest",
+            "stdout": "",
+            "stderr": "AH00526: Syntax error on line 42 of /etc/apache2/sites-enabled/site.conf: Invalid command 'ProxyPassReverse'",
+            "exit_code": 1,
+            "duration_ms": 110,
+            "server_name": "Web-VPS",
+            "context_type": "SYNTAX_CHECK"
+        }, headers=headers)
+        assert err_res.status_code == 200
+        err_data = err_res.json()
+        assert err_data["exit_code"] == 1
+        assert err_data["status_level"] == "ERROR"
+        assert "proxy" in err_data["solution"].lower() or "apache2ctl" in err_data["solution"].lower() or len(err_data["solution"]) > 0
+        assert len(err_data["reason"]) > 0
+

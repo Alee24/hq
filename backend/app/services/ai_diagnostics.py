@@ -11,7 +11,8 @@ from backend.app.models.entities import (
 )
 from backend.app.schemas.api_schemas import (
     AiProviderInfo, AiKeysConfigResponse, AiKeysConfigUpdate,
-    AiKeysTestResponse, AiDiagnosticItem, AiDiagnosticResponse
+    AiKeysTestResponse, AiDiagnosticItem, AiDiagnosticResponse,
+    CommandAuditRequest, CommandAuditResponse
 )
 from backend.app.services.monitoring_engine import execute_monitoring_cycle
 from backend.app.services.audit import log_audit_event
@@ -923,3 +924,267 @@ async def run_ai_health_diagnostics(
         items=diagnostic_items,
         overall_health_assessment=assessment
     )
+
+
+def generate_fallback_command_audit(
+    command: str,
+    stdout: str,
+    stderr: str,
+    exit_code: int,
+    context_type: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Built-in expert DevOps engine for command interpretation when no AI key is configured
+    or external generative models are unreachable.
+    """
+    cmd_lower = command.lower()
+    full_output = f"{stdout}\n{stderr}".strip()
+
+    # 1. CPU Spikes / Process Investigation (e.g. ps aux)
+    if "ps aux" in cmd_lower or context_type == "SPIKE_INVESTIGATION" or "cpu" in cmd_lower:
+        high_procs = []
+        for line in stdout.splitlines():
+            parts = line.split()
+            if len(parts) >= 11 and parts[2].replace(".", "", 1).isdigit():
+                try:
+                    cpu_val = float(parts[2])
+                    if cpu_val > 40.0:
+                        high_procs.append((parts[1], parts[2], " ".join(parts[10:])))
+                except ValueError:
+                    pass
+
+        if high_procs:
+            pid, cpu_pct, proc_name = high_procs[0]
+            return {
+                "summary": f"Process '{proc_name[:60]}' (PID {pid}) is saturating CPU at {cpu_pct}%.",
+                "status_level": "CRITICAL" if float(cpu_pct) > 90 else "WARNING",
+                "reason": (
+                    f"A severe CPU resource spike is active on the node. The offending daemon PID {pid} is executing "
+                    f"an intensive synchronous loop, heavy V8/Python GC cycle, or unindexed database query. "
+                    f"On multi-core Linux systems, CPU usage over 100% indicates multi-threaded contention."
+                ),
+                "solution": (
+                    "1. If this is a PM2/Node.js or Python worker, gracefully reload the process cluster.\n"
+                    "2. Lower the process priority using 'renice' to prevent server starvation.\n"
+                    "3. If the process is hung or orphaned, terminate it with SIGTERM (kill -15) or SIGKILL (kill -9).\n"
+                    "4. Profile application queries to eliminate unindexed table scans."
+                ),
+                "suggested_command": f"# Step 1: Lower CPU priority or kill offender\nrenice +10 -p {pid} || kill -15 {pid}\n\n# Step 2: Reload daemon cleanly\npm2 reload all 2>/dev/null || systemctl restart pm2-root 2>/dev/null"
+            }
+        else:
+            return {
+                "summary": "Process list retrieved. System CPU load is distributed within normal thresholds.",
+                "status_level": "SUCCESS" if exit_code == 0 else "WARNING",
+                "reason": "Top processor consumers have stabilized. No rogue single process is currently exceeding the 40% CPU threshold.",
+                "solution": "Continue monitoring system metrics and review historical spike logs to isolate periodic cron or background worker spikes.",
+                "suggested_command": "ps aux --sort=-%cpu | head -10"
+            }
+
+    # 2. Syntax Validation (apache2ctl configtest / nginx -t)
+    if "configtest" in cmd_lower or "nginx -t" in cmd_lower or "test_syntax" in cmd_lower:
+        if exit_code == 0 and ("syntax is ok" in full_output.lower() or "syntax ok" in full_output.lower()):
+            return {
+                "summary": "Web server configuration syntax test passed with zero errors.",
+                "status_level": "SUCCESS",
+                "reason": "Apache / Nginx directive tree is fully valid. Configuration files in sites-enabled and conf.d have valid syntax, valid SSL certificate file paths, and correct port bindings.",
+                "solution": "Configuration is production-safe. You can proceed with daemon reloading ('systemctl reload apache2' or 'systemctl reload nginx') with zero downtime.",
+                "suggested_command": "systemctl reload apache2 2>/dev/null || systemctl reload nginx 2>/dev/null"
+            }
+        else:
+            return {
+                "summary": "Web server configuration syntax test failed.",
+                "status_level": "ERROR",
+                "reason": f"Syntax error detected in web configuration: {stderr or stdout}. A directive is misnamed, a closing tag is missing, or an SSL certificate file is unreachable.",
+                "solution": "Inspect the specific line referenced in the error message before reloading the server, as reloading now will cause a service outage.",
+                "suggested_command": "apache2ctl -S 2>&1 || nginx -T 2>&1"
+            }
+
+    # 3. Docker Container Operations
+    if "docker" in cmd_lower:
+        if exit_code != 0:
+            return {
+                "summary": "Docker daemon command failed.",
+                "status_level": "ERROR",
+                "reason": f"Docker engine reported an error: {stderr or stdout}. This typically occurs when a container name collision occurs, a mapped host port is already bound by another daemon, or the Docker socket is unavailable.",
+                "solution": "Verify if the target container exists using 'docker ps -a'. If a port collision occurred, identify the binding daemon using 'ss -tulpn'.",
+                "suggested_command": "docker ps -a --no-trunc && ss -tulpn"
+            }
+        else:
+            return {
+                "summary": "Docker command completed successfully.",
+                "status_level": "SUCCESS",
+                "reason": "The Docker engine processed the request. Container state, logs, or cleanup operations succeeded.",
+                "solution": "Verify container health status with 'docker stats --no-stream'.",
+                "suggested_command": "docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'"
+            }
+
+    # 4. Web server service restart / reload
+    if any(k in cmd_lower for k in ["restart apache", "restart nginx", "reload apache", "reload nginx", "systemctl"]):
+        if exit_code == 0:
+            return {
+                "summary": "System service operation executed successfully.",
+                "status_level": "SUCCESS",
+                "reason": "Systemd / service manager applied the requested action cleanly. All workers and child processes have been initialized.",
+                "solution": "Verify that the service is actively listening on its expected ports.",
+                "suggested_command": "systemctl status $(echo '" + command + "' | awk '{print $NF}') --no-pager"
+            }
+        else:
+            return {
+                "summary": "Failed to control system daemon.",
+                "status_level": "ERROR",
+                "reason": f"Systemd reported failure (exit code {exit_code}): {stderr or stdout}. The unit configuration may be masked, failed on startup pre-check, or crashed on port binding.",
+                "solution": "Inspect journalctl logs for the unit to view the specific crash stack trace.",
+                "suggested_command": "journalctl -xeu $(echo '" + command + "' | awk '{print $NF}') -n 50 --no-pager"
+            }
+
+    # 5. Generic Error (exit_code != 0)
+    if exit_code != 0:
+        return {
+            "summary": f"Command returned non-zero exit code ({exit_code}).",
+            "status_level": "ERROR",
+            "reason": f"Execution error: {stderr or stdout or 'Command exited with failure code ' + str(exit_code)}. Common causes include missing permissions, nonexistent paths, or command syntax errors.",
+            "solution": "Verify path existence, check file permissions, and ensure root execution rights over SSH.",
+            "suggested_command": command
+        }
+
+    # 6. Generic Success
+    return {
+        "summary": "Command executed successfully with exit code 0.",
+        "status_level": "SUCCESS",
+        "reason": "The remote VPS node completed execution with no errors emitted to stderr.",
+        "solution": "The system state has been updated. No corrective action is required.",
+        "suggested_command": ""
+    }
+
+
+async def audit_terminal_command_output(
+    db: AsyncSession,
+    req: CommandAuditRequest,
+    current_user: Optional[User] = None,
+    provider_override: Optional[str] = None
+) -> CommandAuditResponse:
+    """
+    Audits terminal command output using configured generative AI (Gemini, OpenAI, DeepSeek, Claude)
+    or the built-in DevOps rule engine, extracting root causes and executable solutions.
+    """
+    start_time = time.time()
+    command = (req.command or "").strip()
+    stdout = (req.stdout or "").strip()
+    stderr = (req.stderr or "").strip()
+    exit_code = req.exit_code
+    server_name = req.server_name or "Remote VPS"
+    server_ip = req.server_ip or ""
+
+    keys_config = await get_ai_keys_config(db)
+    active_pref = provider_override or keys_config.active_provider
+
+    selected_provider = None
+    selected_key = None
+
+    if active_pref and active_pref != "auto":
+        p_info = getattr(keys_config, active_pref, None)
+        if p_info and p_info.configured:
+            selected_provider = active_pref
+            selected_key = await get_raw_ai_key(db, active_pref)
+    else:
+        for p_cand in ["gemini", "openai", "deepseek", "anthropic"]:
+            p_info = getattr(keys_config, p_cand, None)
+            if p_info and p_info.configured:
+                selected_provider = p_cand
+                selected_key = await get_raw_ai_key(db, p_cand)
+                break
+
+    used_provider_label = "HQ Built-In DevOps Engine"
+    used_model_name = "DevOps Expert Rule Engine"
+    ai_result = None
+
+    if selected_provider and selected_key:
+        meta = AI_KEYS_MAP.get(selected_provider, AI_KEYS_MAP["gemini"])
+        used_provider_label = meta["display_name"]
+        used_model_name = meta["model"]
+
+        system_prompt = (
+            "You are an elite Site Reliability Engineer (SRE) and Linux Systems Architect. "
+            "Your task is to audit the execution output of a terminal command executed on a production VPS server. "
+            "You must interpret the result, explain any errors or performance bottlenecks, explain the exact root cause, "
+            "and provide clear, actionable solutions with executable bash fix commands.\n"
+            "Respond ONLY with a valid JSON object with these exact keys:\n"
+            "{\n"
+            '  "summary": "Concise 1-sentence plain-English summary of what this command output shows.",\n'
+            '  "status_level": "SUCCESS" | "WARNING" | "ERROR" | "CRITICAL",\n'
+            '  "reason": "Clear technical explanation of why this error or output occurred and what it means.",\n'
+            '  "solution": "Step-by-step instructions explaining how to fix or resolve this problem.",\n'
+            '  "suggested_command": "Ready-to-run bash command snippet to fix or remediate the issue (or empty string if none needed)"\n'
+            "}"
+        )
+
+        user_prompt = (
+            f"Host Server: {server_name} ({server_ip})\n"
+            f"Context: {req.context_type or 'Manual Command Execution'}\n"
+            f"Command Executed:\n```bash\n{command}\n```\n"
+            f"Exit Code: {exit_code}\n"
+            f"Duration: {req.duration_ms or 0} ms\n\n"
+            f"STDOUT:\n```\n{stdout[:2500]}\n```\n\n"
+            f"STDERR:\n```\n{stderr[:2500]}\n```\n"
+        )
+
+        try:
+            raw_ai_response, model_used = await call_ai_model_for_diagnostics(
+                provider=selected_provider,
+                api_key=selected_key,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt
+            )
+            if raw_ai_response:
+                used_model_name = model_used
+                cleaned = raw_ai_response.strip()
+                if cleaned.startswith("```json"):
+                    cleaned = cleaned[7:]
+                if cleaned.startswith("```"):
+                    cleaned = cleaned[3:]
+                if cleaned.endswith("```"):
+                    cleaned = cleaned[:-3]
+                parsed = json.loads(cleaned.strip())
+                if isinstance(parsed, dict) and "reason" in parsed and "solution" in parsed:
+                    ai_result = parsed
+        except Exception as ex:
+            print(f"[COMMAND-AUDIT] AI query failed: {ex}, falling back to built-in rules.")
+
+    if not ai_result:
+        ai_result = generate_fallback_command_audit(command, stdout, stderr, exit_code, req.context_type)
+
+    elapsed = int((time.time() - start_time) * 1000)
+
+    try:
+        await log_audit_event(
+            db=db,
+            user_id=current_user.id if current_user else None,
+            username=current_user.username if current_user else "system",
+            action="COMMAND_AI_AUDIT",
+            resource="TerminalCommand",
+            resource_id=req.server_id or "local",
+            details={
+                "command": command[:150],
+                "exit_code": exit_code,
+                "status_level": ai_result.get("status_level", "INFO"),
+                "provider": used_provider_label
+            }
+        )
+    except Exception as log_ex:
+        print(f"[COMMAND-AUDIT] Audit log failed: {log_ex}")
+
+    return CommandAuditResponse(
+        success=True,
+        command=command,
+        exit_code=exit_code,
+        duration_ms=req.duration_ms or 0,
+        status_level=ai_result.get("status_level", "SUCCESS" if exit_code == 0 else "ERROR"),
+        summary=ai_result.get("summary", "Command execution audited."),
+        reason=ai_result.get("reason", "Output evaluated by diagnostics engine."),
+        solution=ai_result.get("solution", "No remedial action required."),
+        suggested_command=ai_result.get("suggested_command"),
+        provider_used=used_provider_label,
+        model_name=used_model_name,
+        execution_time_ms=elapsed
+    )
+

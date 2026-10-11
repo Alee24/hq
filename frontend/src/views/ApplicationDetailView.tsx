@@ -39,6 +39,7 @@ import { api } from '../api/client';
 import { Application, DeploymentItem, LogItem, AuditLogItem } from '../types';
 import { StatusBadge } from '../components/StatusBadge';
 import { ConfirmationModal } from '../components/ConfirmationModal';
+import { CommandAuditModal, CommandExecutionData } from '../components/CommandAuditModal';
 
 interface ApplicationDetailViewProps {
   appId: string;
@@ -80,6 +81,10 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
     success: boolean;
   } | null>(null);
   const [actionSuccessMessage, setActionSuccessMessage] = useState<string | null>(null);
+
+  // AI Command Audit Modal State
+  const [auditModalOpen, setAuditModalOpen] = useState(false);
+  const [auditExecutionData, setAuditExecutionData] = useState<CommandExecutionData | null>(null);
 
   // Modals & Action States
   const [actionLoading, setActionLoading] = useState(false);
@@ -213,18 +218,46 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
   const handleDockerAction = async (action: string, extraParams: any = {}) => {
     if (!app) return;
     setActionLoading(true);
+    const targetName = selectedContainerName || app.service_name || app.name;
     try {
       const res = await api.executeAppDockerAction(app.id, {
         action,
-        container_name: selectedContainerName || app.service_name || app.name,
+        container_name: targetName,
         ...extraParams
       });
       setCommandOutput(res);
       setActionSuccessMessage(res.message || `Action ${action} executed.`);
       setTimeout(() => setActionSuccessMessage(null), 5000);
       await loadDockerInfo(app.id);
+
+      // Pop open AI Command Audit Modal
+      setAuditExecutionData({
+        command: res.command || `docker ${action} ${targetName}`,
+        stdout: res.stdout || '',
+        stderr: res.stderr || '',
+        exit_code: res.exit_code,
+        duration_ms: res.duration_ms,
+        server_id: app.server_id,
+        server_name: serverInfo?.name,
+        server_ip: serverInfo?.public_ip,
+        context_type: action.toUpperCase(),
+        title: `Docker Action: ${action} (${targetName})`
+      });
+      setAuditModalOpen(true);
     } catch (err: any) {
-      alert(err.message || 'Docker container action failed');
+      setAuditExecutionData({
+        command: `docker ${action} ${targetName}`,
+        stdout: '',
+        stderr: err.message || 'Docker container action failed',
+        exit_code: 1,
+        duration_ms: 0,
+        server_id: app.server_id,
+        server_name: serverInfo?.name,
+        server_ip: serverInfo?.public_ip,
+        context_type: action.toUpperCase(),
+        title: `Docker Action Failed: ${action}`
+      });
+      setAuditModalOpen(true);
     } finally {
       setActionLoading(false);
     }
@@ -2187,6 +2220,15 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
           </div>
         </div>
       )}
+
+      <CommandAuditModal
+        isOpen={auditModalOpen}
+        onClose={() => setAuditModalOpen(false)}
+        executionData={auditExecutionData}
+        onRunFix={async (fixCmd) => {
+          await handleDockerAction('custom_command', { command: fixCmd });
+        }}
+      />
     </div>
   );
 };

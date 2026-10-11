@@ -26,6 +26,7 @@ import {
 } from 'lucide-react';
 import { api } from '../api/client';
 import { Application } from '../types';
+import { CommandAuditModal, CommandExecutionData } from '../components/CommandAuditModal';
 
 interface GitStatusData {
   repo_url: string;
@@ -103,6 +104,10 @@ export const GitView: React.FC = () => {
   const [copied, setCopied] = useState(false);
   const [scanLoading, setScanLoading] = useState(false);
   const [scanSummary, setScanSummary] = useState<string | null>(null);
+
+  // AI Command Audit Modal State
+  const [auditModalOpen, setAuditModalOpen] = useState(false);
+  const [auditExecutionData, setAuditExecutionData] = useState<CommandExecutionData | null>(null);
 
   // Search & Filter
   const [searchQuery, setSearchQuery] = useState('');
@@ -214,6 +219,20 @@ export const GitView: React.FC = () => {
       setApps(appList);
       const updated = appList.find((a) => a.id === selectedApp.id);
       if (updated) setSelectedApp(updated);
+
+      // Pop open AI Command Audit Modal
+      setAuditExecutionData({
+        command: res.command,
+        stdout: res.stdout || res.message || '',
+        stderr: res.stderr || '',
+        exit_code: res.exit_code,
+        duration_ms: res.duration_ms,
+        server_name: freshStatus?.server_name || gitStatus?.server_name,
+        server_ip: selectedApp?.server_ip,
+        context_type: `GIT_${action.toUpperCase()}`,
+        title: `Git Operation: ${res.command}`
+      });
+      setAuditModalOpen(true);
     } catch (err: any) {
       setTerminalLog({
         command: customCmd || `git ${action}`,
@@ -234,6 +253,19 @@ export const GitView: React.FC = () => {
           exit_code: 1,
         },
       }));
+
+      setAuditExecutionData({
+        command: customCmd || `git ${action}`,
+        stdout: '',
+        stderr: err.message || 'Remote SSH execution failed.',
+        exit_code: 1,
+        duration_ms: 0,
+        server_name: gitStatus?.server_name,
+        server_ip: selectedApp?.server_ip,
+        context_type: `GIT_${action.toUpperCase()}`,
+        title: `Git Operation Failed: ${action}`
+      });
+      setAuditModalOpen(true);
     } finally {
       setActiveAction(null);
     }
@@ -1027,6 +1059,28 @@ export const GitView: React.FC = () => {
                       </span>
 
                       <button
+                        onClick={() => {
+                          setAuditExecutionData({
+                            command: terminalLog.command,
+                            stdout: terminalLog.stdout,
+                            stderr: terminalLog.stderr,
+                            exit_code: terminalLog.exit_code,
+                            duration_ms: terminalLog.duration_ms,
+                            server_name: gitStatus.server_name,
+                            server_ip: selectedApp?.server_ip,
+                            context_type: `GIT_${terminalLog.action.toUpperCase()}`,
+                            title: `Git Console Audit: ${terminalLog.command}`
+                          });
+                          setAuditModalOpen(true);
+                        }}
+                        className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium bg-brand-950 text-brand-300 border border-brand-800/80 hover:bg-brand-900 transition-colors"
+                        title="AI Audit this Git output"
+                      >
+                        <Sparkles size={11} className="text-brand-400" />
+                        <span>AI Audit</span>
+                      </button>
+
+                      <button
                         onClick={copyTerminalOutput}
                         className="p-1.5 text-slate-400 hover:text-white rounded transition-colors"
                         title="Copy Console Output"
@@ -1113,6 +1167,15 @@ export const GitView: React.FC = () => {
           )}
         </div>
       </div>
+
+      <CommandAuditModal
+        isOpen={auditModalOpen}
+        onClose={() => setAuditModalOpen(false)}
+        executionData={auditExecutionData}
+        onRunFix={async (fixCommand) => {
+          await handleExecuteAction('custom', fixCommand);
+        }}
+      />
     </div>
   );
 };

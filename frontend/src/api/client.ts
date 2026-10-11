@@ -57,6 +57,34 @@ export interface AiDiagnosticResponse {
   overall_health_assessment: string;
 }
 
+export interface CommandAuditRequest {
+  command: string;
+  stdout?: string;
+  stderr?: string;
+  exit_code: number;
+  duration_ms?: number;
+  server_id?: string;
+  server_name?: string;
+  server_ip?: string;
+  context_type?: string;
+}
+
+export interface CommandAuditResponse {
+  success: boolean;
+  command: string;
+  exit_code: number;
+  duration_ms: number;
+  status_level: 'SUCCESS' | 'WARNING' | 'ERROR' | 'CRITICAL';
+  summary: string;
+  reason: string;
+  solution: string;
+  suggested_command?: string | null;
+  provider_used: string;
+  model_name: string;
+  execution_time_ms: number;
+}
+
+
 class ApiClient {
   private getToken(): string | null {
     return localStorage.getItem('cc_auth_token');
@@ -1283,6 +1311,15 @@ class ApiClient {
       body: JSON.stringify({ provider, api_key: apiKey }),
     });
   }
+
+  async auditCommand(data: CommandAuditRequest, provider?: string) {
+    const q = provider ? `?provider=${encodeURIComponent(provider)}` : '';
+    return this.request<CommandAuditResponse>(`/monitoring/ai-audit-command${q}`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
 
   async listAuditLogs(action?: string, username?: string, entityType?: string) {
     const sp = new URLSearchParams();

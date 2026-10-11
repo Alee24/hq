@@ -19,7 +19,8 @@ import {
   Terminal,
   Database,
   Cpu,
-  X
+  X,
+  Sparkles
 } from 'lucide-react';
 import { api } from '../api/client';
 import { Application, ApplicationComponent } from '../types';
@@ -27,6 +28,7 @@ import { StatusBadge } from '../components/StatusBadge';
 import { ConfirmationModal } from '../components/ConfirmationModal';
 import { useEnvironment } from '../context/EnvironmentContext';
 import { Button, InputField, SelectField, ModalShell, EmptyState } from '../components/common';
+import { CommandAuditModal, CommandExecutionData } from '../components/CommandAuditModal';
 
 interface ApplicationsViewProps {
   onSelectApp: (appId: string) => void;
@@ -54,6 +56,10 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
     logs: string;
     loading: boolean;
   } | null>(null);
+
+  // AI Command Audit Modal State
+  const [auditModalOpen, setAuditModalOpen] = useState(false);
+  const [auditExecutionData, setAuditExecutionData] = useState<CommandExecutionData | null>(null);
 
   // Restart Confirmation
   const [confirmModalOpen, setConfirmModalOpen] = useState(false);
@@ -116,10 +122,35 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
 
     setActionInProgress(app.id);
     try {
-      await api.executeAppAction(app.id, action);
+      const res = await api.executeAppAction(app.id, action);
       await loadData();
+      setAuditExecutionData({
+        command: `systemctl ${action} ${app.service_name || app.name}`,
+        stdout: res.message || `Service '${app.service_name || app.name}' ${action} executed successfully`,
+        stderr: '',
+        exit_code: 0,
+        duration_ms: 120,
+        server_id: app.server_id,
+        server_name: app.server_name,
+        server_ip: app.server_ip,
+        context_type: `APP_${action.toUpperCase()}`,
+        title: `Application Action: ${app.name} (${action})`
+      });
+      setAuditModalOpen(true);
     } catch (err: any) {
-      alert(err.message || 'Action failed');
+      setAuditExecutionData({
+        command: `systemctl ${action} ${app.service_name || app.name}`,
+        stdout: '',
+        stderr: err.message || `Failed to execute ${action} on ${app.name}`,
+        exit_code: 1,
+        duration_ms: 0,
+        server_id: app.server_id,
+        server_name: app.server_name,
+        server_ip: app.server_ip,
+        context_type: `APP_${action.toUpperCase()}`,
+        title: `Application Action Failed: ${app.name}`
+      });
+      setAuditModalOpen(true);
     } finally {
       setActionInProgress(null);
     }
@@ -127,13 +158,39 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
 
   const executeConfirmedAction = async () => {
     if (!selectedAppForAction) return;
+    const targetApp = selectedAppForAction;
     setConfirmModalOpen(false);
-    setActionInProgress(selectedAppForAction.id);
+    setActionInProgress(targetApp.id);
     try {
-      await api.executeAppAction(selectedAppForAction.id, pendingAction);
+      const res = await api.executeAppAction(targetApp.id, pendingAction);
       await loadData();
+      setAuditExecutionData({
+        command: `systemctl ${pendingAction} ${targetApp.service_name || targetApp.name}`,
+        stdout: res.message || `Service '${targetApp.service_name || targetApp.name}' ${pendingAction} executed`,
+        stderr: '',
+        exit_code: 0,
+        duration_ms: 120,
+        server_id: targetApp.server_id,
+        server_name: targetApp.server_name,
+        server_ip: targetApp.server_ip,
+        context_type: `APP_${pendingAction.toUpperCase()}`,
+        title: `Confirmed Action: ${targetApp.name} (${pendingAction})`
+      });
+      setAuditModalOpen(true);
     } catch (err: any) {
-      alert(err.message || 'Action failed');
+      setAuditExecutionData({
+        command: `systemctl ${pendingAction} ${targetApp.service_name || targetApp.name}`,
+        stdout: '',
+        stderr: err.message || `Failed to execute ${pendingAction} on ${targetApp.name}`,
+        exit_code: 1,
+        duration_ms: 0,
+        server_id: targetApp.server_id,
+        server_name: targetApp.server_name,
+        server_ip: targetApp.server_ip,
+        context_type: `APP_${pendingAction.toUpperCase()}`,
+        title: `Action Failed: ${targetApp.name}`
+      });
+      setAuditModalOpen(true);
     } finally {
       setActionInProgress(null);
       setSelectedAppForAction(null);
@@ -159,13 +216,34 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
     setComponentActionInProgress((prev) => ({ ...prev, [key]: action }));
     try {
       const res = await api.executeComponentAction(app.id, componentName, action);
-      if (res.success) {
-        await loadData();
-      } else {
-        alert(res.message || `Failed to ${action} ${componentName}`);
-      }
+      await loadData();
+      setAuditExecutionData({
+        command: `docker ${action} ${componentName}`,
+        stdout: res.stdout || res.message || `Container '${componentName}' ${action} executed`,
+        stderr: res.stderr || '',
+        exit_code: res.exit_code !== undefined ? res.exit_code : (res.success ? 0 : 1),
+        duration_ms: 150,
+        server_id: app.server_id,
+        server_name: app.server_name,
+        server_ip: app.server_ip,
+        context_type: `CONTAINER_${action.toUpperCase()}`,
+        title: `Container Action: ${componentName} (${action})`
+      });
+      setAuditModalOpen(true);
     } catch (err: any) {
-      alert(err.message || `Failed to ${action} ${componentName}`);
+      setAuditExecutionData({
+        command: `docker ${action} ${componentName}`,
+        stdout: '',
+        stderr: err.message || `Failed to ${action} container ${componentName}`,
+        exit_code: 1,
+        duration_ms: 0,
+        server_id: app.server_id,
+        server_name: app.server_name,
+        server_ip: app.server_ip,
+        context_type: `CONTAINER_${action.toUpperCase()}`,
+        title: `Container Action Failed: ${componentName}`
+      });
+      setAuditModalOpen(true);
     } finally {
       setComponentActionInProgress((prev) => {
         const next = { ...prev };
@@ -181,13 +259,37 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
     try {
       const compNames = app.components?.map((c) => c.service_name || c.name);
       const res = await api.executeSuiteAction(app.id, action, compNames);
-      if (res.success) {
-        await loadData();
-      } else {
-        alert(res.message || `Failed to ${action} suite`);
-      }
+      await loadData();
+      const resultsText = res.results
+        ? res.results.map((r) => `[${r.component}] ${r.success ? 'SUCCESS' : 'FAILED'}: ${r.message}`).join('\n')
+        : '';
+      setAuditExecutionData({
+        command: `docker compose ${action} (Suite: ${app.name})`,
+        stdout: resultsText || res.message || `Suite '${app.name}' ${action} executed`,
+        stderr: res.success ? '' : (res.message || ''),
+        exit_code: res.success ? 0 : 1,
+        duration_ms: 350,
+        server_id: app.server_id,
+        server_name: app.server_name,
+        server_ip: app.server_ip,
+        context_type: `SUITE_${action.toUpperCase()}`,
+        title: `Suite Action: ${app.name} (${action})`
+      });
+      setAuditModalOpen(true);
     } catch (err: any) {
-      alert(err.message || `Failed to ${action} suite`);
+      setAuditExecutionData({
+        command: `docker compose ${action} (Suite: ${app.name})`,
+        stdout: '',
+        stderr: err.message || `Failed to ${action} suite ${app.name}`,
+        exit_code: 1,
+        duration_ms: 0,
+        server_id: app.server_id,
+        server_name: app.server_name,
+        server_ip: app.server_ip,
+        context_type: `SUITE_${action.toUpperCase()}`,
+        title: `Suite Action Failed: ${app.name}`
+      });
+      setAuditModalOpen(true);
     } finally {
       setSuiteActionInProgress((prev) => {
         const next = { ...prev };
@@ -531,10 +633,13 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
                         {/* Git Head */}
                         <td className="py-3 px-4">
                           <div className="flex items-center gap-1.5 mono">
-                            <GitBranch size={12} className="text-slate-500" />
+                            <GitBranch size={12} className="text-slate-500 shrink-0" />
                             <span className="text-slate-300">{app.git_branch || 'main'}</span>
-                            <span className="text-brand-400 font-semibold px-1 py-0.2 bg-slate-950 rounded border border-slate-800">
-                              {app.current_commit || 'HEAD'}
+                            <span
+                              className="text-brand-400 font-semibold px-1.5 py-0.5 bg-slate-950 rounded border border-slate-800 text-[11px]"
+                              title={app.current_commit || 'HEAD'}
+                            >
+                              {app.current_commit ? app.current_commit.slice(0, 7) : 'HEAD'}
                             </span>
                           </div>
                           {app.current_commit && app.current_commit !== app.latest_repo_commit && (
@@ -639,11 +744,11 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
                             <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-4 space-y-3.5 shadow-inner">
                               {/* Drawer Header */}
                               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-800/80">
-                                <div>
-                                  <div className="text-xs font-bold text-white flex items-center gap-2">
-                                    <Box size={14} className="text-brand-400" />
-                                    <span>{app.name} &mdash; Microservices & Sub-Containers</span>
-                                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 font-mono font-medium">
+                                <div className="min-w-0 flex-1">
+                                  <div className="text-xs font-bold text-white flex items-center gap-2 flex-wrap">
+                                    <Box size={14} className="text-brand-400 shrink-0" />
+                                    <span className="truncate">{app.name} &mdash; Microservices & Sub-Containers</span>
+                                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 font-mono font-medium shrink-0">
                                       {app.components?.length || 0} Components
                                     </span>
                                   </div>
@@ -652,11 +757,11 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
                                   </p>
                                 </div>
 
-                                <div className="flex items-center gap-2">
+                                <div className="flex items-center gap-2 shrink-0">
                                   <button
                                     onClick={() => handleSuiteAction(app, 'restart')}
                                     disabled={isSuiteBusy}
-                                    className="flex items-center gap-1.5 px-3 py-1.5 bg-brand-600 hover:bg-brand-500 text-white rounded-lg text-xs font-semibold transition-colors shadow-sm disabled:opacity-50"
+                                    className="flex items-center gap-1.5 px-3 py-1.5 bg-brand-600 hover:bg-brand-500 text-white rounded-lg text-xs font-semibold transition-colors shadow-sm disabled:opacity-50 shrink-0 whitespace-nowrap"
                                     title="Restart all containers in coordinated order (DB -> Backend -> Frontend)"
                                   >
                                     <RotateCw
@@ -677,20 +782,20 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
                                   return (
                                     <div
                                       key={comp.id || comp.name}
-                                      className="p-3 bg-slate-950 border border-slate-800/90 rounded-lg hover:border-slate-700 transition-all flex flex-col justify-between gap-2.5"
+                                      className="p-3 bg-slate-950 border border-slate-800/90 rounded-lg hover:border-slate-700 transition-all flex flex-col justify-between gap-2.5 min-w-0"
                                     >
-                                      <div className="flex items-start justify-between gap-2">
-                                        <div>
-                                          <div className="flex items-center gap-1.5">
+                                      <div className="flex items-start justify-between gap-2 min-w-0">
+                                        <div className="min-w-0 flex-1">
+                                          <div className="flex items-center gap-1.5 flex-wrap">
                                             {getRoleBadge(comp.role, comp.role_label)}
                                           </div>
                                           <div
-                                            className="font-mono text-xs font-semibold text-white mt-1 truncate max-w-[170px]"
+                                            className="font-mono text-xs font-semibold text-white mt-1 truncate max-w-[150px] sm:max-w-[200px]"
                                             title={comp.name}
                                           >
                                             {comp.name}
                                           </div>
-                                          <div className="flex items-center gap-2 mt-0.5 text-[11px] text-slate-400">
+                                          <div className="flex items-center gap-2 mt-0.5 text-[11px] text-slate-400 flex-wrap">
                                             <span className="font-mono">Port :{comp.port}</span>
                                             <span>&bull;</span>
                                             <span>{comp.process_manager || 'Docker'}</span>
@@ -700,12 +805,12 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
                                       </div>
 
                                       {/* Individual Component Controls */}
-                                      <div className="flex items-center justify-between gap-1 pt-2 border-t border-slate-800/80">
+                                      <div className="flex flex-wrap items-center justify-between gap-1.5 pt-2 border-t border-slate-800/80">
                                         <div className="flex flex-wrap items-center gap-1.5">
                                           <button
                                             onClick={() => handleComponentAction(app, comp.name, 'restart')}
                                             disabled={isBusy}
-                                            className="flex items-center gap-1 px-2 py-1 bg-slate-900 hover:bg-slate-800 border border-slate-700/80 text-slate-200 hover:text-white rounded text-[11px] font-medium transition-colors disabled:opacity-50"
+                                            className="flex items-center gap-1 px-2 py-1 bg-slate-900 hover:bg-slate-800 border border-slate-700/80 text-slate-200 hover:text-white rounded text-[11px] font-medium transition-colors disabled:opacity-50 shrink-0"
                                             title={`Restart ${comp.name} container only`}
                                           >
                                             <RotateCw
@@ -730,7 +835,7 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
                                               )
                                             }
                                             disabled={isBusy}
-                                            className={`flex items-center gap-1 px-2 py-1 border rounded text-[11px] font-medium transition-colors disabled:opacity-50 ${
+                                            className={`flex items-center gap-1 px-2 py-1 border rounded text-[11px] font-medium transition-colors disabled:opacity-50 shrink-0 ${
                                               comp.health_status === 'OFFLINE' || comp.health_status === 'STOPPED'
                                                 ? 'bg-emerald-950/60 hover:bg-emerald-900/60 border-emerald-800 text-emerald-300'
                                                 : 'bg-rose-950/40 hover:bg-rose-900/40 border-rose-800/80 text-rose-300'
@@ -757,7 +862,7 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
 
                                         <button
                                           onClick={() => handleViewComponentLogs(app, comp.name)}
-                                          className="flex items-center gap-1 px-1.5 py-1 text-slate-400 hover:text-sky-300 hover:bg-slate-800 rounded transition-colors text-[11px]"
+                                          className="flex items-center gap-1 px-2 py-1 text-slate-400 hover:text-sky-300 hover:bg-slate-800 rounded transition-colors text-[11px] shrink-0"
                                           title={`View logs for ${comp.name}`}
                                         >
                                           <Terminal size={12} />
@@ -791,13 +896,34 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
           icon={Terminal}
           size="xl"
           footer={
-            <div className="flex items-center justify-between w-full">
+            <div className="flex flex-wrap items-center justify-between gap-2 w-full">
               <span className="text-[11px] text-slate-400">
                 Showing last 100 stdout lines from Docker daemon.
               </span>
-              <Button variant="secondary" onClick={() => setLogsModal(null)}>
-                Close
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="xs"
+                  onClick={() => {
+                    setAuditExecutionData({
+                      command: `docker logs ${logsModal.componentName} --tail 100`,
+                      stdout: logsModal.logs,
+                      stderr: '',
+                      exit_code: 0,
+                      duration_ms: 120,
+                      context_type: 'CONTAINER_LOGS',
+                      title: `Container Logs Audit: ${logsModal.componentName}`
+                    });
+                    setAuditModalOpen(true);
+                  }}
+                  leftIcon={<Sparkles size={12} className="text-brand-400" />}
+                >
+                  AI Audit Logs
+                </Button>
+                <Button variant="secondary" onClick={() => setLogsModal(null)}>
+                  Close
+                </Button>
+              </div>
             </div>
           }
         >
@@ -923,6 +1049,12 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
           </SelectField>
         </form>
       </ModalShell>
+
+      <CommandAuditModal
+        isOpen={auditModalOpen}
+        onClose={() => setAuditModalOpen(false)}
+        executionData={auditExecutionData}
+      />
     </div>
   );
 };

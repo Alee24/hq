@@ -31,13 +31,15 @@ import {
   FileText,
   Filter,
   Search,
-  AlertTriangle
+  AlertTriangle,
+  Sparkles
 } from 'lucide-react';
 import { api } from '../api/client';
 import { DomainItem, Server } from '../types';
 import { StatusBadge } from '../components/StatusBadge';
 import { ConfirmationModal } from '../components/ConfirmationModal';
 import { Button, InputField, ModalShell } from '../components/common';
+import { CommandAuditModal, CommandExecutionData } from '../components/CommandAuditModal';
 
 interface SslTerminalOutput {
   command: string;
@@ -117,6 +119,10 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId }) => 
   const [copiedDomainId, setCopiedDomainId] = useState<string | null>(null);
   const [copiedConfigId, setCopiedConfigId] = useState<string | null>(null);
   const [toastMessage, setToastMessage] = useState<{ text: string; type: 'success' | 'error' | 'info' } | null>(null);
+
+  // AI Command Audit Modal State
+  const [auditModalOpen, setAuditModalOpen] = useState(false);
+  const [auditExecutionData, setAuditExecutionData] = useState<CommandExecutionData | null>(null);
 
   // Delete Domain from DB Modal
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
@@ -282,13 +288,29 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId }) => 
       } else {
         showToast(res.message || `Failed to update SSL for ${d.domain_name}`, 'error');
       }
+
+      // Pop open AI Command Audit Modal
+      setAuditExecutionData({
+        command: res.command || `certbot -d ${d.domain_name} --non-interactive --agree-tos --redirect`,
+        stdout: res.stdout || res.message || '',
+        stderr: res.stderr || '',
+        exit_code: res.exit_code,
+        duration_ms: res.duration_ms,
+        server_id: d.server_id,
+        server_name: d.server_name,
+        context_type: 'SSL_RENEWAL',
+        title: `SSL Certificate Update: ${d.domain_name}`
+      });
+      setAuditModalOpen(true);
+
       await loadData();
       await fetchDomainDeepDive(d.id, true);
     } catch (err: any) {
+      const errCmd = `certbot -d ${d.domain_name} --non-interactive --agree-tos --redirect`;
       setSslOutputs(prev => ({
         ...prev,
         [d.id]: {
-          command: `certbot -d ${d.domain_name} --non-interactive --agree-tos --redirect`,
+          command: errCmd,
           stdout: '',
           stderr: err.message || 'Let\'s Encrypt SSL update failed',
           exit_code: 1,
@@ -300,6 +322,19 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId }) => 
         }
       }));
       showToast(err.message || 'Let\'s Encrypt SSL update failed', 'error');
+
+      setAuditExecutionData({
+        command: errCmd,
+        stdout: '',
+        stderr: err.message || 'Let\'s Encrypt SSL update failed',
+        exit_code: 1,
+        duration_ms: 120,
+        server_id: d.server_id,
+        server_name: d.server_name,
+        context_type: 'SSL_RENEWAL',
+        title: `SSL Update Failed: ${d.domain_name}`
+      });
+      setAuditModalOpen(true);
     } finally {
       setUpdatingSslId(null);
     }
@@ -322,10 +357,11 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId }) => 
       } else {
         showToast(res.message || `Service action '${action}' failed`, 'error');
       }
+      const cmdStr = res.command || `service ${action} ${d.domain_name}`;
       setSslOutputs(prev => ({
         ...prev,
         [d.id]: {
-          command: res.command || `service ${action} ${d.domain_name}`,
+          command: cmdStr,
           stdout: res.stdout || '',
           stderr: res.stderr || '',
           exit_code: res.exit_code,
@@ -336,11 +372,26 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId }) => 
           message: res.message
         }
       }));
+
+      // Pop open AI Command Audit Modal
+      setAuditExecutionData({
+        command: cmdStr,
+        stdout: res.stdout || res.message || '',
+        stderr: res.stderr || '',
+        exit_code: res.exit_code,
+        duration_ms: res.duration_ms,
+        server_id: d.server_id,
+        server_name: d.server_name,
+        context_type: `SERVICE_${action.toUpperCase()}`,
+        title: `Web Service Action: ${d.domain_name} (${action})`
+      });
+      setAuditModalOpen(true);
     } catch (err: any) {
+      const failCmd = `service ${action} ${d.domain_name}`;
       setSslOutputs(prev => ({
         ...prev,
         [d.id]: {
-          command: `service ${action} ${d.domain_name}`,
+          command: failCmd,
           stdout: '',
           stderr: err.message || `Failed to execute ${action}`,
           exit_code: 1,
@@ -352,6 +403,19 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId }) => 
         }
       }));
       showToast(err.message || `Failed to execute ${action}`, 'error');
+
+      setAuditExecutionData({
+        command: failCmd,
+        stdout: '',
+        stderr: err.message || `Failed to execute ${action}`,
+        exit_code: 1,
+        duration_ms: 100,
+        server_id: d.server_id,
+        server_name: d.server_name,
+        context_type: `SERVICE_${action.toUpperCase()}`,
+        title: `Service Action Failed: ${d.domain_name}`
+      });
+      setAuditModalOpen(true);
     } finally {
       setServiceActionLoading(prev => ({ ...prev, [d.id]: null }));
     }
@@ -1442,6 +1506,12 @@ This will permanently:
         isDestructive={true}
         onConfirm={executeConfirmedDelete}
         onClose={() => setDeleteModalOpen(false)}
+      />
+
+      <CommandAuditModal
+        isOpen={auditModalOpen}
+        onClose={() => setAuditModalOpen(false)}
+        executionData={auditExecutionData}
       />
     </div>
   );

@@ -866,3 +866,31 @@ class AiDiagnosticResponse(BaseModel):
     overall_health_assessment: str
 
 
+class CommandAuditRequest(BaseModel):
+    command: str
+    stdout: Optional[str] = ""
+    stderr: Optional[str] = ""
+    exit_code: int = 0
+    duration_ms: Optional[int] = 0
+    server_id: Optional[str] = None
+    server_name: Optional[str] = None
+    server_ip: Optional[str] = None
+    context_type: Optional[str] = None
+
+
+class CommandAuditResponse(BaseModel):
+    success: bool
+    command: str
+    exit_code: int
+    duration_ms: int
+    status_level: str
+    summary: str
+    reason: str
+    solution: str
+    suggested_command: Optional[str] = None
+    provider_used: str
+    model_name: str
+    execution_time_ms: int
+
+
+
