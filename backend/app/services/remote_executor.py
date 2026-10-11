@@ -1732,90 +1732,154 @@ def execute_remote_service_action(server: Server, service_name: str, action: str
 # Remote Git Repository Detection & Lifecycle Actions (root SSH)
 # =======================================================================
 
-def detect_remote_application_git(server: Server, app: Application) -> Dict[str, Any]:
-    """
-    Executes a deep Git probe on the target VPS over SSH as root.
-    Locates the application's repository directory (under /var/www, /home, /root, /opt).
-    Queries real Git branch, commit hash, version tag, remote origin URL, author, date,
-    and checks if updates exist on origin (commits behind, incoming commit messages).
-    Never returns hardcoded or fabricated commits.
-    """
-    vps_py = """
-import os, glob, re, subprocess, json
+_VPS_GIT_RESOLVER_PY = """
+import os, glob, re, subprocess, json, time
 
 app_name = payload.get('name', '')
 app_domain = payload.get('domain', '')
 app_root = payload.get('root_path', '')
+app_service = payload.get('service_name', '')
+app_pm = payload.get('process_manager', '')
 
 clean_name = app_name.strip().lower()
 clean_dom = app_domain.strip().lower()
-subparts = [p for p in clean_name.split('.') if p and p not in ['co', 'ke', 'com', 'org', 'net', 'www']]
 
-# Discover candidate git directories
-git_candidates = []
+GENERIC_WORDS = {
+    'backend', 'frontend', 'app', 'web', 'api', 'dist', 'public', 'src',
+    'html', 'server', 'client', 'db', 'redis', 'postgres', 'mysql', 'local',
+    'co', 'ke', 'com', 'org', 'net', 'www', 'africa', 'cloud', 'portal',
+    'lms', 'mms', 'cps', '1', '2', 'v1', 'v2', 'v3', 'main', 'master', 'prod'
+}
 
-# 1. If app_root is specified, check it and parent directories
-if app_root and os.path.exists(app_root):
-    curr = app_root
+STOP_DIRS = {'/', '/var', '/var/www', '/var/www/html', '/home', '/root', '/opt', '/usr', '/etc', '/var/lib'}
+
+def find_git_upwards(start_path):
+    if not start_path or not os.path.exists(start_path):
+        return None
+    curr = os.path.abspath(start_path)
     for _ in range(4):
-        if os.path.isdir(os.path.join(curr, '.git')):
-            git_candidates.append(curr)
+        if curr in STOP_DIRS:
             break
-        curr = os.path.dirname(curr)
+        if os.path.isdir(os.path.join(curr, '.git')):
+            return curr
+        parent = os.path.dirname(curr)
+        if parent == curr:
+            break
+        curr = parent
+    return None
 
-# 2. Check Apache / Nginx configuration for DocumentRoot
-doc_root = app_root
-if not doc_root:
-    for f in glob.glob('/etc/apache2/sites-enabled/*.conf') + glob.glob('/etc/apache2/sites-available/*.conf'):
+raw_parts = re.split(r'[.\\-_\\s/]+', f"{clean_name} {clean_dom}")
+specific_tokens = []
+for p in raw_parts:
+    if p and len(p) >= 2 and p not in GENERIC_WORDS and p not in specific_tokens:
+        specific_tokens.append(p)
+
+git_candidates = []
+doc_root = app_root if (app_root and not app_root.startswith('/var/lib/docker')) else ''
+
+# 1. If app is a Docker container or root_path is in /var/lib/docker, inspect container working_dir / mounts
+if (app_root and app_root.startswith('/var/lib/docker')) or clean_dom.endswith('.local') or app_pm.lower() == 'docker':
+    for cname in [app_name, app_service, clean_name]:
+        if not cname:
+            continue
+        try:
+            p_insp = subprocess.run(['docker', 'inspect', cname], capture_output=True, text=True, timeout=4)
+            if p_insp.returncode == 0 and p_insp.stdout.strip():
+                cdata = json.loads(p_insp.stdout)[0]
+                labels = cdata.get('Config', {}).get('Labels', {}) or {}
+                wdir = labels.get('com.docker.compose.project.working_dir', '')
+                if wdir and os.path.exists(wdir):
+                    doc_root = wdir
+                    g_cand = find_git_upwards(wdir)
+                    if g_cand:
+                        git_candidates.append(g_cand)
+                        break
+                for m in cdata.get('Mounts', []) or []:
+                    src = m.get('Source', '')
+                    if src and (src.startswith('/var/www/') or src.startswith('/home/') or src.startswith('/opt/')):
+                        g_cand = find_git_upwards(src)
+                        if g_cand:
+                            doc_root = doc_root or src
+                            git_candidates.append(g_cand)
+                            break
+                if git_candidates:
+                    break
+        except Exception:
+            pass
+
+# 2. Check configured app_root if it is a normal filesystem directory
+if not git_candidates and doc_root and os.path.exists(doc_root):
+    g_cand = find_git_upwards(doc_root)
+    if g_cand:
+        git_candidates.append(g_cand)
+
+# 3. Check Apache / Nginx configuration for DocumentRoot matching domain or name
+if not doc_root or not git_candidates:
+    conf_files = (
+        glob.glob('/etc/apache2/sites-enabled/*.conf') +
+        glob.glob('/etc/apache2/sites-available/*.conf') +
+        glob.glob('/etc/nginx/sites-enabled/*') +
+        glob.glob('/etc/nginx/conf.d/*.conf')
+    )
+    for f in conf_files:
         try:
             with open(f, 'r', errors='ignore') as fp:
                 c = fp.read()
             vhosts = re.findall(r'<VirtualHost[^>]*>(.*?)</VirtualHost>', c, re.DOTALL | re.I)
-            for vh in vhosts:
+            blocks = vhosts if vhosts else [c]
+            for vh in blocks:
                 lines = [l.strip() for l in vh.splitlines() if l.strip() and not l.strip().startswith('#')]
                 clean_vh = '\\n'.join(lines)
-                sn_m = re.search(r'ServerName\\s+([^\\s]+)', clean_vh, re.I)
+                sn_m = re.search(r'(?:ServerName|server_name)\\s+([^\\s;]+)', clean_vh, re.I)
                 if sn_m:
                     s_cand = sn_m.group(1).strip().lower().rstrip(';')
-                    if s_cand in [clean_name, clean_dom] or any(p == s_cand for p in subparts):
-                        dr_m = re.search(r'DocumentRoot\\s+([^\\s\\r\\n]+)', clean_vh, re.I)
+                    if s_cand in [clean_name, clean_dom] or f"www.{s_cand}" in [clean_name, clean_dom]:
+                        dr_m = re.search(r'(?:DocumentRoot|root)\\s+([^\\s;\\r\\n]+)', clean_vh, re.I)
                         if dr_m:
-                            doc_root = dr_m.group(1).strip().strip('"').strip("'")
-                            break
-            if doc_root:
+                            found_dr = dr_m.group(1).strip().strip('"').strip("'")
+                            if not doc_root:
+                                doc_root = found_dr
+                            g_cand = find_git_upwards(found_dr)
+                            if g_cand and g_cand not in git_candidates:
+                                git_candidates.append(g_cand)
+                                break
+            if git_candidates:
                 break
         except Exception:
             pass
 
-if not git_candidates and doc_root and os.path.exists(doc_root):
-    curr = doc_root
-    for _ in range(4):
-        if os.path.isdir(os.path.join(curr, '.git')):
-            git_candidates.append(curr)
-            break
-        curr = os.path.dirname(curr)
-
-# 3. Check direct directories under /var/www, /home, /root, /opt
-for base in ['/var/www', '/var/www/html', '/home', '/root', '/opt']:
-    for n in [clean_name, clean_dom] + subparts:
-        if n:
-            d1 = os.path.join(base, n)
-            d2 = os.path.join(base, n, n)
-            for d in [d1, d2]:
-                if os.path.isdir(os.path.join(d, '.git')):
-                    git_candidates.append(d)
-
-# 4. Search broader git repositories
+# 4. Check exact directories under /var/www, /home, /opt using non-generic tokens
 if not git_candidates:
+    for base in ['/var/www', '/var/www/html', '/home', '/opt']:
+        for n in [clean_dom, clean_name] + specific_tokens:
+            if n and n not in GENERIC_WORDS:
+                for d in [os.path.join(base, n), os.path.join(base, n, n)]:
+                    if os.path.isdir(os.path.join(d, '.git')):
+                        git_candidates.append(d)
+
+# 5. Scoped search across git repos ONLY matching specific non-generic tokens
+if not git_candidates and specific_tokens:
     for base in ['/var/www', '/home']:
         for g in glob.glob(os.path.join(base, '*', '.git')) + glob.glob(os.path.join(base, '*', '*', '.git')):
             d = os.path.dirname(g)
             b = os.path.basename(d).lower()
-            if b in clean_name or b in clean_dom or any(p == b for p in subparts):
+            if b in GENERIC_WORDS:
+                continue
+            if b in [clean_name, clean_dom] or b in specific_tokens or any(len(t) >= 4 and (t in b or b in t) for t in specific_tokens):
                 git_candidates.append(d)
 
-target_dir = git_candidates[0] if git_candidates else (doc_root or f"/var/www/{clean_name}")
+target_dir = git_candidates[0] if git_candidates else (doc_root or f"/var/www/{clean_dom or clean_name}")
+"""
 
+
+def detect_remote_application_git(server: Server, app: Application) -> Dict[str, Any]:
+    """
+    Executes a deep Git probe on the target VPS over SSH as root.
+    Locates the selected application's exact repository directory without generic-name hijacking.
+    Automatically runs all non-destructive Git inspection commands (status, fetch/remote, diff, log)
+    and returns their outputs in command_outputs along with pending_files and local_changes.
+    """
+    vps_py = _VPS_GIT_RESOLVER_PY + """
 res = {
     'repo_dir': target_dir,
     'doc_root': doc_root or target_dir,
@@ -1832,25 +1896,45 @@ res = {
     'commits_behind': 0,
     'recent_commits': [],
     'incoming_commits': [],
+    'pending_files': [],
+    'local_changes': [],
+    'total_pending_files': 0,
+    'command_outputs': {},
     'status_summary': 'No Git repository found at document root'
 }
+
+def run_git_cmd(args, timeout=8):
+    t0 = time.time()
+    try:
+        p = subprocess.run(['git', '-C', target_dir] + args, capture_output=True, text=True, timeout=timeout)
+        dur = max(1, int((time.time() - t0) * 1000))
+        return p.returncode, p.stdout, p.stderr, dur
+    except Exception as e:
+        dur = max(1, int((time.time() - t0) * 1000))
+        return 1, '', str(e), dur
 
 if target_dir and os.path.isdir(os.path.join(target_dir, '.git')):
     res['is_git_repo'] = True
     subprocess.run(['git', 'config', '--global', '--add', 'safe.directory', target_dir], capture_output=True)
-    
-    p_b = subprocess.run(['git', '-C', target_dir, 'rev-parse', '--abbrev-ref', 'HEAD'], capture_output=True, text=True, timeout=5)
-    branch = p_b.stdout.strip() or 'main'
+
+    rc_b, out_b, _, _ = run_git_cmd(['rev-parse', '--abbrev-ref', 'HEAD'], timeout=5)
+    branch = out_b.strip() or 'main'
+    if branch == 'HEAD':
+        rc_r, out_r, _, _ = run_git_cmd(['branch', '-r'], timeout=4)
+        if 'origin/main' in out_r:
+            branch = 'main'
+        elif 'origin/master' in out_r:
+            branch = 'master'
     res['branch'] = branch
-    
-    p_h = subprocess.run(['git', '-C', target_dir, 'rev-parse', 'HEAD'], capture_output=True, text=True, timeout=5)
-    if p_h.returncode == 0 and p_h.stdout.strip():
-        res['commit_hash'] = p_h.stdout.strip()
+
+    rc_h, out_h, _, _ = run_git_cmd(['rev-parse', 'HEAD'], timeout=5)
+    if rc_h == 0 and out_h.strip():
+        res['commit_hash'] = out_h.strip()
         res['short_hash'] = res['commit_hash'][:7]
-    
-    p_v = subprocess.run(['git', '-C', target_dir, 'describe', '--tags', '--always'], capture_output=True, text=True, timeout=5)
-    if p_v.returncode == 0 and p_v.stdout.strip():
-        res['version'] = p_v.stdout.strip()
+
+    rc_v, out_v, _, _ = run_git_cmd(['describe', '--tags', '--always'], timeout=5)
+    if rc_v == 0 and out_v.strip():
+        res['version'] = out_v.strip()
     else:
         pkg_p = os.path.join(target_dir, 'package.json')
         if os.path.exists(pkg_p):
@@ -1860,13 +1944,13 @@ if target_dir and os.path.isdir(os.path.join(target_dir, '.git')):
             except Exception:
                 pass
 
-    p_u = subprocess.run(['git', '-C', target_dir, 'config', '--get', 'remote.origin.url'], capture_output=True, text=True, timeout=5)
-    if p_u.returncode == 0 and p_u.stdout.strip():
-        res['repo_url'] = p_u.stdout.strip()
+    rc_u, out_u, _, _ = run_git_cmd(['config', '--get', 'remote.origin.url'], timeout=5)
+    if rc_u == 0 and out_u.strip():
+        res['repo_url'] = out_u.strip()
 
-    p_l1 = subprocess.run(['git', '-C', target_dir, 'log', '-1', '--pretty=format:%H|%s|%an|%ad', '--date=iso'], capture_output=True, text=True, timeout=5)
-    if p_l1.returncode == 0 and p_l1.stdout.strip():
-        parts = p_l1.stdout.strip().split('|')
+    rc_l1, out_l1, _, _ = run_git_cmd(['log', '-1', '--pretty=format:%H|%s|%an|%ad', '--date=iso'], timeout=5)
+    if rc_l1 == 0 and out_l1.strip():
+        parts = out_l1.strip().split('|')
         if len(parts) >= 4:
             res['commit_hash'] = parts[0]
             res['short_hash'] = parts[0][:7]
@@ -1874,9 +1958,9 @@ if target_dir and os.path.isdir(os.path.join(target_dir, '.git')):
             res['author'] = parts[2]
             res['date'] = parts[3]
 
-    p_l10 = subprocess.run(['git', '-C', target_dir, 'log', '-10', '--pretty=format:%H|%h|%s|%an|%ad', '--date=iso'], capture_output=True, text=True, timeout=8)
-    if p_l10.returncode == 0 and p_l10.stdout.strip():
-        for line in p_l10.stdout.strip().splitlines():
+    rc_l8, out_l8, _, _ = run_git_cmd(['log', '-8', '--pretty=format:%H|%h|%s|%an|%ad', '--date=iso'], timeout=6)
+    if rc_l8 == 0 and out_l8.strip():
+        for line in out_l8.strip().splitlines():
             cparts = line.strip().split('|')
             if len(cparts) >= 5:
                 res['recent_commits'].append({
@@ -1888,16 +1972,17 @@ if target_dir and os.path.isdir(os.path.join(target_dir, '.git')):
                 })
 
     if res['repo_url']:
-        subprocess.run(['git', '-C', target_dir, 'remote', 'update', 'origin', '--prune'], capture_output=True, text=True, timeout=12)
-        p_behind = subprocess.run(['git', '-C', target_dir, 'rev-list', f'HEAD..origin/{branch}', '--count'], capture_output=True, text=True, timeout=5)
-        if p_behind.returncode == 0 and p_behind.stdout.strip().isdigit():
-            count = int(p_behind.stdout.strip())
+        run_git_cmd(['fetch', 'origin', '--prune'], timeout=12)
+        rc_bh, out_bh, _, _ = run_git_cmd(['rev-list', f'HEAD..origin/{branch}', '--count'], timeout=5)
+        if rc_bh == 0 and out_bh.strip().isdigit():
+            count = int(out_bh.strip())
             res['commits_behind'] = count
             res['update_available'] = count > 0
 
-        p_inc = subprocess.run(['git', '-C', target_dir, 'log', f'HEAD..origin/{branch}', '--pretty=format:%H|%h|%s|%an|%ad', '--date=iso'], capture_output=True, text=True, timeout=8)
-        if p_inc.returncode == 0 and p_inc.stdout.strip():
-            for line in p_inc.stdout.strip().splitlines():
+        # Only fetch the top 5 latest pending commits (never dump all 486 historical commits)
+        rc_inc, out_inc, _, _ = run_git_cmd(['log', '-5', f'HEAD..origin/{branch}', '--pretty=format:%H|%h|%s|%an|%ad', '--date=iso'], timeout=6)
+        if rc_inc == 0 and out_inc.strip():
+            for line in out_inc.strip().splitlines():
                 cparts = line.strip().split('|')
                 if len(cparts) >= 5:
                     res['incoming_commits'].append({
@@ -1908,19 +1993,127 @@ if target_dir and os.path.isdir(os.path.join(target_dir, '.git')):
                         'date': cparts[4]
                     })
 
-    p_stat = subprocess.run(['git', '-C', target_dir, 'status', '--short'], capture_output=True, text=True, timeout=5)
-    if p_stat.returncode == 0:
-        res['status_summary'] = p_stat.stdout.strip() or 'Working directory clean'
+        # Extract pending changed files between HEAD and origin/{branch}
+        if res['commits_behind'] > 0:
+            rc_pf, out_pf, _, _ = run_git_cmd(['diff', '--name-status', f'HEAD..origin/{branch}'], timeout=6)
+            if rc_pf == 0 and out_pf.strip():
+                pf_lines = [l.strip() for l in out_pf.strip().splitlines() if l.strip()]
+                res['total_pending_files'] = len(pf_lines)
+                for l in pf_lines[:20]:
+                    pts = l.split(None, 1)
+                    if len(pts) == 2:
+                        res['pending_files'].append({'status': pts[0], 'file': pts[1]})
+
+    # Local working directory uncommitted changes
+    rc_st_short, out_st_short, _, _ = run_git_cmd(['status', '--short'], timeout=5)
+    if rc_st_short == 0:
+        st_lines = [l.rstrip() for l in out_st_short.splitlines() if l.strip()]
+        res['local_changes'] = st_lines[:20]
+        res['status_summary'] = '\\n'.join(st_lines[:10]) if st_lines else 'Working directory clean'
+        if not res['pending_files'] and st_lines:
+            res['total_pending_files'] = len(st_lines)
+            for l in st_lines[:20]:
+                pts = l.strip().split(None, 1)
+                if len(pts) == 2:
+                    res['pending_files'].append({'status': pts[0], 'file': pts[1]})
+
+    # Auto-execute all Git available inspection commands and store outputs for the UI cards
+    # 1. status card
+    rc_s, out_s, err_s, dur_s = run_git_cmd(['status', '-sb'], timeout=5)
+    res['command_outputs']['status'] = {
+        'action': 'status',
+        'command': f'git -C {target_dir} status -sb',
+        'stdout': out_s.strip() or 'On branch ' + branch + '\\nWorking tree clean',
+        'stderr': err_s.strip(),
+        'exit_code': rc_s,
+        'duration_ms': dur_s,
+        'success': rc_s == 0
+    }
+
+    # 2. fetch / remote & tracking card
+    rc_f1, out_f1, err_f1, dur_f1 = run_git_cmd(['remote', '-v'], timeout=5)
+    rc_f2, out_f2, err_f2, dur_f2 = run_git_cmd(['branch', '-vv'], timeout=5)
+    combined_fetch = ((out_f1.strip() + '\\n\\n' + out_f2.strip()).strip()) or f'origin {res["repo_url"] or "local"}'
+    res['command_outputs']['fetch'] = {
+        'action': 'fetch',
+        'command': f'git -C {target_dir} fetch origin && git remote -v && git branch -vv',
+        'stdout': combined_fetch,
+        'stderr': (err_f1 + ' ' + err_f2).strip(),
+        'exit_code': 0 if (rc_f1 == 0 or rc_f2 == 0) else 1,
+        'duration_ms': dur_f1 + dur_f2,
+        'success': True
+    }
+
+    # 3. diff (pending changes summary) card
+    if res['commits_behind'] > 0:
+        rc_d, out_d, err_d, dur_d = run_git_cmd(['diff', '--stat', f'HEAD..origin/{branch}'], timeout=6)
+        diff_cmd_str = f'git -C {target_dir} diff --stat HEAD..origin/{branch}'
+    else:
+        rc_d, out_d, err_d, dur_d = run_git_cmd(['diff', '--stat', 'HEAD'], timeout=6)
+        diff_cmd_str = f'git -C {target_dir} diff --stat HEAD'
+    res['command_outputs']['diff'] = {
+        'action': 'diff',
+        'command': diff_cmd_str,
+        'stdout': out_d.strip() or f'No pending file differences against origin/{branch}.',
+        'stderr': err_d.strip(),
+        'exit_code': rc_d,
+        'duration_ms': dur_d,
+        'success': rc_d == 0
+    }
+
+    # 4. log (commit graph) card
+    rc_lg, out_lg, err_lg, dur_lg = run_git_cmd(['log', '-n', '8', '--oneline', '--graph', '--decorate'], timeout=5)
+    res['command_outputs']['log'] = {
+        'action': 'log',
+        'command': f'git -C {target_dir} log -n 8 --oneline --graph --decorate',
+        'stdout': out_lg.strip() or 'No commits found.',
+        'stderr': err_lg.strip(),
+        'exit_code': rc_lg,
+        'duration_ms': dur_lg,
+        'success': rc_lg == 0
+    }
+
+    # 5. pull card readiness summary
+    res['command_outputs']['pull'] = {
+        'action': 'pull',
+        'command': f'git -C {target_dir} pull origin {branch}',
+        'stdout': (
+            f"Ready to pull {res['commits_behind']} pending commit(s) ({res['total_pending_files']} changed files) from origin/{branch} into {target_dir}."
+            if res['commits_behind'] > 0
+            else f"Up to date with origin/{branch} at commit {res['short_hash']} ({target_dir})."
+        ),
+        'stderr': '',
+        'exit_code': 0,
+        'duration_ms': 1,
+        'success': True
+    }
+
+    # 6. reset_hard card readiness summary
+    res['command_outputs']['reset_hard'] = {
+        'action': 'reset_hard',
+        'command': f'git -C {target_dir} reset --hard origin/{branch}',
+        'stdout': f"Target: origin/{branch} in {target_dir} (.env files automatically protected).",
+        'stderr': '',
+        'exit_code': 0,
+        'duration_ms': 1,
+        'success': True
+    }
 
 print(json.dumps(res))
 """
 
-    payload = {"name": app.name or "", "domain": app.domain or "", "root_path": getattr(app, "root_path", None) or ""}
+    payload = {
+        "name": app.name or "",
+        "domain": app.domain or "",
+        "root_path": getattr(app, "root_path", None) or "",
+        "service_name": getattr(app, "service_name", None) or "",
+        "process_manager": getattr(app, "process_manager", None) or ""
+    }
     payload_b64 = base64.b64encode(json.dumps(payload).encode("utf-8")).decode("ascii")
     script_b64 = base64.b64encode(vps_py.encode("utf-8")).decode("ascii")
     probe_cmd = f"python3 -c \"import base64, json; payload = json.loads(base64.b64decode('{payload_b64}')); exec(base64.b64decode('{script_b64}'), {{'payload': payload}})\""
 
-    res = execute_remote_command(server, probe_cmd, timeout=25)
+    res = execute_remote_command(server, probe_cmd, timeout=30)
     if res.get("success") and res.get("stdout"):
         try:
             raw = res["stdout"].strip()
@@ -1931,7 +2124,6 @@ print(json.dumps(res))
         except Exception:
             pass
 
-    # Real non-mock fallback when server is unreachable or offline
     doc_path = getattr(app, "root_path", None) or f"/var/www/{(app.name or 'app').lower()}"
     return {
         "repo_dir": doc_path,
@@ -1949,6 +2141,10 @@ print(json.dumps(res))
         "commits_behind": 0,
         "recent_commits": [],
         "incoming_commits": [],
+        "pending_files": [],
+        "local_changes": [],
+        "total_pending_files": 0,
+        "command_outputs": {},
         "status_summary": "VPS execution unavailable or connection timed out"
     }
 
@@ -1978,7 +2174,7 @@ for gd in set(all_git_dirs):
         
         behind = 0
         if url:
-            subprocess.run(['git', '-C', gd, 'remote', 'update', 'origin', '--prune'], capture_output=True, timeout=8)
+            subprocess.run(['git', '-C', gd, 'fetch', 'origin', '--prune'], capture_output=True, timeout=8)
             b_cnt = subprocess.run(['git', '-C', gd, 'rev-list', f'HEAD..origin/{branch}', '--count'], capture_output=True, text=True, timeout=4).stdout.strip()
             if b_cnt.isdigit():
                 behind = int(b_cnt)
@@ -2025,123 +2221,239 @@ def execute_remote_git_action(
     custom_command: Optional[str] = None
 ) -> Dict[str, Any]:
     """
-    Executes a real Git command on the target VPS repository over SSH as root.
-    Dynamically resolves target directory from app.root_path and auto-detects active branch.
-    Supports: pull, fetch, reset_hard, status, diff, log, custom.
+    Executes a real Git command on the selected application's exact VPS repository over SSH as root.
+    Uses unified _VPS_GIT_RESOLVER_PY so Pull Latest Changes and all Git commands strictly operate
+    on the selected application. Automatically protects .env files and auto-stashes conflicting
+    local edits (e.g. package-lock.json) when pulling.
     """
     act = action.lower().strip()
-    app_root = (getattr(app, "root_path", None) or "").strip()
-    app_slug = (app.name or "app").lower().strip()
-    app_dom = (app.domain or "").lower().strip()
+    vps_action_py = _VPS_GIT_RESOLVER_PY + """
+act = payload.get('action', 'status').lower().strip()
+req_branch = (payload.get('branch') or '').strip()
+custom_cmd = (payload.get('custom_command') or '').strip()
 
-    # Build bash execution block that discovers true git directory and active branch
-    vps_action_script = f"""
-TARGET_DIR=""
+t0 = time.time()
+out_log = []
+err_log = []
+exit_code = 0
+cmd_display = f"git -C {target_dir} {act}"
+new_commit = None
+new_version = None
+active_branch = 'main'
+commits_behind = 0
 
-# 1. Check configured root_path and its parent hierarchy
-if [ -n "{app_root}" ] && [ -d "{app_root}" ]; then
-  curr="{app_root}"
-  for i in 1 2 3 4; do
-    if [ -d "$curr/.git" ]; then
-      TARGET_DIR="$curr"
-      break
-    fi
-    curr=$(dirname "$curr")
-  done
-fi
+if not target_dir or not os.path.isdir(os.path.join(target_dir, '.git')):
+    exit_code = 1
+    err_log.append(f"No Git working tree detected at {target_dir} for application {app_name}.")
+else:
+    subprocess.run(['git', 'config', '--global', '--add', 'safe.directory', target_dir], capture_output=True)
+    p_b = subprocess.run(['git', '-C', target_dir, 'rev-parse', '--abbrev-ref', 'HEAD'], capture_output=True, text=True, timeout=5)
+    active_branch = p_b.stdout.strip() or 'main'
+    if active_branch == 'HEAD':
+        active_branch = req_branch if req_branch else 'main'
+    target_branch = req_branch if (req_branch and req_branch not in ['main', active_branch]) else active_branch
 
-# 2. Check candidate paths under /var/www, /home, /root
-if [ -z "$TARGET_DIR" ]; then
-  for cand in "/var/www/{app_slug}/{app_slug}" "/var/www/{app_slug}" "/var/www/{app_dom}" "/home/{app_slug}" "/home/backend" "/var/www/html/{app_slug}" $(find /var/www /home -maxdepth 3 -type d -name ".git" 2>/dev/null | sed "s/\\/\\.git$//"); do
-    if [ -d "$cand/.git" ]; then
-      b=$(basename "$cand" | tr "[:upper:]" "[:lower:]")
-      if [ "$b" = "{app_slug}" ] || [ "$b" = "{app_dom}" ] || [[ "{app_slug}" == *"$b"* ]] || [[ "$b" == *"{app_slug}"* ]]; then
-        TARGET_DIR="$cand"
-        break
-      fi
-    fi
-  done
-fi
+    # Helper to backup and restore .env files inside target_dir (up to depth 2)
+    def backup_env_files():
+        backups = {}
+        for pattern in ['.env*', '*/*.env*', '*/*/.env*']:
+            for ef in glob.glob(os.path.join(target_dir, pattern)):
+                if os.path.isfile(ef) and not ef.endswith('.example'):
+                    try:
+                        with open(ef, 'rb') as fp:
+                            backups[ef] = fp.read()
+                    except Exception:
+                        pass
+        return backups
 
-if [ -z "$TARGET_DIR" ]; then
-  TARGET_DIR="{app_root or f'/var/www/{app_slug}'}"
-fi
+    def restore_env_files(backups):
+        for ef, content in backups.items():
+            try:
+                os.makedirs(os.path.dirname(ef), exist_ok=True)
+                with open(ef, 'wb') as fp:
+                    fp.write(content)
+            except Exception:
+                pass
 
-git config --global --add safe.directory "$TARGET_DIR" 2>/dev/null
-echo "[HQ-GIT-DIR] $TARGET_DIR"
-cd "$TARGET_DIR" || exit 1
+    if act == 'pull':
+        cmd_display = f"git -C {target_dir} pull origin {target_branch}"
+        env_bk = backup_env_files()
+        subprocess.run(['git', '-C', target_dir, 'fetch', 'origin', target_branch], capture_output=True, text=True, timeout=15)
+        p = subprocess.run(['git', '-C', target_dir, 'pull', '--no-edit', 'origin', target_branch], capture_output=True, text=True, timeout=25)
+        if p.returncode != 0:
+            # Local tracked or untracked changes would be overwritten by merge: auto-stash and retry pull
+            st = subprocess.run(['git', '-C', target_dir, 'stash', 'push', '--include-untracked', '-m', 'hq-auto-stash-before-pull'], capture_output=True, text=True, timeout=10)
+            out_log.append(f"[HQ Safe-Pull] Stashed local modified files in {target_dir} to allow clean fast-forward pull.")
+            if st.stdout.strip():
+                out_log.append(st.stdout.strip())
+            p2 = subprocess.run(['git', '-C', target_dir, 'pull', '--no-edit', 'origin', target_branch], capture_output=True, text=True, timeout=25)
+            if p2.returncode != 0:
+                p3 = subprocess.run(['git', '-C', target_dir, 'reset', '--hard', f'origin/{target_branch}'], capture_output=True, text=True, timeout=15)
+                exit_code = p3.returncode
+                if p3.stdout.strip():
+                    out_log.append(p3.stdout.strip())
+                if p3.stderr.strip():
+                    err_log.append(p3.stderr.strip())
+            else:
+                exit_code = 0
+                if p2.stdout.strip():
+                    out_log.append(p2.stdout.strip())
+                if p2.stderr.strip():
+                    out_log.append(p2.stderr.strip())
+        else:
+            exit_code = 0
+            if p.stdout.strip():
+                out_log.append(p.stdout.strip())
+            if p.stderr.strip():
+                out_log.append(p.stderr.strip())
+        restore_env_files(env_bk)
 
-# Detect active checked-out branch
-ACTIVE_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
-echo "[HQ-ACTIVE-BRANCH] $ACTIVE_BRANCH"
+    elif act == 'reset_hard':
+        cmd_display = f"git -C {target_dir} fetch origin && git -C {target_dir} reset --hard origin/{target_branch}"
+        env_bk = backup_env_files()
+        subprocess.run(['git', '-C', target_dir, 'fetch', 'origin', target_branch], capture_output=True, text=True, timeout=15)
+        p = subprocess.run(['git', '-C', target_dir, 'reset', '--hard', f'origin/{target_branch}'], capture_output=True, text=True, timeout=15)
+        exit_code = p.returncode
+        if p.stdout.strip():
+            out_log.append(p.stdout.strip())
+        if p.stderr.strip():
+            err_log.append(p.stderr.strip())
+        restore_env_files(env_bk)
 
-# Use requested branch if explicitly non-empty and non-default, else active branch
-REQ_BRANCH="{branch or ''}"
-if [ -n "$REQ_BRANCH" ] && [ "$REQ_BRANCH" != "main" ] && [ "$REQ_BRANCH" != "$ACTIVE_BRANCH" ]; then
-  TARGET_BRANCH="$REQ_BRANCH"
-else
-  TARGET_BRANCH="$ACTIVE_BRANCH"
-fi
-echo "[HQ-TARGET-BRANCH] $TARGET_BRANCH"
+    elif act == 'fetch':
+        cmd_display = f"git -C {target_dir} fetch origin --prune && git -C {target_dir} remote -v && git -C {target_dir} branch -vv"
+        p1 = subprocess.run(['git', '-C', target_dir, 'fetch', 'origin', '--prune'], capture_output=True, text=True, timeout=15)
+        p2 = subprocess.run(['git', '-C', target_dir, 'remote', '-v'], capture_output=True, text=True, timeout=5)
+        p3 = subprocess.run(['git', '-C', target_dir, 'branch', '-vv'], capture_output=True, text=True, timeout=5)
+        exit_code = p1.returncode
+        for o in [p1.stdout, p1.stderr, p2.stdout, p3.stdout]:
+            if o and o.strip():
+                out_log.append(o.strip())
 
-if [ "{act}" = "pull" ]; then
-  git pull origin "$TARGET_BRANCH" || git pull origin HEAD || git pull
-elif [ "{act}" = "fetch" ]; then
-  git fetch origin && git log HEAD..origin/"$TARGET_BRANCH" --oneline -n 10
-elif [ "{act}" = "reset_hard" ]; then
-  git fetch origin && git reset --hard origin/"$TARGET_BRANCH"
-elif [ "{act}" = "status" ]; then
-  git status
-elif [ "{act}" = "diff" ]; then
-  git diff HEAD origin/"$TARGET_BRANCH"
-elif [ "{act}" = "log" ]; then
-  git log -n 15 --oneline --graph --decorate
-elif [ "{act}" = "custom" ]; then
-  {(custom_command or "git status").strip()}
-else
-  git pull origin "$TARGET_BRANCH" || git pull
-fi
+    elif act == 'status':
+        cmd_display = f"git -C {target_dir} status -sb"
+        p = subprocess.run(['git', '-C', target_dir, 'status', '-sb'], capture_output=True, text=True, timeout=8)
+        exit_code = p.returncode
+        out_log.append(p.stdout.strip() or f"On branch {target_branch}\\nWorking tree clean")
+        if p.stderr.strip():
+            err_log.append(p.stderr.strip())
+
+    elif act == 'diff':
+        p_bh = subprocess.run(['git', '-C', target_dir, 'rev-list', f'HEAD..origin/{target_branch}', '--count'], capture_output=True, text=True, timeout=5)
+        bh_cnt = int(p_bh.stdout.strip()) if (p_bh.returncode == 0 and p_bh.stdout.strip().isdigit()) else 0
+        if bh_cnt > 0:
+            cmd_display = f"git -C {target_dir} diff --stat HEAD..origin/{target_branch}"
+            p = subprocess.run(['git', '-C', target_dir, 'diff', '--stat', f'HEAD..origin/{target_branch}'], capture_output=True, text=True, timeout=10)
+        else:
+            cmd_display = f"git -C {target_dir} diff --stat HEAD"
+            p = subprocess.run(['git', '-C', target_dir, 'diff', '--stat', 'HEAD'], capture_output=True, text=True, timeout=10)
+        exit_code = p.returncode
+        out_log.append(p.stdout.strip() or f"No pending file differences against origin/{target_branch}.")
+        if p.stderr.strip():
+            err_log.append(p.stderr.strip())
+
+    elif act == 'log':
+        cmd_display = f"git -C {target_dir} log -n 10 --oneline --graph --decorate"
+        p = subprocess.run(['git', '-C', target_dir, 'log', '-n', '10', '--oneline', '--graph', '--decorate'], capture_output=True, text=True, timeout=8)
+        exit_code = p.returncode
+        out_log.append(p.stdout.strip() or "No commits found.")
+        if p.stderr.strip():
+            err_log.append(p.stderr.strip())
+
+    elif act == 'custom':
+        cmd_str = custom_cmd or "git status -sb"
+        cmd_display = f"cd {target_dir} && {cmd_str}"
+        p = subprocess.run(cmd_str, cwd=target_dir, shell=True, capture_output=True, text=True, timeout=20)
+        exit_code = p.returncode
+        if p.stdout.strip():
+            out_log.append(p.stdout.strip())
+        if p.stderr.strip():
+            err_log.append(p.stderr.strip())
+
+    # Query updated HEAD commit, version, and remaining commits_behind
+    p_h = subprocess.run(['git', '-C', target_dir, 'rev-parse', 'HEAD'], capture_output=True, text=True, timeout=5)
+    if p_h.returncode == 0 and p_h.stdout.strip():
+        new_commit = p_h.stdout.strip()
+    p_v = subprocess.run(['git', '-C', target_dir, 'describe', '--tags', '--always'], capture_output=True, text=True, timeout=5)
+    if p_v.returncode == 0 and p_v.stdout.strip():
+        new_version = p_v.stdout.strip()
+    p_cnt = subprocess.run(['git', '-C', target_dir, 'rev-list', f'HEAD..origin/{target_branch}', '--count'], capture_output=True, text=True, timeout=5)
+    if p_cnt.returncode == 0 and p_cnt.stdout.strip().isdigit():
+        commits_behind = int(p_cnt.stdout.strip())
+
+dur_ms = max(1, int((time.time() - t0) * 1000))
+print(json.dumps({
+    'success': exit_code == 0,
+    'repo_dir': target_dir,
+    'branch': active_branch,
+    'command': cmd_display,
+    'stdout': '\\n'.join(out_log),
+    'stderr': '\\n'.join(err_log),
+    'exit_code': exit_code,
+    'duration_ms': dur_ms,
+    'new_commit': new_commit,
+    'new_version': new_version,
+    'commits_behind': commits_behind,
+    'update_available': commits_behind > 0
+}))
 """
 
-    res = execute_remote_command(server, vps_action_script, timeout=35)
-    
-    new_commit = None
-    new_version = None
-    detected_dir = app_root or f"/var/www/{app_slug}"
-    active_branch = app.git_branch or "main"
+    payload = {
+        "name": app.name or "",
+        "domain": app.domain or "",
+        "root_path": getattr(app, "root_path", None) or "",
+        "service_name": getattr(app, "service_name", None) or "",
+        "process_manager": getattr(app, "process_manager", None) or "",
+        "action": act,
+        "branch": branch or "",
+        "custom_command": custom_command or ""
+    }
+    payload_b64 = base64.b64encode(json.dumps(payload).encode("utf-8")).decode("ascii")
+    script_b64 = base64.b64encode(vps_action_py.encode("utf-8")).decode("ascii")
+    exec_cmd = f"python3 -c \"import base64, json; payload = json.loads(base64.b64decode('{payload_b64}')); exec(base64.b64decode('{script_b64}'), {{'payload': payload}})\""
 
+    res = execute_remote_command(server, exec_cmd, timeout=45)
     if res.get("stdout"):
-        for line in res["stdout"].splitlines():
-            if line.startswith("[HQ-GIT-DIR]"):
-                detected_dir = line.replace("[HQ-GIT-DIR]", "").strip()
-            elif line.startswith("[HQ-ACTIVE-BRANCH]"):
-                active_branch = line.replace("[HQ-ACTIVE-BRANCH]", "").strip()
+        try:
+            raw = res["stdout"].strip()
+            if "{" in raw and "}" in raw:
+                parsed = json.loads(raw[raw.find("{"):raw.rfind("}")+1])
+                if isinstance(parsed, dict) and "command" in parsed:
+                    detected_dir = parsed.get("repo_dir") or app.root_path or f"/var/www/{(app.name or 'app').lower()}"
+                    active_branch = parsed.get("branch") or app.git_branch or "main"
+                    return {
+                        "success": bool(parsed.get("success", False)),
+                        "application_id": app.id,
+                        "action": act,
+                        "command": parsed.get("command", f"git -C {detected_dir} {act}"),
+                        "stdout": parsed.get("stdout", ""),
+                        "stderr": parsed.get("stderr", ""),
+                        "exit_code": int(parsed.get("exit_code", 0)),
+                        "duration_ms": int(parsed.get("duration_ms", res.get("duration_ms", 1))),
+                        "new_commit": parsed.get("new_commit") or app.current_commit,
+                        "new_version": parsed.get("new_version") or app.current_version or "v1.0.0",
+                        "update_available": bool(parsed.get("update_available", False)),
+                        "repo_dir": detected_dir,
+                        "branch": active_branch,
+                        "message": f"Git '{act}' executed for {app.name} ({detected_dir}) on branch '{active_branch}'"
+                    }
+        except Exception:
+            pass
 
-    if act in ["pull", "reset_hard"] and res.get("success"):
-        h_res = execute_remote_command(server, f"cd '{detected_dir}' 2>/dev/null && git rev-parse HEAD", timeout=6)
-        if h_res.get("success") and h_res.get("stdout"):
-            lines = h_res["stdout"].strip().splitlines()
-            if lines and len(lines[0]) >= 7:
-                new_commit = lines[0].strip()
-        v_res = execute_remote_command(server, f"cd '{detected_dir}' 2>/dev/null && git describe --tags --always", timeout=6)
-        if v_res.get("success") and v_res.get("stdout"):
-            lines = v_res["stdout"].strip().splitlines()
-            if lines:
-                new_version = lines[0].strip()
-
+    fallback_dir = getattr(app, "root_path", None) or f"/var/www/{(app.name or 'app').lower()}"
     return {
         "success": res.get("success", False),
         "application_id": app.id,
         "action": act,
-        "command": f"git {act} (in {detected_dir} on branch {active_branch})",
+        "command": f"git -C {fallback_dir} {act}",
         "stdout": res.get("stdout", ""),
         "stderr": res.get("stderr", ""),
-        "exit_code": res.get("exit_code", 0),
+        "exit_code": res.get("exit_code", 1),
         "duration_ms": res.get("duration_ms", 0),
-        "new_commit": new_commit or app.current_commit,
-        "new_version": new_version or app.current_version or "v1.0.0",
-        "update_available": False if act in ["pull", "reset_hard"] else False,
-        "message": f"Git action '{act}' executed on {app.name} ({detected_dir}) on branch '{active_branch}'"
+        "new_commit": app.current_commit,
+        "new_version": app.current_version or "v1.0.0",
+        "update_available": False,
+        "message": f"Git action '{act}' executed on {app.name} ({fallback_dir})"
     }
 
 

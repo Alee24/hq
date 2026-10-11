@@ -559,6 +559,7 @@ class ApiClient {
       repo_url: string;
       branch: string;
       repo_dir?: string;
+      doc_root?: string;
       version?: string;
       is_git_repo: boolean;
       current_server_commit: {
@@ -591,6 +592,14 @@ class ApiClient {
         message: string;
         date: string;
       }>;
+      pending_files?: Array<{
+        status: string;
+        code: string;
+        file: string;
+      }>;
+      local_changes?: string[];
+      total_pending_files?: number;
+      command_outputs?: Record<string, any>;
       status_summary?: string;
       server_name?: string;
       server_ip?: string;

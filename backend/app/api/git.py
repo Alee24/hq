@@ -52,11 +52,11 @@ async def get_app_git_status(
             app.current_version = probe["version"]
         if probe.get("repo_url"):
             app.repo_url = probe["repo_url"]
-        if probe.get("doc_root"):
-            app.root_path = probe["doc_root"]
-        elif probe.get("repo_dir") and not app.root_path:
+        if probe.get("repo_dir"):
             app.root_path = probe["repo_dir"]
-        if probe.get("incoming_commits"):
+        elif probe.get("doc_root"):
+            app.root_path = probe["doc_root"]
+        if probe.get("update_available") and probe.get("incoming_commits"):
             app.latest_repo_commit = probe["incoming_commits"][0].get("commit_hash", app.current_commit)
         elif probe.get("update_available"):
             app.latest_repo_commit = f"{app.current_commit[:7]}-update" if app.current_commit else "update-pending"
@@ -114,10 +114,10 @@ async def get_app_git_status(
                     date=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
                 ))
 
-    # Form incoming commits list
+    # Form incoming commits list (capped at latest 5 pending commits)
     incoming_commits: List[GitCommitInfo] = []
     if is_git and probe and probe.get("incoming_commits"):
-        for c in probe["incoming_commits"]:
+        for c in probe["incoming_commits"][:5]:
             incoming_commits.append(GitCommitInfo(
                 commit_hash=c.get("commit_hash", ""),
                 short_hash=c.get("short_hash") or c.get("commit_hash", "")[:7],
@@ -162,6 +162,10 @@ async def get_app_git_status(
         commits_behind=commits_behind,
         recent_commits=recent_commits,
         incoming_commits=incoming_commits,
+        pending_files=probe.get("pending_files", []) if probe else [],
+        local_changes=probe.get("local_changes", []) if probe else [],
+        total_pending_files=int(probe.get("total_pending_files", 0)) if probe else 0,
+        command_outputs=probe.get("command_outputs", {}) if probe else {},
         status_summary=probe.get("status_summary") if probe else ("Working directory clean" if is_git else "No Git working tree detected"),
         server_name=server.name if server else "Remote Host",
         server_ip=server.public_ip if server else "127.0.0.1"
@@ -193,6 +197,9 @@ async def execute_git_action_endpoint(
         branch=payload.branch,
         custom_command=payload.custom_command
     )
+
+    if res.get("repo_dir"):
+        app.root_path = res["repo_dir"]
 
     act = payload.action.lower().strip()
     if res.get("success") and act in ["pull", "reset_hard"]:
@@ -230,10 +237,13 @@ async def execute_git_action_endpoint(
             details={
                 "branch": payload.branch or app.git_branch,
                 "new_commit": new_commit,
-                "command": res.get("command")
+                "command": res.get("command"),
+                "repo_dir": res.get("repo_dir")
             }
         )
         db.add(audit)
+        await db.commit()
+    elif res.get("repo_dir"):
         await db.commit()
 
     return GitActionResponse(**res)
@@ -262,6 +272,9 @@ async def pull_remote_changes(
         action="pull",
         branch=app.git_branch
     )
+
+    if res.get("repo_dir"):
+        app.root_path = res["repo_dir"]
 
     if res.get("success"):
         new_commit = res.get("new_commit")
@@ -296,6 +309,11 @@ async def scan_all_git_repos_endpoint(
     updated_apps = 0
     updates_available_count = 0
     scan_results = []
+    generic_names = {
+        "backend", "frontend", "app", "web", "api", "server", "client",
+        "site", "src", "dist", "build", "public", "html", "www", "home",
+        "root", "var", "opt", "main", "master", "code", "service"
+    }
 
     for s in servers:
         discovered_repos = scan_all_remote_git_repos(s)
@@ -315,8 +333,22 @@ async def scan_all_git_repos_endpoint(
             for r in discovered_repos:
                 r_name = r.get("name", "").lower()
                 r_dir = r.get("dir", "").lower()
-                if (app_root and (app_root == r_dir or app_root.startswith(r_dir) or r_dir.startswith(app_root))) or \
-                   r_name == app_clean or r_name in app_clean or app_clean in r_name or dom_clean in r_dir:
+                is_exact_path = bool(
+                    app_root
+                    and not app_root.startswith("/var/lib/docker")
+                    and (app_root == r_dir or app_root.startswith(r_dir + "/") or r_dir.startswith(app_root + "/"))
+                )
+                is_domain_match = bool(dom_clean and "." in dom_clean and dom_clean in r_dir)
+                is_specific_name = bool(
+                    r_name not in generic_names
+                    and len(r_name) >= 4
+                    and (
+                        r_name == app_clean
+                        or r_name in app_clean
+                        or (len(app_clean) >= 4 and app_clean not in generic_names and app_clean in r_name)
+                    )
+                )
+                if is_exact_path or is_domain_match or is_specific_name:
                     matched = r
                     break
 
@@ -330,7 +362,7 @@ async def scan_all_git_repos_endpoint(
                     a.current_version = matched["version"]
                 if matched.get("repo_url"):
                     a.repo_url = matched["repo_url"]
-                if matched.get("dir") and not a.root_path:
+                if matched.get("dir"):
                     a.root_path = matched["dir"]
                 if matched.get("update_available"):
                     updates_available_count += 1
@@ -349,7 +381,7 @@ async def scan_all_git_repos_endpoint(
                     "commits_behind": matched.get("commits_behind", 0),
                     "update_available": matched.get("update_available", False)
                 })
-            elif discovered_repos and a.root_path:
+            elif discovered_repos:
                 p = detect_remote_application_git(s, a)
                 if p and p.get("is_git_repo"):
                     updated_apps += 1
@@ -361,10 +393,10 @@ async def scan_all_git_repos_endpoint(
                         a.current_version = p["version"]
                     if p.get("repo_url"):
                         a.repo_url = p["repo_url"]
-                    if p.get("doc_root"):
-                        a.root_path = p["doc_root"]
-                    elif p.get("repo_dir") and not a.root_path:
+                    if p.get("repo_dir"):
                         a.root_path = p["repo_dir"]
+                    elif p.get("doc_root"):
+                        a.root_path = p["doc_root"]
                     if p.get("update_available"):
                         updates_available_count += 1
                         a.latest_repo_commit = f"{p['commit_hash'][:7]}-update" if p.get("commit_hash") else "update-pending"
@@ -398,4 +430,5 @@ async def scan_all_git_repos_endpoint(
         message=f"Scanned {len(servers)} servers. Discovered {total_scanned} git directories, updated {updated_apps} applications ({updates_available_count} updates pending).",
         results=scan_results
     )
+
 

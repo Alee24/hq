@@ -106,6 +106,28 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
   // Git Operations State
   const [gitActionLoading, setGitActionLoading] = useState<string | null>(null);
   const [gitTerminalOutput, setGitTerminalOutput] = useState<any>(null);
+  const [gitCardOutputs, setGitCardOutputs] = useState<Record<string, any>>({});
+  const [gitAllRunning, setGitAllRunning] = useState(false);
+
+  const runAllGitCommands = async (targetId?: string) => {
+    const idToUse = targetId || app?.id || appId;
+    if (!idToUse) return;
+    setGitAllRunning(true);
+    try {
+      const status = await api.getGitStatus(idToUse);
+      setGitStatus(status);
+      if (status?.command_outputs) {
+        setGitCardOutputs((prev) => ({
+          ...prev,
+          ...status.command_outputs,
+        }));
+      }
+    } catch (err) {
+      console.error('Failed to run Git commands:', err);
+    } finally {
+      setGitAllRunning(false);
+    }
+  };
 
   const handleExecuteGitAction = async (
     action: 'pull' | 'fetch' | 'reset_hard' | 'status' | 'diff' | 'log' | 'custom',
@@ -120,22 +142,54 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
         custom_command: customCmd,
       });
       setGitTerminalOutput(res);
-      setActionSuccessMessage(res.message);
+      setGitCardOutputs((prev) => ({
+        ...prev,
+        [action]: {
+          command: res.command,
+          output: (res.stdout || res.stderr || res.message || 'Command executed successfully.').trim(),
+          status: res.success ? 'SUCCESS' : 'ERROR',
+          exit_code: res.exit_code,
+          duration_ms: res.duration_ms,
+        },
+      }));
+      setActionSuccessMessage(`${app.name}: ${res.message}`);
       setTimeout(() => setActionSuccessMessage(null), 5000);
       const newStatus = await api.getGitStatus(app.id);
       setGitStatus(newStatus);
+      if (newStatus?.command_outputs) {
+        setGitCardOutputs((prev) => ({
+          ...newStatus.command_outputs,
+          [action]: {
+            command: res.command,
+            output: (res.stdout || res.stderr || res.message || 'Command executed successfully.').trim(),
+            status: res.success ? 'SUCCESS' : 'ERROR',
+            exit_code: res.exit_code,
+            duration_ms: res.duration_ms,
+          },
+        }));
+      }
       const freshApp = await api.getApplication(app.id);
       setApp(freshApp);
       const freshDeps = await api.listDeployments(app.id);
       setDeployments(freshDeps);
     } catch (err: any) {
-      setGitTerminalOutput({
+      const errObj = {
         command: customCmd || `git ${action}`,
         stdout: '',
         stderr: err.message || 'Execution failed',
         exit_code: 1,
         duration_ms: 0,
-      });
+      };
+      setGitTerminalOutput(errObj);
+      setGitCardOutputs((prev) => ({
+        ...prev,
+        [action]: {
+          command: errObj.command,
+          output: errObj.stderr,
+          status: 'ERROR',
+          exit_code: 1,
+        },
+      }));
     } finally {
       setGitActionLoading(null);
     }
@@ -197,6 +251,9 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
       setDeployments(deps);
       setLogs(appLogs);
       setGitStatus(git);
+      if (git?.command_outputs) {
+        setGitCardOutputs(git.command_outputs);
+      }
       setServerInfo(srv);
       setBackups(allBackups.filter((b: any) => b.application_id === appId));
       setAuditLogs(audits.filter((l: any) => l.entity_id === appId));
@@ -252,6 +309,12 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
   useEffect(() => {
     loadAll();
   }, [appId]);
+
+  useEffect(() => {
+    if (activeTab === 'git' && appId) {
+      runAllGitCommands(appId);
+    }
+  }, [activeTab, appId]);
 
   const handleAction = async (action: string) => {
     if (!app) return;
@@ -1312,7 +1375,7 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
                 <div className="p-6 rounded-xl bg-slate-900 border border-slate-800 space-y-4">
                   <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-slate-800">
                     <div>
-                      <div className="flex items-center gap-2.5">
+                      <div className="flex items-center gap-2.5 flex-wrap">
                         <h3 className="text-base font-bold text-white tracking-tight">
                           Git Repository: {app.name}
                         </h3>
@@ -1340,7 +1403,7 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
                           <>
                             <span>•</span>
                             <span className="text-slate-300">
-                              <span className="text-slate-500">Repo:</span> <code className="text-emerald-300">{gitStatus.repo_dir}</code>
+                              <span className="text-slate-500">Target Repo:</span> <code className="text-emerald-300">{gitStatus.repo_dir}</code>
                             </span>
                           </>
                         )}
@@ -1349,21 +1412,19 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
                       <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs bg-emerald-950/60 text-emerald-400 border border-emerald-800/80 font-mono">
                         <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
                         <span>SSH Root Active</span>
                       </span>
                       <button
-                        onClick={async () => {
-                          const s = await api.getGitStatus(app.id);
-                          setGitStatus(s);
-                        }}
-                        disabled={Boolean(gitActionLoading)}
-                        className="p-2 bg-slate-950 hover:bg-slate-800 text-slate-300 rounded-lg border border-slate-800 transition-colors"
-                        title="Refresh Git Status"
+                        onClick={() => runAllGitCommands(app.id)}
+                        disabled={Boolean(gitActionLoading) || gitAllRunning}
+                        className="flex items-center gap-1.5 px-3 py-1.5 bg-brand-600 hover:bg-brand-500 disabled:opacity-50 text-white rounded-lg text-xs font-semibold transition-colors shadow-sm"
+                        title="Execute all Git inspection commands and refresh card outputs"
                       >
-                        <RefreshCw size={13} className={gitActionLoading ? 'animate-spin text-brand-400' : ''} />
+                        <RefreshCw size={12} className={gitAllRunning ? 'animate-spin' : ''} />
+                        <span>{gitAllRunning ? 'Running Git Commands...' : 'Run All Git Commands'}</span>
                       </button>
                     </div>
                   </div>
@@ -1373,7 +1434,7 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
                       <GitPullRequest size={13} className="text-slate-500 shrink-0" />
                       <span className="text-slate-500">Origin:</span>
                       <span className="text-brand-300 truncate">
-                        {gitStatus.repo_url || app.repo_url || (gitStatus.is_git_repo ? 'git@github.com:Alee24/hq.git' : 'None configured (Untracked directory)')}
+                        {gitStatus.repo_url || app.repo_url || (gitStatus.is_git_repo ? 'Local Git Repository' : 'None configured (Untracked directory)')}
                       </span>
                     </div>
                     {gitStatus.repo_url && gitStatus.repo_url.startsWith('http') && (
@@ -1390,7 +1451,7 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
                   </div>
                 </div>
 
-                {/* Hero Alert Banner */}
+                {/* Pending Application Changes Banner (Strictly Scoped to Selected Application) */}
                 {!gitStatus.is_git_repo ? (
                   <div className="p-5 rounded-xl bg-slate-900 border border-amber-600/50 space-y-3 animate-in fade-in">
                     <div className="flex items-center gap-3">
@@ -1413,20 +1474,29 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
                       Changes cannot be synchronized until a Git working tree is initialized in this folder or registered via git clone.
                     </p>
                   </div>
-                ) : gitStatus.update_available ? (
+                ) : (gitStatus.update_available || (gitStatus.local_changes && gitStatus.local_changes.length > 0)) ? (
                   <div className="p-5 rounded-xl bg-gradient-to-r from-amber-950/70 via-slate-900 to-amber-950/40 border border-amber-600/80 shadow-lg space-y-4 animate-in fade-in">
                     <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
                       <div className="flex items-center gap-3">
-                        <div className="p-2.5 bg-amber-500/20 border border-amber-500/40 rounded-xl text-amber-400 animate-bounce">
+                        <div className="p-2.5 bg-amber-500/20 border border-amber-500/40 rounded-xl text-amber-400">
                           <Download size={22} />
                         </div>
                         <div>
-                          <h4 className="text-base font-bold text-white flex items-center gap-2">
-                            <span>Update Available:</span>
-                            <span className="text-amber-400">{gitStatus.commits_behind || 1} Commit{gitStatus.commits_behind !== 1 ? 's' : ''} Behind Origin</span>
+                          <h4 className="text-base font-bold text-white flex items-center gap-2 flex-wrap">
+                            <span>Pending Changes for {app.name}:</span>
+                            {gitStatus.update_available && (
+                              <span className="px-2 py-0.5 rounded text-xs font-mono bg-amber-500/20 text-amber-300 border border-amber-500/40">
+                                {gitStatus.total_pending_files || gitStatus.pending_files?.length || 1} Pending File Change{(gitStatus.total_pending_files || gitStatus.pending_files?.length || 1) !== 1 ? 's' : ''} on Origin
+                              </span>
+                            )}
+                            {gitStatus.local_changes && gitStatus.local_changes.length > 0 && (
+                              <span className="px-2 py-0.5 rounded text-xs font-mono bg-sky-500/20 text-sky-300 border border-sky-500/40">
+                                {gitStatus.local_changes.length} Local Modified File{gitStatus.local_changes.length !== 1 ? 's' : ''}
+                              </span>
+                            )}
                           </h4>
                           <p className="text-xs text-amber-200/90 mt-0.5">
-                            New changes published on <code className="text-white">origin/{gitStatus.branch}</code>. Pull live commits directly over SSH.
+                            Target directory <code className="text-emerald-300 font-mono">{gitStatus.repo_dir}</code> on branch <code className="text-white font-mono">origin/{gitStatus.branch}</code>. Pulling only updates <strong className="text-white">{app.name}</strong> (preserving <code className="text-emerald-300">.env</code> configs).
                           </p>
                         </div>
                       </div>
@@ -1438,7 +1508,7 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
                           className="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white rounded-lg text-xs font-bold shadow-md transition-all active:scale-95"
                         >
                           <Download size={14} className={gitActionLoading === 'pull' ? 'animate-spin' : ''} />
-                          <span>{gitActionLoading === 'pull' ? 'Pulling...' : 'Pull Latest Changes'}</span>
+                          <span>{gitActionLoading === 'pull' ? `Pulling ${app.name}...` : `Pull Latest Changes (${app.name})`}</span>
                         </button>
                         <button
                           onClick={() => handleExecuteGitAction('reset_hard')}
@@ -1451,12 +1521,72 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
                       </div>
                     </div>
 
+                    {/* Pending File Changes Breakdown (Only Pending Application Files, Not 486 Commits) */}
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                      {gitStatus.pending_files && gitStatus.pending_files.length > 0 && (
+                        <div className="p-3.5 bg-black/50 rounded-lg border border-amber-800/50 space-y-2">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[10px] font-bold uppercase tracking-wider text-amber-400">
+                              Pending Remote File Changes ({gitStatus.total_pending_files || gitStatus.pending_files.length})
+                            </span>
+                            <span className="text-[10px] font-mono text-slate-400">
+                              HEAD..origin/{gitStatus.branch}
+                            </span>
+                          </div>
+                          <div className="max-h-44 overflow-y-auto space-y-1 pr-1">
+                            {gitStatus.pending_files.map((pf: any, idx: number) => (
+                              <div key={idx} className="flex items-center justify-between text-xs font-mono py-1 px-2 rounded bg-slate-900/70 border border-slate-800/80">
+                                <span className="text-slate-200 truncate">{pf.file}</span>
+                                <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold shrink-0 ml-2 ${
+                                  pf.status === 'ADDED'
+                                    ? 'bg-emerald-950 text-emerald-400 border border-emerald-800'
+                                    : pf.status === 'DELETED'
+                                    ? 'bg-rose-950 text-rose-400 border border-rose-800'
+                                    : 'bg-amber-950 text-amber-400 border border-amber-800'
+                                }`}>
+                                  {pf.status}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {gitStatus.local_changes && gitStatus.local_changes.length > 0 && (
+                        <div className="p-3.5 bg-black/50 rounded-lg border border-sky-800/50 space-y-2">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[10px] font-bold uppercase tracking-wider text-sky-400">
+                              Local Working Tree Changes ({gitStatus.local_changes.length})
+                            </span>
+                            <span className="text-[10px] font-mono text-slate-400">
+                              git status --short
+                            </span>
+                          </div>
+                          <div className="max-h-44 overflow-y-auto space-y-1 pr-1">
+                            {gitStatus.local_changes.map((line: string, idx: number) => (
+                              <div key={idx} className="text-xs font-mono py-1 px-2 rounded bg-slate-900/70 border border-slate-800/80 text-sky-200 truncate">
+                                {line}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Concise Latest Incoming Commits Summary (Capped at Top 5) */}
                     {gitStatus.incoming_commits && gitStatus.incoming_commits.length > 0 && (
                       <div className="p-3 bg-black/40 rounded-lg border border-amber-800/40 space-y-1.5">
-                        <span className="text-[10px] font-bold uppercase tracking-wider text-amber-400">
-                          Pending Remote Commits:
-                        </span>
-                        {gitStatus.incoming_commits.map((c: any, i: number) => (
+                        <div className="flex items-center justify-between">
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-amber-400">
+                            Latest Pending Commits Summary (Top {gitStatus.incoming_commits.slice(0, 5).length}):
+                          </span>
+                          {gitStatus.commits_behind > 5 && (
+                            <span className="text-[10px] font-mono text-slate-400">
+                              Showing latest 5 of {gitStatus.commits_behind} pending commits
+                            </span>
+                          )}
+                        </div>
+                        {gitStatus.incoming_commits.slice(0, 5).map((c: any, i: number) => (
                           <div key={i} className="flex items-center justify-between text-xs font-mono">
                             <div className="flex items-center gap-2 text-slate-200 truncate">
                               <span className="text-amber-400 font-bold">{c.short_hash}</span>
@@ -1472,94 +1602,149 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
                   <div className="p-3.5 rounded-xl bg-emerald-950/30 border border-emerald-800/40 flex items-center justify-between text-xs text-emerald-300">
                     <div className="flex items-center gap-2">
                       <CheckCircle2 size={16} className="text-emerald-400" />
-                      <span>Working copy is fully synchronized with origin/{gitStatus.branch}. No updates pending.</span>
+                      <span>Working copy for <strong>{app.name}</strong> ({gitStatus.repo_dir}) is fully synchronized with origin/{gitStatus.branch}. No pending changes.</span>
                     </div>
                     <button
-                      onClick={() => handleExecuteGitAction('fetch')}
+                      onClick={() => handleExecuteGitAction('pull')}
                       disabled={Boolean(gitActionLoading)}
-                      className="px-2.5 py-1 bg-emerald-900/60 hover:bg-emerald-800 text-emerald-200 rounded text-[11px] font-semibold border border-emerald-700/60 transition-colors"
+                      className="px-3 py-1.5 bg-emerald-900/60 hover:bg-emerald-800 text-emerald-200 rounded text-[11px] font-semibold border border-emerald-700/60 transition-colors flex items-center gap-1.5"
                     >
-                      {gitActionLoading === 'fetch' ? 'Checking Origin...' : 'Check Origin'}
+                      <Download size={12} className={gitActionLoading === 'pull' ? 'animate-spin' : ''} />
+                      <span>{gitActionLoading === 'pull' ? 'Pulling...' : `Pull Latest Changes (${app.name})`}</span>
                     </button>
                   </div>
                 )}
 
-                {/* 1-Click Operations Toolbar */}
-                <div className="p-5 rounded-xl bg-slate-900 border border-slate-800 space-y-3.5">
-                  <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
-                    <Terminal size={14} className="text-brand-400" />
-                    <span>1-Click SSH Git Operations</span>
-                  </h4>
+                {/* Live Git Command Cards (Auto-Executed Results Displayed Directly on Cards) */}
+                <div className="p-5 rounded-xl bg-slate-900 border border-slate-800 space-y-4">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <h4 className="text-xs font-bold uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
+                      <Terminal size={14} className="text-brand-400" />
+                      <span>Live Git Command Cards & Results ({app.name})</span>
+                    </h4>
+                    <span className="text-[11px] text-slate-400 font-mono">
+                      Auto-executed in {gitStatus.repo_dir || app.root_path || `/var/www/${app.name.toLowerCase()}`}
+                    </span>
+                  </div>
 
-                  <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2">
-                    <button
-                      onClick={() => handleExecuteGitAction('pull')}
-                      disabled={Boolean(gitActionLoading) || !gitStatus.is_git_repo}
-                      className="flex flex-col items-center justify-center p-3 rounded-lg bg-slate-950 hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed border border-slate-800 hover:border-brand-500 text-slate-200 transition-all text-center gap-1"
-                    >
-                      <Download size={15} className={gitActionLoading === 'pull' ? 'animate-spin text-brand-400' : 'text-brand-400'} />
-                      <span className="text-xs font-semibold">Pull Origin</span>
-                      <span className="text-[10px] text-slate-500 font-mono">Fast-forward</span>
-                    </button>
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {[
+                      {
+                        key: 'status' as const,
+                        title: 'Git Status',
+                        subtitle: 'Working Tree & Branch State',
+                        defaultCmd: 'git status -sb',
+                        accent: 'emerald',
+                        icon: CheckCircle2,
+                      },
+                      {
+                        key: 'fetch' as const,
+                        title: 'Fetch Remote',
+                        subtitle: 'Origin Tracking & Upstream',
+                        defaultCmd: 'git fetch --all --prune && git remote -v',
+                        accent: 'indigo',
+                        icon: RefreshCw,
+                      },
+                      {
+                        key: 'diff' as const,
+                        title: 'Inspect Diff',
+                        subtitle: 'Pending Application File Changes',
+                        defaultCmd: `git diff --stat HEAD..origin/${gitStatus.branch || 'main'}`,
+                        accent: 'cyan',
+                        icon: GitPullRequest,
+                      },
+                      {
+                        key: 'log' as const,
+                        title: 'Commit Log',
+                        subtitle: 'Recent Commit Graph Trajectory',
+                        defaultCmd: 'git log --graph --oneline -n 8',
+                        accent: 'purple',
+                        icon: Clock,
+                      },
+                      {
+                        key: 'pull' as const,
+                        title: 'Pull Latest Changes',
+                        subtitle: `Sync Only ${app.name}`,
+                        defaultCmd: `git pull origin ${gitStatus.branch || 'main'}`,
+                        accent: 'brand',
+                        icon: Download,
+                      },
+                      {
+                        key: 'reset_hard' as const,
+                        title: 'Hard Reset',
+                        subtitle: 'Force Align to Origin HEAD',
+                        defaultCmd: `git reset --hard origin/${gitStatus.branch || 'main'}`,
+                        accent: 'rose',
+                        icon: RotateCcw,
+                      },
+                    ].map((card) => {
+                      const cardData = gitCardOutputs[card.key] || gitStatus.command_outputs?.[card.key];
+                      const isCardRunning = gitActionLoading === card.key || (gitAllRunning && !cardData);
+                      const IconComp = card.icon;
+                      return (
+                        <div
+                          key={card.key}
+                          className="rounded-xl bg-slate-950 border border-slate-800 hover:border-slate-700 flex flex-col justify-between overflow-hidden shadow-md transition-all"
+                        >
+                          <div className="p-3.5 border-b border-slate-800/80 flex items-center justify-between gap-2 bg-slate-900/60">
+                            <div className="flex items-center gap-2.5 min-w-0">
+                              <div className="p-2 rounded-lg bg-slate-950 border border-slate-800 text-brand-400 shrink-0">
+                                <IconComp size={15} className={isCardRunning ? 'animate-spin' : ''} />
+                              </div>
+                              <div className="min-w-0">
+                                <div className="text-xs font-bold text-white truncate">{card.title}</div>
+                                <div className="text-[10px] text-slate-400 truncate">{card.subtitle}</div>
+                              </div>
+                            </div>
+                            <button
+                              onClick={() => handleExecuteGitAction(card.key)}
+                              disabled={Boolean(gitActionLoading) || (!gitStatus.is_git_repo && card.key !== 'status')}
+                              className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold flex items-center gap-1 shrink-0 transition-colors ${
+                                card.key === 'pull'
+                                  ? 'bg-emerald-600 hover:bg-emerald-500 text-white'
+                                  : card.key === 'reset_hard'
+                                  ? 'bg-rose-950 hover:bg-rose-900 text-rose-300 border border-rose-800'
+                                  : 'bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700'
+                              } disabled:opacity-40`}
+                            >
+                              <Play size={10} />
+                              <span>{gitActionLoading === card.key ? 'Running...' : 'Run'}</span>
+                            </button>
+                          </div>
 
-                    <button
-                      onClick={() => handleExecuteGitAction('fetch')}
-                      disabled={Boolean(gitActionLoading) || !gitStatus.is_git_repo}
-                      className="flex flex-col items-center justify-center p-3 rounded-lg bg-slate-950 hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed border border-slate-800 hover:border-indigo-500 text-slate-200 transition-all text-center gap-1"
-                    >
-                      <RefreshCw size={15} className={gitActionLoading === 'fetch' ? 'animate-spin text-indigo-400' : 'text-indigo-400'} />
-                      <span className="text-xs font-semibold">Fetch Remote</span>
-                      <span className="text-[10px] text-slate-500 font-mono">Check origin</span>
-                    </button>
-
-                    <button
-                      onClick={() => handleExecuteGitAction('status')}
-                      disabled={Boolean(gitActionLoading)}
-                      className="flex flex-col items-center justify-center p-3 rounded-lg bg-slate-950 hover:bg-slate-800 border border-slate-800 hover:border-emerald-500 text-slate-200 transition-all text-center gap-1"
-                    >
-                      <CheckCircle2 size={15} className={gitActionLoading === 'status' ? 'animate-spin text-emerald-400' : 'text-emerald-400'} />
-                      <span className="text-xs font-semibold">Git Status</span>
-                      <span className="text-[10px] text-slate-500 font-mono">Tree state</span>
-                    </button>
-
-                    <button
-                      onClick={() => handleExecuteGitAction('diff')}
-                      disabled={Boolean(gitActionLoading) || !gitStatus.is_git_repo}
-                      className="flex flex-col items-center justify-center p-3 rounded-lg bg-slate-950 hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed border border-slate-800 hover:border-cyan-500 text-slate-200 transition-all text-center gap-1"
-                    >
-                      <GitPullRequest size={15} className={gitActionLoading === 'diff' ? 'animate-spin text-cyan-400' : 'text-cyan-400'} />
-                      <span className="text-xs font-semibold">Inspect Diff</span>
-                      <span className="text-[10px] text-slate-500 font-mono">Diff origin</span>
-                    </button>
-
-                    <button
-                      onClick={() => handleExecuteGitAction('log')}
-                      disabled={Boolean(gitActionLoading) || !gitStatus.is_git_repo}
-                      className="flex flex-col items-center justify-center p-3 rounded-lg bg-slate-950 hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed border border-slate-800 hover:border-purple-500 text-slate-200 transition-all text-center gap-1"
-                    >
-                      <Clock size={15} className={gitActionLoading === 'log' ? 'animate-spin text-purple-400' : 'text-purple-400'} />
-                      <span className="text-xs font-semibold">Commit Log</span>
-                      <span className="text-[10px] text-slate-500 font-mono">Graph view</span>
-                    </button>
-
-                    <button
-                      onClick={() => handleExecuteGitAction('reset_hard')}
-                      disabled={Boolean(gitActionLoading) || !gitStatus.is_git_repo}
-                      className="flex flex-col items-center justify-center p-3 rounded-lg bg-slate-950 hover:bg-rose-950/40 disabled:opacity-50 disabled:cursor-not-allowed border border-slate-800 hover:border-rose-600 text-slate-200 transition-all text-center gap-1"
-                    >
-                      <RotateCcw size={15} className={gitActionLoading === 'reset_hard' ? 'animate-spin text-rose-400' : 'text-rose-400'} />
-                      <span className="text-xs font-semibold text-rose-300">Hard Reset</span>
-                      <span className="text-[10px] text-rose-500 font-mono">Clean origin</span>
-                    </button>
+                          <div className="p-3 font-mono text-[11px] space-y-2 flex-1 bg-[#080c14]">
+                            <div className="flex items-center justify-between text-[10px] text-slate-400 border-b border-slate-800/80 pb-1.5">
+                              <span className="text-brand-400 truncate">$ {cardData?.command || card.defaultCmd}</span>
+                              {cardData?.status && (
+                                <span className={`px-1.5 py-0.2 rounded text-[9px] font-bold uppercase shrink-0 ml-1 ${
+                                  cardData.status === 'ERROR'
+                                    ? 'bg-rose-950 text-rose-400 border border-rose-800'
+                                    : cardData.status === 'PENDING' || cardData.status === 'CHANGES' || cardData.status === 'DIRTY'
+                                    ? 'bg-amber-950 text-amber-400 border border-amber-800'
+                                    : 'bg-emerald-950 text-emerald-400 border border-emerald-800'
+                                }`}>
+                                  {cardData.status}
+                                </span>
+                              )}
+                            </div>
+                            <pre className="text-[11px] text-slate-300 whitespace-pre-wrap break-words max-h-40 overflow-y-auto leading-relaxed font-mono">
+                              {isCardRunning
+                                ? 'Executing command via SSH on VPS...'
+                                : cardData?.output || (gitStatus.is_git_repo ? 'Ready. Click Run to execute command.' : 'Untracked directory (No .git repo).')}
+                            </pre>
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
 
                 {/* Server vs Remote Commit Comparison */}
-                {gitStatus.is_git_repo ? (
+                {gitStatus.is_git_repo && (
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div className="p-4 bg-slate-950 rounded-xl border border-slate-800 space-y-2">
                       <div className="flex items-center justify-between">
-                        <span className="text-slate-400 font-semibold uppercase text-[10px]">Current Server Commit</span>
+                        <span className="text-slate-400 font-semibold uppercase text-[10px]">Current Server Commit ({app.name})</span>
                         <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-brand-950 text-brand-400 border border-brand-800/80">
                           LOCAL
                         </span>
@@ -1574,7 +1759,7 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
 
                     <div className="p-4 bg-slate-950 rounded-xl border border-slate-800 space-y-2">
                       <div className="flex items-center justify-between">
-                        <span className="text-slate-400 font-semibold uppercase text-[10px]">Latest Remote Head</span>
+                        <span className="text-slate-400 font-semibold uppercase text-[10px]">Latest Remote Head (origin/{gitStatus.branch})</span>
                         <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold uppercase ${
                           gitStatus.update_available
                             ? 'bg-amber-950 text-amber-400 border border-amber-800'
@@ -1589,38 +1774,6 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
                         <span>{gitStatus.latest_remote_commit.author}</span>
                         <span>{gitStatus.latest_remote_commit.date}</span>
                       </div>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div className="p-4 bg-slate-950 rounded-xl border border-slate-800 space-y-2">
-                      <div className="flex items-center justify-between">
-                        <span className="text-slate-400 font-semibold uppercase text-[10px]">Document Root Vitals</span>
-                        <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-amber-950 text-amber-400 border border-amber-800/80">
-                          FILESYSTEM
-                        </span>
-                      </div>
-                      <div className="text-xs font-bold text-amber-300 font-mono truncate">
-                        {gitStatus.doc_root || app.root_path || gitStatus.repo_dir}
-                      </div>
-                      <p className="text-xs text-slate-300">
-                        Active web directory inspected on VPS. No Git metadata present in folder hierarchy.
-                      </p>
-                    </div>
-
-                    <div className="p-4 bg-slate-950 rounded-xl border border-slate-800 space-y-2">
-                      <div className="flex items-center justify-between">
-                        <span className="text-slate-400 font-semibold uppercase text-[10px]">Source Control Status</span>
-                        <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-slate-900 text-slate-400 border border-slate-800">
-                          UNTRACKED
-                        </span>
-                      </div>
-                      <div className="text-xs font-bold text-slate-400 font-mono">
-                        Static / Direct Deployment
-                      </div>
-                      <p className="text-xs text-slate-400">
-                        Changes cannot be auto-pulled until a remote Git repository is configured.
-                      </p>
                     </div>
                   </div>
                 )}
@@ -1664,11 +1817,11 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
                   </div>
                 )}
 
-                {/* Recent Commit History Log */}
+                {/* Recent Commit History Log (Capped at 8) */}
                 {gitStatus.is_git_repo && gitStatus.recent_commits && gitStatus.recent_commits.length > 0 && (
                   <div className="p-5 rounded-xl bg-slate-900 border border-slate-800 space-y-3">
                     <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400">
-                      Recent Commits ({gitStatus.recent_commits.length})
+                      Recent Local Commits ({gitStatus.recent_commits.length})
                     </h4>
                     <div className="space-y-2">
                       {gitStatus.recent_commits.map((c: any) => (
@@ -1692,7 +1845,10 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
                 )}
               </>
             ) : (
-              <p className="text-xs text-slate-500">Git repository information unavailable.</p>
+              <div className="p-8 rounded-xl bg-slate-900 border border-slate-800 text-center space-y-2">
+                <RefreshCw size={22} className="mx-auto text-brand-400 animate-spin" />
+                <p className="text-xs text-slate-400">Running Git commands on remote VPS for {app.name}...</p>
+              </div>
             )}
           </div>
         )}

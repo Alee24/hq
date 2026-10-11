@@ -372,6 +372,10 @@ class GitRepoStatusResponse(BaseModel):
     commits_behind: int = 0
     recent_commits: List[GitCommitInfo] = []
     incoming_commits: List[GitCommitInfo] = []
+    pending_files: List[Dict[str, str]] = []
+    local_changes: List[str] = []
+    total_pending_files: int = 0
+    command_outputs: Dict[str, Any] = {}
     status_summary: Optional[str] = None
     server_name: Optional[str] = None
     server_ip: Optional[str] = None
