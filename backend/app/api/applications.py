@@ -36,9 +36,9 @@ def classify_component_role(name: str) -> tuple[str, str, int]:
         return 'agent', 'Monitoring Agent', 6
     if any(k in n for k in ['worker', 'celery', 'cron', 'queue-worker']):
         return 'worker', 'Background Worker', 7
-    if any(k in n for k in ['frontend', 'front-end', 'ui', 'web', 'client', 'fe']):
+    if re.search(r'(^|[-_])(frontend|front-end|ui|web|client|fe)([-_0-9]|$)', n) or ('frontend' in n or 'front-end' in n or 'client' in n):
         return 'frontend', 'Frontend Web', 1
-    if any(k in n for k in ['backend', 'back-end', 'api', 'server', 'engine', 'be']):
+    if re.search(r'(^|[-_])(backend|back-end|api|server|engine|be)([-_0-9]|$)', n) or ('backend' in n or 'back-end' in n or 'api' in n):
         return 'backend', 'Backend API', 2
     return 'standalone', 'Application Service', 8
 
