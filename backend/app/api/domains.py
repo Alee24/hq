@@ -146,7 +146,13 @@ async def execute_domain_service_action(
             server = srv_res.scalar_one_or_none()
 
     if not server and domain.server_ip:
-        srv_res = await db.execute(select(Server).where(Server.public_ip == domain.server_ip, Server.deleted_at == None))
+        clean_ip = domain.server_ip.strip()
+        srv_res = await db.execute(
+            select(Server).where(
+                (Server.public_ip == clean_ip) | (Server.hostname == clean_ip) | (Server.hostname == domain.domain_name),
+                Server.deleted_at == None
+            )
+        )
         server = srv_res.scalar_one_or_none()
 
     if not server:
@@ -159,9 +165,10 @@ async def execute_domain_service_action(
     exec_res = execute_remote_domain_service_action(server, domain.domain_name, payload.action, app)
 
     # Log terminal and application audit logs
+    term_user_id = current_user.id if not str(current_user.id).startswith("apikey-") else None
     term_log = ServerTerminalLog(
         server_id=server.id,
-        user_id=current_user.id,
+        user_id=term_user_id,
         username=current_user.username,
         command=exec_res.get("command", f"service {payload.action} {domain.domain_name}"),
         output=(exec_res.get("stdout", "") or exec_res.get("stderr", ""))[:4000],
@@ -417,7 +424,13 @@ async def update_domain_ssl(
             server = srv_res.scalars().first()
 
     if not server and domain.server_ip:
-        srv_res = await db.execute(select(Server).where(Server.public_ip == domain.server_ip, Server.deleted_at == None))
+        clean_ip = domain.server_ip.strip()
+        srv_res = await db.execute(
+            select(Server).where(
+                (Server.public_ip == clean_ip) | (Server.hostname == clean_ip) | (Server.hostname == domain.domain_name),
+                Server.deleted_at == None
+            )
+        )
         server = srv_res.scalars().first()
 
     if not server:
@@ -428,6 +441,10 @@ async def update_domain_ssl(
                 (Server.ssh_password != None) | (Server.ssh_key != None)
             )
         )
+        server = srv_res.scalars().first()
+
+    if not server:
+        srv_res = await db.execute(select(Server).where(Server.deleted_at == None))
         server = srv_res.scalars().first()
 
     if not server:

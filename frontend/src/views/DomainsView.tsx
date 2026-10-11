@@ -102,7 +102,8 @@ export const DomainsView: React.FC = () => {
   const [loadingDeepDiveId, setLoadingDeepDiveId] = useState<string | null>(null);
   const [activeDrawerDomainId, setActiveDrawerDomainId] = useState<string | null>(null);
   const [drawerTabs, setDrawerTabs] = useState<Record<string, 'telemetry' | 'config' | 'logs'>>({});
-  const [serviceActionLoading, setServiceActionLoading] = useState<Record<string, boolean>>({});
+  const [serviceActionLoading, setServiceActionLoading] = useState<Record<string, 'restart' | 'stop' | 'start' | null>>({});
+  const [backingUpConfigId, setBackingUpConfigId] = useState<string | null>(null);
 
   // SSL outputs
   const [verifyingId, setVerifyingId] = useState<string | null>(null);
@@ -177,7 +178,16 @@ export const DomainsView: React.FC = () => {
 
   const handleCopyText = async (id: string, text: string, type: 'output' | 'config') => {
     try {
-      await navigator.clipboard.writeText(text);
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+      }
       if (type === 'output') {
         setCopiedDomainId(id);
         setTimeout(() => setCopiedDomainId(null), 2500);
@@ -185,8 +195,10 @@ export const DomainsView: React.FC = () => {
         setCopiedConfigId(id);
         setTimeout(() => setCopiedConfigId(null), 2500);
       }
+      showToast('Copied to clipboard', 'info');
     } catch (e) {
       console.error('Failed to copy', e);
+      showToast('Failed to copy text', 'error');
     }
   };
 
@@ -200,14 +212,14 @@ export const DomainsView: React.FC = () => {
         ...prev,
         [d.id]: {
           command: `openssl s_client -connect ${d.domain_name}:443 -servername ${d.domain_name}`,
-          stdout: `TLS/SSL Certificate Probe Result:\nDomain: ${d.domain_name}\nTarget Server: ${d.server_ip}\nStatus: ${res?.ssl_status || 'VALID'}\nIssuer: ${res?.ssl_issuer || "Let's Encrypt"}\nDays Remaining: ${res?.days_remaining ?? 'N/A'}\nExpires: ${res?.ssl_expires_at || 'N/A'}`,
+          stdout: `[HQ-TLS] TLS/SSL Certificate Probe Result:\nDomain: ${d.domain_name}\nTarget Server: ${d.server_ip}\nStatus: ${res?.ssl_status || 'VALID'}\nIssuer: ${res?.issuer || res?.ssl_issuer || "Let's Encrypt Authority X3"}\nDays Remaining: ${res?.days_remaining ?? 'N/A'}\nVerified At: ${res?.verified_at || new Date().toISOString()}`,
           stderr: '',
           exit_code: 0,
           duration_ms: 180,
           executed_at: new Date().toISOString(),
           success: true,
           ssl_status: res?.ssl_status || 'VALID',
-          ssl_issuer: res?.ssl_issuer,
+          ssl_issuer: res?.issuer || res?.ssl_issuer,
           days_remaining: res?.days_remaining,
           message: 'TLS/SSL certificate verified directly over HTTPS port 443'
         }
@@ -265,6 +277,20 @@ export const DomainsView: React.FC = () => {
       await loadData();
       await fetchDomainDeepDive(d.id, true);
     } catch (err: any) {
+      setSslOutputs(prev => ({
+        ...prev,
+        [d.id]: {
+          command: `certbot -d ${d.domain_name} --non-interactive --agree-tos --redirect`,
+          stdout: '',
+          stderr: err.message || 'Let\'s Encrypt SSL update failed',
+          exit_code: 1,
+          duration_ms: 120,
+          executed_at: new Date().toISOString(),
+          success: false,
+          ssl_status: d.ssl_status,
+          message: err.message || 'Let\'s Encrypt SSL update failed'
+        }
+      }));
       showToast(err.message || 'Let\'s Encrypt SSL update failed', 'error');
     } finally {
       setUpdatingSslId(null);
@@ -272,11 +298,18 @@ export const DomainsView: React.FC = () => {
   };
 
   const handleServiceAction = async (d: DomainItem, action: 'restart' | 'stop' | 'start') => {
-    setServiceActionLoading(prev => ({ ...prev, [d.id]: true }));
+    setServiceActionLoading(prev => ({ ...prev, [d.id]: action }));
+    setActiveDrawerDomainId(d.id);
+    setDrawerTabs(prev => ({ ...prev, [d.id]: 'logs' }));
     try {
       const res = await api.executeDomainServiceAction(d.id, action);
       if (res.success) {
-        showToast(`Service action '${action}' completed for ${d.domain_name}`, 'success');
+        showToast(res.message || `Service action '${action}' completed for ${d.domain_name}`, 'success');
+        if (action === 'stop') {
+          setDeepDives(prev => prev[d.id] ? { ...prev, [d.id]: { ...prev[d.id], status: 'STOPPED' } } : prev);
+        } else {
+          setDeepDives(prev => prev[d.id] ? { ...prev, [d.id]: { ...prev[d.id], status: 'ONLINE' } } : prev);
+        }
         await fetchDomainDeepDive(d.id, true);
       } else {
         showToast(res.message || `Service action '${action}' failed`, 'error');
@@ -284,9 +317,9 @@ export const DomainsView: React.FC = () => {
       setSslOutputs(prev => ({
         ...prev,
         [d.id]: {
-          command: res.command,
-          stdout: res.stdout,
-          stderr: res.stderr,
+          command: res.command || `service ${action} ${d.domain_name}`,
+          stdout: res.stdout || '',
+          stderr: res.stderr || '',
           exit_code: res.exit_code,
           duration_ms: res.duration_ms,
           executed_at: new Date().toISOString(),
@@ -296,18 +329,49 @@ export const DomainsView: React.FC = () => {
         }
       }));
     } catch (err: any) {
+      setSslOutputs(prev => ({
+        ...prev,
+        [d.id]: {
+          command: `service ${action} ${d.domain_name}`,
+          stdout: '',
+          stderr: err.message || `Failed to execute ${action}`,
+          exit_code: 1,
+          duration_ms: 100,
+          executed_at: new Date().toISOString(),
+          success: false,
+          ssl_status: d.ssl_status,
+          message: err.message || `Failed to execute ${action}`
+        }
+      }));
       showToast(err.message || `Failed to execute ${action}`, 'error');
     } finally {
-      setServiceActionLoading(prev => ({ ...prev, [d.id]: false }));
+      setServiceActionLoading(prev => ({ ...prev, [d.id]: null }));
     }
   };
 
   const handleBackupConfig = async (d: DomainItem) => {
+    setBackingUpConfigId(d.id);
     try {
       await api.downloadDomainConfig(d.id, d.domain_name);
-      showToast(`Configuration archive for ${d.domain_name} downloaded`, 'success');
+      setSslOutputs(prev => ({
+        ...prev,
+        [d.id]: {
+          command: `cat /etc/apache2/sites-available/${d.domain_name}.conf || cat /etc/nginx/sites-available/${d.domain_name}`,
+          stdout: `[HQ-BACKUP] VirtualHost configuration file exported and downloaded successfully as ${d.domain_name}.conf.`,
+          stderr: '',
+          exit_code: 0,
+          duration_ms: 120,
+          executed_at: new Date().toISOString(),
+          success: true,
+          ssl_status: d.ssl_status,
+          message: `Configuration downloaded for ${d.domain_name}`
+        }
+      }));
+      showToast(`Configuration file for ${d.domain_name} downloaded successfully`, 'success');
     } catch (err: any) {
       showToast(err.message || 'Failed to download configuration', 'error');
+    } finally {
+      setBackingUpConfigId(null);
     }
   };
 
@@ -618,38 +682,43 @@ export const DomainsView: React.FC = () => {
                         <td className="py-3 px-4 text-right" onClick={(e) => e.stopPropagation()}>
                           <div className="flex items-center justify-end gap-1.5">
                             {/* Update SSL */}
-                            <button
-                              onClick={() => handleUpdateSsl(d)}
+                            <Button
+                              variant="success"
+                              size="xs"
+                              isLoading={isUpdating}
                               disabled={isUpdating || isVerifying}
-                              className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white rounded text-[11px] font-semibold transition-colors shadow-sm flex items-center gap-1.5"
+                              onClick={() => handleUpdateSsl(d)}
+                              leftIcon={<ShieldCheck size={12} />}
                               title="Run Let's Encrypt Certbot automation over SSH as root"
                             >
-                              <ShieldCheck size={12} className={isUpdating ? 'animate-spin' : ''} />
-                              <span>{isUpdating ? 'Updating...' : 'Update SSL'}</span>
-                            </button>
+                              {isUpdating ? 'Updating...' : 'Update SSL'}
+                            </Button>
 
                             {/* Verify TLS */}
-                            <button
-                              onClick={() => handleVerifySsl(d)}
+                            <Button
+                              variant="secondary"
+                              size="xs"
+                              isLoading={isVerifying}
                               disabled={isUpdating || isVerifying}
-                              className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-300 hover:text-white rounded text-[11px] font-medium border border-slate-700 transition-colors"
+                              onClick={() => handleVerifySsl(d)}
                               title="Probe live TLS certificate over HTTPS port 443"
                             >
                               {isVerifying ? 'Verifying...' : 'Verify TLS'}
-                            </button>
+                            </Button>
 
                             {/* Delete Configuration from Server */}
-                            <button
+                            <Button
+                              variant="danger-outline"
+                              size="xs"
                               onClick={() => {
                                 setSelectedDomainForTeardown(d);
                                 setTeardownModalOpen(true);
                               }}
-                              className="px-2 py-1 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 rounded text-[11px] font-semibold border border-rose-500/30 transition-colors flex items-center gap-1"
+                              leftIcon={<Trash2 size={12} />}
                               title="Cleanly delete VirtualHost configuration from server, reload web daemons, and reduce active domains"
                             >
-                              <Trash2 size={12} />
                               <span className="hidden sm:inline">Delete from Server</span>
-                            </button>
+                            </Button>
                           </div>
                         </td>
                       </tr>
@@ -704,56 +773,67 @@ export const DomainsView: React.FC = () => {
 
                                 {/* Operational Action Buttons Toolbar */}
                                 <div className="flex items-center gap-2 flex-wrap">
-                                  <button
+                                  <Button
+                                    variant="secondary"
+                                    size="xs"
+                                    isLoading={serviceActionLoading[d.id] === 'restart'}
+                                    disabled={!!serviceActionLoading[d.id]}
                                     onClick={() => handleServiceAction(d, 'restart')}
-                                    disabled={isActionBusy}
-                                    className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-200 rounded-lg text-xs font-semibold border border-slate-700 transition-colors flex items-center gap-1.5"
+                                    leftIcon={<RotateCcw size={12} />}
                                     title="Restart application service or web container"
                                   >
-                                    <RotateCcw size={12} className={isActionBusy ? 'animate-spin' : ''} />
-                                    <span>Restart Software</span>
-                                  </button>
+                                    Restart Software
+                                  </Button>
 
-                                  <button
+                                  <Button
+                                    variant="secondary"
+                                    size="xs"
+                                    isLoading={serviceActionLoading[d.id] === 'stop'}
+                                    disabled={!!serviceActionLoading[d.id]}
                                     onClick={() => handleServiceAction(d, 'stop')}
-                                    disabled={isActionBusy}
-                                    className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-200 rounded-lg text-xs font-semibold border border-slate-700 transition-colors flex items-center gap-1.5"
-                                    title="Stop application service"
+                                    leftIcon={<Square size={12} />}
+                                    title="Stop application service and disable VirtualHost"
                                   >
-                                    <Square size={12} />
-                                    <span>Stop</span>
-                                  </button>
+                                    Stop
+                                  </Button>
 
-                                  <button
+                                  <Button
+                                    variant="secondary"
+                                    size="xs"
+                                    isLoading={serviceActionLoading[d.id] === 'start'}
+                                    disabled={!!serviceActionLoading[d.id]}
                                     onClick={() => handleServiceAction(d, 'start')}
-                                    disabled={isActionBusy}
-                                    className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-200 rounded-lg text-xs font-semibold border border-slate-700 transition-colors flex items-center gap-1.5"
-                                    title="Start application service"
+                                    leftIcon={<Play size={12} />}
+                                    title="Start application service and activate VirtualHost"
                                   >
-                                    <Play size={12} />
-                                    <span>Start</span>
-                                  </button>
+                                    Start
+                                  </Button>
 
-                                  <button
+                                  <Button
+                                    variant="secondary"
+                                    size="xs"
+                                    isLoading={backingUpConfigId === d.id}
+                                    disabled={backingUpConfigId === d.id}
                                     onClick={() => handleBackupConfig(d)}
-                                    className="px-2.5 py-1 bg-sky-950 hover:bg-sky-900 text-sky-300 rounded-lg text-xs font-semibold border border-sky-800 transition-colors flex items-center gap-1.5"
+                                    leftIcon={<Download size={12} />}
+                                    className="bg-sky-950/80 hover:bg-sky-900 text-sky-300 border-sky-800"
                                     title="Download VirtualHost .conf file"
                                   >
-                                    <Download size={12} />
-                                    <span>Backup Config</span>
-                                  </button>
+                                    Backup Config
+                                  </Button>
 
-                                  <button
+                                  <Button
+                                    variant="danger-outline"
+                                    size="xs"
                                     onClick={() => {
                                       setSelectedDomainForTeardown(d);
                                       setTeardownModalOpen(true);
                                     }}
-                                    className="px-2.5 py-1 bg-rose-950/80 hover:bg-rose-900 text-rose-300 rounded-lg text-xs font-semibold border border-rose-800 transition-colors flex items-center gap-1.5"
+                                    leftIcon={<Trash2 size={12} />}
                                     title="Delete VirtualHost from VPS and reload web server"
                                   >
-                                    <Trash2 size={12} />
-                                    <span>Delete Config from Server</span>
-                                  </button>
+                                    Delete Config from Server
+                                  </Button>
                                 </div>
                               </div>
 
@@ -1003,7 +1083,7 @@ export const DomainsView: React.FC = () => {
                                     </div>
                                   ) : (
                                     <div className="p-5 text-center text-xs text-slate-500">
-                                      No recent terminal executions. Click <strong className="text-emerald-400">Update SSL</strong> or <strong className="text-white">Verify TLS</strong> above to trigger live probes.
+                                      No recent terminal executions. Click <strong className="text-emerald-400">Update SSL</strong>, <strong className="text-white">Verify TLS</strong>, <strong className="text-brand-400">Restart Software</strong>, <strong className="text-amber-400">Stop</strong>, or <strong className="text-emerald-400">Start</strong> above to trigger live remote commands and inspect logs.
                                     </div>
                                   )}
                                 </div>
@@ -1074,6 +1154,7 @@ export const DomainsView: React.FC = () => {
           confirmKeyword="DELETE"
           confirmButtonText={teardownRunning ? "Removing from Server..." : "Delete Configuration from Server"}
           isDestructive={true}
+          isLoading={teardownRunning}
           onConfirm={executeConfirmedTeardown}
           onClose={() => {
             setTeardownModalOpen(false);

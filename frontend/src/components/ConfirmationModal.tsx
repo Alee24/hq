@@ -11,6 +11,7 @@ interface ConfirmationModalProps {
   confirmKeyword?: string; // e.g. "RESTART", "ROLLBACK", "REVOKE"
   confirmButtonText?: string;
   isDestructive?: boolean;
+  isLoading?: boolean;
   onConfirm: () => void;
   onClose: () => void;
 }
@@ -22,6 +23,7 @@ export const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
   confirmKeyword,
   confirmButtonText = 'Confirm Action',
   isDestructive = true,
+  isLoading = false,
   onConfirm,
   onClose,
 }) => {
@@ -60,13 +62,14 @@ export const ConfirmationModal: React.FC<ConfirmationModalProps> = ({
       size="sm"
       footer={
         <>
-          <Button variant="secondary" onClick={handleClose}>
+          <Button variant="secondary" onClick={handleClose} disabled={isLoading}>
             Cancel
           </Button>
           <Button
             variant={isDestructive ? 'danger' : 'primary'}
             onClick={handleConfirm}
             disabled={isConfirmDisabled}
+            isLoading={isLoading}
           >
             {confirmButtonText}
           </Button>
