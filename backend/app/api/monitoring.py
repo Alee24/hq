@@ -9,10 +9,12 @@ from backend.app.models.entities import (
     User, MonitoringCheck, MonitoringResult, Incident, Application, Server
 )
 from backend.app.schemas.api_schemas import (
-    MonitoringCheckCreate, MonitoringResultResponse, IncidentResponse
+    MonitoringCheckCreate, MonitoringResultResponse, IncidentResponse,
+    AiDiagnosticResponse
 )
 from backend.app.services.monitoring_engine import execute_monitoring_cycle
 from backend.app.services.remote_executor import execute_remote_command
+from backend.app.services.ai_diagnostics import run_ai_health_diagnostics
 import json
 import base64
 import re
@@ -110,12 +112,30 @@ async def get_monitoring_summary(
 
 @router.post("/trigger-now")
 async def trigger_monitoring_now(
+    provider: Optional[str] = Query(None, description="Optional AI provider override (gemini, openai, deepseek, anthropic)"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_roles(["SUPER_ADMIN", "MONITORING_ADMIN"]))
 ):
-    """Triggers an immediate on-demand monitoring cycle."""
-    await execute_monitoring_cycle()
-    return {"success": True, "message": "On-demand monitoring cycle executed successfully across all nodes."}
+    """Triggers an immediate on-demand monitoring cycle across all nodes and compiles AI diagnostics."""
+    diag = await run_ai_health_diagnostics(db=db, current_user=current_user, provider_override=provider)
+    return {
+        "success": True,
+        "message": "On-demand health probes executed successfully across all nodes.",
+        "diagnostics": diag
+    }
+
+@router.post("/ai-diagnose", response_model=AiDiagnosticResponse)
+async def ai_diagnose_health(
+    provider: Optional[str] = Query(None, description="Optional AI provider override (gemini, openai, deepseek, anthropic)"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Runs all health checks, analyzes all detected errors using configured generative AI
+    (Gemini, OpenAI, DeepSeek, or Claude), and returns structured explanations and fixes.
+    """
+    return await run_ai_health_diagnostics(db=db, current_user=current_user, provider_override=provider)
+
 
 @router.get("/incidents", response_model=List[IncidentResponse])
 async def list_incidents(

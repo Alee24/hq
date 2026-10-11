@@ -1,5 +1,62 @@
 const API_BASE = '/api';
 
+export interface AiProviderInfo {
+  configured: boolean;
+  masked_key?: string | null;
+  model: string;
+  display_name: string;
+  description: string;
+}
+
+export interface AiKeysConfigResponse {
+  gemini: AiProviderInfo;
+  openai: AiProviderInfo;
+  deepseek: AiProviderInfo;
+  anthropic: AiProviderInfo;
+  active_provider: string;
+  has_any_key: boolean;
+}
+
+export interface AiKeysConfigUpdate {
+  gemini_api_key?: string;
+  openai_api_key?: string;
+  deepseek_api_key?: string;
+  anthropic_api_key?: string;
+  active_provider?: string;
+}
+
+export interface AiKeysTestResponse {
+  success: boolean;
+  provider: string;
+  message: string;
+  response_sample?: string;
+  latency_ms: number;
+}
+
+export interface AiDiagnosticItem {
+  id: string;
+  severity: 'CRITICAL' | 'HIGH' | 'WARNING' | 'INFO';
+  title: string;
+  target: string;
+  target_type: string;
+  error_details: string;
+  explanation: string;
+  possible_fixes: string[];
+  fix_commands?: string | null;
+}
+
+export interface AiDiagnosticResponse {
+  success: boolean;
+  status: 'ISSUES_DETECTED' | 'ALL_HEALTHY';
+  provider_used: string;
+  model_name: string;
+  execution_time_ms: number;
+  total_checks: number;
+  total_errors: number;
+  items: AiDiagnosticItem[];
+  overall_health_assessment: string;
+}
+
 class ApiClient {
   private getToken(): string | null {
     return localStorage.getItem('cc_auth_token');
@@ -567,8 +624,20 @@ class ApiClient {
     return this.request<any>(`/monitoring/summary?range_period=${period}`);
   }
 
-  async triggerMonitoringNow() {
-    return this.request<any>('/monitoring/trigger-now', { method: 'POST' });
+  async triggerMonitoringNow(provider?: string) {
+    const q = provider ? `?provider=${encodeURIComponent(provider)}` : '';
+    return this.request<{
+      success: boolean;
+      message: string;
+      diagnostics?: AiDiagnosticResponse;
+    }>(`/monitoring/trigger-now${q}`, { method: 'POST' });
+  }
+
+  async runAiHealthDiagnostics(provider?: string) {
+    const q = provider ? `?provider=${encodeURIComponent(provider)}` : '';
+    return this.request<AiDiagnosticResponse>(`/monitoring/ai-diagnose${q}`, {
+      method: 'POST',
+    });
   }
 
   async listIncidents(status?: string) {
@@ -1192,6 +1261,27 @@ class ApiClient {
 
   async revokeApiKey(id: string) {
     return this.request<any>(`/admin/api-keys/${id}`, { method: 'DELETE' });
+  }
+
+  // ==========================================
+  // AI Keys & Multi-Model Diagnostics
+  // ==========================================
+  async getAiKeysConfig() {
+    return this.request<AiKeysConfigResponse>('/admin/ai-keys');
+  }
+
+  async updateAiKeysConfig(data: AiKeysConfigUpdate) {
+    return this.request<AiKeysConfigResponse>('/admin/ai-keys', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async testAiKey(provider: string, apiKey?: string) {
+    return this.request<AiKeysTestResponse>('/admin/ai-keys/test', {
+      method: 'POST',
+      body: JSON.stringify({ provider, api_key: apiKey }),
+    });
   }
 
   async listAuditLogs(action?: string, username?: string, entityType?: string) {

@@ -866,6 +866,68 @@ async def test_domain_deep_dive_live_monitoring_and_portable_restore():
         list_doms = await ac.get("/api/domains", headers=headers)
         assert not any(d["id"] == dom_id for d in list_doms.json())
 
+@pytest.mark.asyncio
+async def test_ai_keys_and_health_diagnostics_engine():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        token = await get_admin_token(ac)
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # 1. Test GET /api/admin/ai-keys
+        get_res = await ac.get("/api/admin/ai-keys", headers=headers)
+        assert get_res.status_code == 200
+        data = get_res.json()
+        assert "gemini" in data
+        assert "openai" in data
+        assert "deepseek" in data
+        assert "anthropic" in data
+        assert "active_provider" in data
+
+        # 2. Test POST /api/admin/ai-keys (saving test keys)
+        update_res = await ac.post("/api/admin/ai-keys", json={
+            "gemini_api_key": "AIzaSyTestGeminiKey123456789",
+            "openai_api_key": "sk-proj-testOpenAiKey123456789",
+            "deepseek_api_key": "sk-testDeepSeekKey123456789",
+            "anthropic_api_key": "sk-ant-testClaudeKey123456789",
+            "active_provider": "gemini"
+        }, headers=headers)
+        assert update_res.status_code == 200
+        up_data = update_res.json()
+        assert up_data["gemini"]["configured"] is True
+        assert up_data["gemini"]["masked_key"] is not None
+        assert up_data["active_provider"] == "gemini"
+        assert up_data["has_any_key"] is True
+
+        # 3. Test POST /api/admin/ai-keys/test (test invalid or dummy key handled gracefully)
+        test_call = await ac.post("/api/admin/ai-keys/test", json={
+            "provider": "gemini"
+        }, headers=headers)
+        assert test_call.status_code == 200
+        t_data = test_call.json()
+        assert t_data["provider"] == "gemini"
+        assert "success" in t_data
+        assert "message" in t_data
+
+        # 4. Test POST /api/monitoring/ai-diagnose
+        diag_res = await ac.post("/api/monitoring/ai-diagnose", headers=headers)
+        assert diag_res.status_code == 200
+        diag_data = diag_res.json()
+        assert "status" in diag_data
+        assert "provider_used" in diag_data
+        assert "model_name" in diag_data
+        assert "execution_time_ms" in diag_data
+        assert "total_checks" in diag_data
+        assert "items" in diag_data
+        assert "overall_health_assessment" in diag_data
+
+        # 5. Test POST /api/monitoring/trigger-now with diagnostics
+        trig_res = await ac.post("/api/monitoring/trigger-now", headers=headers)
+        assert trig_res.status_code == 200
+        trig_data = trig_res.json()
+        assert trig_data["success"] is True
+        assert "diagnostics" in trig_data
+        assert "total_checks" in trig_data["diagnostics"]
+
+
 
 
 

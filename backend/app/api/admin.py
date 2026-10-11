@@ -14,9 +14,13 @@ from backend.app.core.security import hash_password
 from backend.app.models.entities import User, ApiKey, AuditLog, SystemSetting
 from backend.app.schemas.api_schemas import (
     UserResponse, UserRegister, ApiKeyCreate, ApiKeyResponse, AuditLogResponse,
-    SystemSettingsResponse, SystemSettingsUpdate
+    SystemSettingsResponse, SystemSettingsUpdate,
+    AiKeysConfigResponse, AiKeysConfigUpdate, AiKeysTestRequest, AiKeysTestResponse
 )
 from backend.app.services.audit import log_audit_event
+from backend.app.services.ai_diagnostics import (
+    get_ai_keys_config, save_ai_keys_config, test_ai_key_connectivity
+)
 
 router = APIRouter(prefix="/admin", tags=["Administration"])
 
@@ -308,4 +312,35 @@ async def update_system_settings(
 
     # Re-fetch updated settings
     return await get_system_settings(db=db, current_user=current_user)
+
+# ==========================================
+# AI Model Provider API Keys Management
+# ==========================================
+
+@router.get("/ai-keys", response_model=AiKeysConfigResponse)
+async def get_ai_keys(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Returns configured AI providers with masked keys for Gemini, OpenAI, DeepSeek, and Claude."""
+    return await get_ai_keys_config(db=db)
+
+@router.post("/ai-keys", response_model=AiKeysConfigResponse)
+async def update_ai_keys(
+    payload: AiKeysConfigUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_roles(["SUPER_ADMIN"]))
+):
+    """Saves API keys for Gemini, OpenAI, DeepSeek, and Claude, and sets active default provider."""
+    return await save_ai_keys_config(db=db, payload=payload, current_user=current_user)
+
+@router.post("/ai-keys/test", response_model=AiKeysTestResponse)
+async def test_ai_key(
+    payload: AiKeysTestRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_roles(["SUPER_ADMIN"]))
+):
+    """Executes a live test call against the selected AI provider to verify key validity and latency."""
+    return await test_ai_key_connectivity(provider=payload.provider, api_key=payload.api_key, db=db)
+
 

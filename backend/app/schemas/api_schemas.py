@@ -804,3 +804,63 @@ class SystemSettingsUpdate(BaseModel):
     license_signing_enforced: Optional[bool] = True
     whitelist_agent_execution: Optional[bool] = True
 
+# ==========================================
+# AI Model Configuration & Diagnostics Schemas
+# ==========================================
+
+class AiProviderInfo(BaseModel):
+    configured: bool
+    masked_key: Optional[str] = None
+    model: str
+    display_name: str
+    description: str
+
+class AiKeysConfigResponse(BaseModel):
+    gemini: AiProviderInfo
+    openai: AiProviderInfo
+    deepseek: AiProviderInfo
+    anthropic: AiProviderInfo
+    active_provider: str = "auto"
+    has_any_key: bool = False
+
+class AiKeysConfigUpdate(BaseModel):
+    gemini_api_key: Optional[str] = None
+    openai_api_key: Optional[str] = None
+    deepseek_api_key: Optional[str] = None
+    anthropic_api_key: Optional[str] = None
+    active_provider: Optional[str] = "auto"
+
+class AiKeysTestRequest(BaseModel):
+    provider: str # "gemini", "openai", "deepseek", "anthropic"
+    api_key: Optional[str] = None
+
+class AiKeysTestResponse(BaseModel):
+    success: bool
+    provider: str
+    message: str
+    response_sample: Optional[str] = None
+    latency_ms: int = 0
+
+class AiDiagnosticItem(BaseModel):
+    id: str
+    severity: str # "CRITICAL", "HIGH", "WARNING", "INFO"
+    title: str
+    target: str
+    target_type: str # "application", "server", "domain", "ssl", "database"
+    error_details: str
+    explanation: str
+    possible_fixes: List[str]
+    fix_commands: Optional[str] = None
+
+class AiDiagnosticResponse(BaseModel):
+    success: bool
+    status: str # "ISSUES_DETECTED" | "ALL_HEALTHY"
+    provider_used: str
+    model_name: str
+    execution_time_ms: int
+    total_checks: int
+    total_errors: int
+    items: List[AiDiagnosticItem]
+    overall_health_assessment: str
+
+
