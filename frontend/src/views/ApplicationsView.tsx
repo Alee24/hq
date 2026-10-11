@@ -556,7 +556,7 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
 
                         {/* Operational Quick Actions */}
                         <td className="py-3 px-4 text-right" onClick={(e) => e.stopPropagation()}>
-                          <div className="flex items-center justify-end gap-1.5">
+                          <div className="flex flex-wrap items-center justify-end gap-1.5">
                             {isSuite ? (
                               <>
                                 <button
@@ -701,7 +701,7 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
 
                                       {/* Individual Component Controls */}
                                       <div className="flex items-center justify-between gap-1 pt-2 border-t border-slate-800/80">
-                                        <div className="flex items-center gap-1.5">
+                                        <div className="flex flex-wrap items-center gap-1.5">
                                           <button
                                             onClick={() => handleComponentAction(app, comp.name, 'restart')}
                                             disabled={isBusy}

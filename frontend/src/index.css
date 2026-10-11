@@ -14,6 +14,11 @@
     box-sizing: border-box;
   }
 
+  html, body, #root {
+    max-width: 100vw;
+    overflow-x: hidden;
+  }
+
   body {
     background-color: var(--color-canvas);
     color: #f1f5f9;

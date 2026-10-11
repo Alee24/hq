@@ -108,7 +108,7 @@ export const MainAppShell: React.FC = () => {
         />
 
         {/* Viewport Canvas */}
-        <main className="flex-1 overflow-y-auto bg-slate-950">
+        <main className="flex-1 overflow-y-auto overflow-x-hidden bg-slate-950 w-full min-w-0 max-w-full">
           {currentView === 'overview' && (
             <DashboardView onNavigate={(v, id) => navigateTo(v, id)} />
           )}

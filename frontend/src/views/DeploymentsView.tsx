@@ -172,7 +172,7 @@ export const DeploymentsView: React.FC = () => {
 
       {/* Application Filter Toolbar */}
       <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 bg-slate-900/60 p-3 rounded-xl border border-slate-800">
-        <div className="flex items-center gap-2 flex-1">
+        <div className="flex flex-wrap items-center gap-2 flex-1">
           <div className="flex items-center gap-2 bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-300">
             <Filter size={13} className="text-brand-400 shrink-0" />
             <span className="text-slate-500 font-medium">Filter by Application:</span>
@@ -302,7 +302,7 @@ export const DeploymentsView: React.FC = () => {
                       {new Date(d.created_at).toLocaleString()}
                     </td>
                     <td className="py-3 px-4 text-right">
-                      <div className="flex items-center justify-end gap-2">
+                      <div className="flex flex-wrap items-center justify-end gap-1.5">
                         <button
                           onClick={() => setLogModalContent(d.logs || 'No logs available.')}
                           className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-[11px] font-medium"

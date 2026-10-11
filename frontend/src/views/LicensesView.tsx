@@ -426,23 +426,25 @@ export const LicensesView: React.FC = () => {
                     <td className="py-3 px-4 font-mono text-slate-400 text-[11px]">
                       {String(alt.detected_at || alt.created_at).replace('T', ' ').slice(0, 19)}
                     </td>
-                    <td className="py-3 px-4 text-right whitespace-nowrap">
-                      <button
-                        onClick={() => handleQuickLicenseAlert(alt)}
-                        disabled={activatingAlertId === (alt.id || alt.machine_id)}
-                        className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-[11px] font-semibold transition-colors shadow-sm disabled:opacity-50"
-                        title="Instantly issue signed license & activate node"
-                      >
-                        <Zap size={12} className={activatingAlertId === (alt.id || alt.machine_id) ? "animate-spin" : ""} />
-                        <span>{activatingAlertId === (alt.id || alt.machine_id) ? "Activating..." : "License & Activate"}</span>
-                      </button>
-                      <button
-                        onClick={() => handleCustomizeAlert(alt)}
-                        className="inline-flex items-center gap-1 px-2 py-1 ml-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-[11px] transition-colors"
-                        title="Customize license parameters"
-                      >
-                        <Settings size={12} />
-                      </button>
+                    <td className="py-3 px-4 text-right">
+                      <div className="inline-flex items-center gap-1.5 flex-wrap justify-end">
+                        <button
+                          onClick={() => handleQuickLicenseAlert(alt)}
+                          disabled={activatingAlertId === (alt.id || alt.machine_id)}
+                          className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-[11px] font-semibold transition-colors shadow-sm disabled:opacity-50"
+                          title="Instantly issue signed license & activate node"
+                        >
+                          <Zap size={12} className={activatingAlertId === (alt.id || alt.machine_id) ? "animate-spin" : ""} />
+                          <span>{activatingAlertId === (alt.id || alt.machine_id) ? "Activating..." : "License & Activate"}</span>
+                        </button>
+                        <button
+                          onClick={() => handleCustomizeAlert(alt)}
+                          className="inline-flex items-center gap-1 px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-[11px] transition-colors"
+                          title="Customize license parameters"
+                        >
+                          <Settings size={12} />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}

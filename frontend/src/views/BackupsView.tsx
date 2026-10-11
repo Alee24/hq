@@ -187,10 +187,10 @@ export const BackupsView: React.FC = () => {
   return (
     <div className="p-6 md:p-8 space-y-6 max-w-7xl mx-auto">
       {/* Header Bar */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-2 border-b border-slate-800">
-        <div>
-          <h1 className="text-2xl font-bold text-white tracking-tight flex items-center gap-2.5">
-            <Archive className="text-brand-400" size={24} />
+      <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4 pb-2 border-b border-slate-800">
+        <div className="min-w-0">
+          <h1 className="text-2xl font-bold text-white tracking-tight flex items-center gap-2.5 flex-wrap">
+            <Archive className="text-brand-400 shrink-0" size={24} />
             <span>Disaster Recovery & Multi-Tier Backup Management</span>
           </h1>
           <p className="text-xs text-slate-400 mt-1">
@@ -213,9 +213,9 @@ export const BackupsView: React.FC = () => {
       {/* SERVER SELECTION & MULTI-TIER BACKUP CONTROL BAR */}
       {/* ============================================================== */}
       <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 md:p-6 space-y-4 shadow-xl">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-slate-800/80">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-brand-600/20 border border-brand-500/30 flex items-center justify-center text-brand-400">
+        <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4 pb-4 border-b border-slate-800/80">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-10 h-10 rounded-xl bg-brand-600/20 border border-brand-500/30 flex items-center justify-center text-brand-400 shrink-0">
               <ShieldCheck size={20} />
             </div>
             <div>
@@ -418,7 +418,7 @@ export const BackupsView: React.FC = () => {
                       {new Date(b.created_at).toLocaleString()}
                     </td>
                     <td className="py-3 px-4 text-right">
-                      <div className="flex items-center justify-end gap-1.5">
+                      <div className="flex flex-wrap items-center justify-end gap-1.5">
                         <button
                           onClick={() => handleDownload(b.id, b.filename)}
                           disabled={downloadingId === b.id}

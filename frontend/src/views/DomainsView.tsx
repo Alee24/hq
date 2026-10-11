@@ -680,7 +680,7 @@ export const DomainsView: React.FC = () => {
                           </span>
                         </td>
                         <td className="py-3 px-4 text-right" onClick={(e) => e.stopPropagation()}>
-                          <div className="flex items-center justify-end gap-1.5">
+                          <div className="flex flex-wrap items-center justify-end gap-1.5">
                             {/* Update SSL */}
                             <Button
                               variant="success"

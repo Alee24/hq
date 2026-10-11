@@ -559,7 +559,7 @@ export const ServersView: React.FC<ServersViewProps> = ({ onSelectServer }) => {
             <div className="h-5 w-px bg-slate-800 hidden sm:block"></div>
 
             {/* Service Restarts */}
-            <div className="flex items-center gap-1">
+            <div className="flex flex-wrap items-center gap-1">
               <button
                 onClick={() => handleRestartService(selectedServer, 'docker')}
                 className="px-2.5 py-1.5 bg-slate-950 hover:bg-slate-800 text-slate-300 rounded text-[11px] font-mono border border-slate-800"

@@ -208,10 +208,10 @@ export const ApiKeysView: React.FC = () => {
       )}
 
       {/* Header Bar */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-2 border-b border-slate-800">
-        <div>
-          <h1 className="text-2xl font-bold text-white tracking-tight flex items-center gap-2.5">
-            <KeyRound className="text-brand-400" size={24} />
+      <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4 pb-2 border-b border-slate-800">
+        <div className="min-w-0">
+          <h1 className="text-2xl font-bold text-white tracking-tight flex items-center gap-2.5 flex-wrap">
+            <KeyRound className="text-brand-400 shrink-0" size={24} />
             <span>API Keys & Machine Integrations</span>
           </h1>
           <p className="text-xs text-slate-400 mt-1">
@@ -220,7 +220,7 @@ export const ApiKeysView: React.FC = () => {
         </div>
 
         {/* Tab Switcher */}
-        <div className="flex bg-slate-950 border border-slate-800 rounded-xl p-1 text-xs">
+        <div className="flex flex-wrap bg-slate-950 border border-slate-800 rounded-xl p-1 text-xs">
           <button
             onClick={() => setActiveTab('ai')}
             className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg font-semibold transition-all ${
@@ -253,13 +253,13 @@ export const ApiKeysView: React.FC = () => {
       {activeTab === 'ai' && (
         <div className="space-y-6">
           {/* Hero Banner */}
-          <div className="p-4 rounded-2xl bg-gradient-to-r from-brand-950/60 via-slate-900 to-slate-900 border border-brand-800/40 flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-lg">
-            <div className="flex items-center gap-3.5">
+          <div className="p-4 rounded-2xl bg-gradient-to-r from-brand-950/60 via-slate-900 to-slate-900 border border-brand-800/40 flex flex-col xl:flex-row xl:items-center justify-between gap-4 shadow-lg">
+            <div className="flex items-center gap-3.5 min-w-0">
               <div className="w-11 h-11 rounded-xl bg-brand-500/20 border border-brand-500/30 flex items-center justify-center text-brand-400 shrink-0">
                 <Bot size={24} />
               </div>
-              <div>
-                <h3 className="text-sm font-bold text-white flex items-center gap-2">
+              <div className="min-w-0">
+                <h3 className="text-sm font-bold text-white flex items-center gap-2 flex-wrap">
                   <span>Generative AI Infrastructure SRE Agents</span>
                   <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-950 text-amber-300 border border-amber-800">
                     Live Diagnostics
@@ -277,6 +277,7 @@ export const ApiKeysView: React.FC = () => {
               onClick={loadAiConfig}
               isLoading={loadingAi}
               leftIcon={<RefreshCw size={13} />}
+              className="shrink-0"
             >
               Reload Status
             </Button>
@@ -285,7 +286,7 @@ export const ApiKeysView: React.FC = () => {
           <form onSubmit={handleSaveAiKeys} className="space-y-6">
             {/* Preferred Active Provider Selector */}
             <div className="p-4 bg-slate-900 border border-slate-800 rounded-xl space-y-3">
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between flex-wrap gap-2">
                 <div>
                   <h4 className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-1.5">
                     <Radio size={13} className="text-brand-400" />
@@ -303,7 +304,7 @@ export const ApiKeysView: React.FC = () => {
                 )}
               </div>
 
-              <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5 pt-1">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-2.5 pt-1">
                 {[
                   { id: 'auto', label: 'Auto (First Available)', icon: Sparkles, badge: 'Recommended' },
                   { id: 'gemini', label: 'Google Gemini', icon: Bot, badge: 'Fastest' },

@@ -279,10 +279,10 @@ export const MonitoringView: React.FC = () => {
       )}
 
       {/* Header Bar */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-2 border-b border-slate-800">
-        <div>
-          <h1 className="text-2xl font-bold text-white tracking-tight flex items-center gap-2.5">
-            <Activity className="text-brand-400" size={24} />
+      <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4 pb-2 border-b border-slate-800">
+        <div className="min-w-0">
+          <h1 className="text-2xl font-bold text-white tracking-tight flex items-center gap-2.5 flex-wrap">
+            <Activity className="text-brand-400 shrink-0" size={24} />
             <span>Continuous Infrastructure & Live Application Monitoring</span>
           </h1>
           <p className="text-xs text-slate-400 mt-1">
@@ -290,7 +290,7 @@ export const MonitoringView: React.FC = () => {
           </p>
         </div>
 
-        <div className="flex items-center gap-2.5 flex-wrap">
+        <div className="flex items-center gap-2.5 flex-wrap w-full xl:w-auto xl:justify-end">
           {/* Timeframe Selector */}
           <div className="flex bg-slate-950 border border-slate-800 rounded-lg p-1 text-xs">
             {(['24h', '7d', '30d', '90d', '1y'] as const).map((p) => (

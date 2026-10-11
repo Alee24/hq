@@ -458,8 +458,8 @@ export const GitView: React.FC = () => {
             <>
               {/* Repository Identity Card */}
               <div className="p-6 rounded-xl bg-slate-900 border border-slate-800 space-y-4">
-                <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-slate-800">
-                  <div>
+                <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4 pb-4 border-b border-slate-800">
+                  <div className="min-w-0">
                     <div className="flex items-center gap-2.5 flex-wrap">
                       <h2 className="text-lg font-bold text-white tracking-tight">
                         {selectedApp.name}
@@ -508,7 +508,7 @@ export const GitView: React.FC = () => {
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
                     <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs bg-emerald-950/60 text-emerald-400 border border-emerald-800/80 font-mono">
                       <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
                       <span>SSH as root active</span>
@@ -584,12 +584,12 @@ export const GitView: React.FC = () => {
                 </div>
               ) : (gitStatus.update_available || (gitStatus.local_changes && gitStatus.local_changes.length > 0)) ? (
                 <div className="p-5 rounded-xl bg-gradient-to-r from-amber-950/70 via-slate-900 to-amber-950/40 border border-amber-600/80 shadow-lg space-y-4 animate-in fade-in">
-                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
-                    <div className="flex items-center gap-3">
-                      <div className="p-2.5 bg-amber-500/20 border border-amber-500/40 rounded-xl text-amber-400">
+                  <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4">
+                    <div className="flex items-start sm:items-center gap-3 min-w-0">
+                      <div className="p-2.5 bg-amber-500/20 border border-amber-500/40 rounded-xl text-amber-400 shrink-0">
                         <Download size={22} />
                       </div>
-                      <div>
+                      <div className="min-w-0">
                         <h3 className="text-base font-bold text-white flex items-center gap-2 flex-wrap">
                           <span>Pending Changes for {selectedApp.name}:</span>
                           {gitStatus.update_available && (
@@ -603,13 +603,13 @@ export const GitView: React.FC = () => {
                             </span>
                           )}
                         </h3>
-                        <p className="text-xs text-amber-200/90 mt-0.5">
+                        <p className="text-xs text-amber-200/90 mt-0.5 break-words">
                           Target directory <strong className="text-emerald-300 font-mono">{gitStatus.repo_dir}</strong> on branch <strong className="text-white font-mono">origin/{gitStatus.branch}</strong>. Pulling only updates <strong className="text-white">{selectedApp.name}</strong>.
                         </p>
                       </div>
                     </div>
 
-                    <div className="flex flex-wrap items-center gap-2 shrink-0">
+                    <div className="flex flex-wrap items-center gap-2 w-full xl:w-auto xl:justify-end">
                       <button
                         onClick={() => handleExecuteAction('pull_deploy')}
                         disabled={Boolean(activeAction)}
@@ -724,12 +724,12 @@ export const GitView: React.FC = () => {
                   )}
                 </div>
               ) : (
-                <div className="p-3.5 rounded-xl bg-emerald-950/30 border border-emerald-800/40 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-emerald-300">
-                  <div className="flex items-center gap-2">
+                <div className="p-3.5 rounded-xl bg-emerald-950/30 border border-emerald-800/40 flex flex-col lg:flex-row lg:items-center justify-between gap-3 text-xs text-emerald-300">
+                  <div className="flex items-center gap-2 min-w-0">
                     <CheckCircle2 size={16} className="text-emerald-400 shrink-0" />
-                    <span>Working copy for <strong>{selectedApp.name}</strong> ({gitStatus.repo_dir}) is fully synchronized with origin/{gitStatus.branch}.</span>
+                    <span className="break-words">Working copy for <strong>{selectedApp.name}</strong> ({gitStatus.repo_dir}) is fully synchronized with origin/{gitStatus.branch}.</span>
                   </div>
-                  <div className="flex items-center gap-2 shrink-0">
+                  <div className="flex flex-wrap items-center gap-2">
                     <button
                       onClick={() => handleExecuteAction('pull_deploy')}
                       disabled={Boolean(activeAction)}
@@ -771,7 +771,7 @@ export const GitView: React.FC = () => {
                   </span>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5">
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3.5">
                   {[
                     {
                       key: 'status' as const,
@@ -832,11 +832,11 @@ export const GitView: React.FC = () => {
                         className="rounded-xl bg-slate-950 border border-slate-800 hover:border-slate-700 flex flex-col justify-between overflow-hidden shadow-md transition-all"
                       >
                         <div className="p-3 border-b border-slate-800/80 flex items-center justify-between gap-2 bg-slate-900/60">
-                          <div className="flex items-center gap-2 min-w-0">
+                          <div className="flex items-center gap-2 min-w-0 flex-1">
                             <div className="p-1.5 rounded-lg bg-slate-950 border border-slate-800 text-brand-400 shrink-0">
                               <IconComp size={14} className={isRunning ? 'animate-spin' : ''} />
                             </div>
-                            <div className="min-w-0">
+                            <div className="min-w-0 flex-1">
                               <div className="text-xs font-bold text-white truncate">{card.title}</div>
                               <div className="text-[10px] text-slate-400 truncate">{card.subtitle}</div>
                             </div>
