@@ -60,6 +60,7 @@ class Server(Base):
 
     applications = relationship("Application", back_populates="server")
     metrics = relationship("ServerMetric", back_populates="server", cascade="all, delete-orphan")
+    snapshots = relationship("ServerSnapshot", back_populates="server", cascade="all, delete-orphan")
 
 class Application(Base):
     __tablename__ = "applications"
@@ -384,4 +385,23 @@ class SystemSetting(Base):
     category = Column(String(50), default="general")
     description = Column(String(255), nullable=True)
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
+
+class ServerSnapshot(Base):
+    __tablename__ = "server_snapshots"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    server_id = Column(String(36), ForeignKey("servers.id", ondelete="CASCADE"), nullable=False, index=True)
+    name = Column(String(150), nullable=False, index=True)
+    description = Column(Text, nullable=True)
+    snapshot_type = Column(String(50), default="SYSTEM_CONFIG")  # SYSTEM_CONFIG, FULL_CONFIG, WEB_SERVICES, DOCKER_STACK
+    file_path = Column(String(500), nullable=False)
+    size_mb = Column(Float, default=0.0)
+    status = Column(String(30), default="COMPLETED", index=True)  # CREATING, COMPLETED, FAILED, REVERTING, REVERTED
+    manifest = Column(JSON, default=dict)
+    created_by = Column(String(100), nullable=False, default="System")
+    created_at = Column(DateTime, default=utcnow, index=True)
+    reverted_at = Column(DateTime, nullable=True)
+    deleted_at = Column(DateTime, nullable=True)
+
+    server = relationship("Server", back_populates="snapshots")
 

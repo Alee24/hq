@@ -5,12 +5,13 @@ from typing import List, Optional
 from datetime import datetime, timezone
 from backend.app.core.database import get_db
 from backend.app.core.deps import get_current_user, require_roles
-from backend.app.models.entities import User, Server, ServerMetric, Application, AppLog, ServerTerminalLog, Domain
+from backend.app.models.entities import User, Server, ServerMetric, Application, AppLog, ServerTerminalLog, Domain, ServerSnapshot
 from backend.app.schemas.api_schemas import (
     ServerCreate, ServerUpdate, ServerResponse, ServerCommandRequest, ServerMetricResponse,
     ServerConnectionConfig, ServerConnectionTestResponse, TerminalExecRequest,
     TerminalExecResponse, ServerTerminalLogResponse, ScheduledRebootRequest,
-    TroubleshootCommandRequest, ServiceActionRequest
+    TroubleshootCommandRequest, ServiceActionRequest,
+    ServerSnapshotResponse, CreateServerSnapshotRequest, RevertServerSnapshotResponse
 )
 from backend.app.services.audit import log_audit_event
 from backend.app.services.websocket_manager import ws_manager
@@ -19,7 +20,8 @@ from backend.app.services.remote_executor import (
     get_remote_server_processes, discover_remote_server_hardware, scan_remote_server_websites,
     schedule_remote_reboot, cancel_remote_reboot, get_remote_reboot_status,
     analyze_server_performance_and_spikes, execute_troubleshoot_command,
-    detect_remote_databases, get_remote_docker_suite, execute_remote_service_action
+    detect_remote_databases, get_remote_docker_suite, execute_remote_service_action,
+    create_remote_server_snapshot, revert_remote_server_snapshot, delete_remote_server_snapshot
 )
 
 router = APIRouter(prefix="/servers", tags=["Servers"])
@@ -902,4 +904,224 @@ async def delete_server(
     })
 
     return {"success": True, "message": f"Server node '{srv.name}' ({srv.public_ip}) deregistered successfully."}
+
+
+# =======================================================================
+# Server Snapshots & Revert Endpoints
+# =======================================================================
+
+@router.get("/{server_id}/snapshots", response_model=List[ServerSnapshotResponse])
+async def list_server_snapshots(
+    server_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Lists all captured system configuration snapshots for the given server."""
+    result = await db.execute(
+        select(Server).where(Server.id == server_id, Server.deleted_at == None)
+    )
+    srv = result.scalar_one_or_none()
+    if not srv:
+        raise HTTPException(status_code=404, detail="Server node not found.")
+
+    snap_res = await db.execute(
+        select(ServerSnapshot)
+        .where(ServerSnapshot.server_id == server_id, ServerSnapshot.deleted_at == None)
+        .order_by(ServerSnapshot.created_at.desc())
+    )
+    snapshots = snap_res.scalars().all()
+    return [ServerSnapshotResponse.model_validate(s) for s in snapshots]
+
+
+@router.post("/{server_id}/snapshots", response_model=ServerSnapshotResponse)
+async def take_server_snapshot(
+    server_id: str,
+    payload: CreateServerSnapshotRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_roles(["SUPER_ADMIN", "INFRASTRUCTURE_ADMIN"]))
+):
+    """Executes a system configuration snapshot on the remote VPS over SSH and saves record."""
+    result = await db.execute(
+        select(Server).where(Server.id == server_id, Server.deleted_at == None)
+    )
+    srv = result.scalar_one_or_none()
+    if not srv:
+        raise HTTPException(status_code=404, detail="Server node not found.")
+
+    res = create_remote_server_snapshot(
+        server=srv,
+        name=payload.name,
+        description=payload.description,
+        created_by=current_user.username,
+        snapshot_type=payload.snapshot_type or "SYSTEM_CONFIG"
+    )
+
+    if not res.get("success"):
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to capture snapshot on {srv.name}: {res.get('stderr') or res.get('stdout') or res.get('message')}"
+        )
+
+    snapshot_obj = ServerSnapshot(
+        id=res.get("snapshot_id"),
+        server_id=srv.id,
+        name=payload.name.strip(),
+        description=payload.description,
+        snapshot_type=payload.snapshot_type or "SYSTEM_CONFIG",
+        file_path=res.get("file_path"),
+        size_mb=res.get("size_mb", 0.0),
+        status="COMPLETED",
+        manifest=res.get("manifest", {}),
+        created_by=current_user.username,
+        created_at=datetime.now(timezone.utc).replace(tzinfo=None)
+    )
+    db.add(snapshot_obj)
+
+    await log_audit_event(
+        db=db,
+        action="CREATE_SERVER_SNAPSHOT",
+        entity_type="server",
+        username=current_user.username,
+        user_id=current_user.id,
+        entity_id=srv.id,
+        details={
+            "snapshot_id": snapshot_obj.id,
+            "name": snapshot_obj.name,
+            "size_mb": snapshot_obj.size_mb,
+            "file_path": snapshot_obj.file_path
+        },
+        result="SUCCESS"
+    )
+    await db.commit()
+    await db.refresh(snapshot_obj)
+
+    await ws_manager.broadcast({
+        "event": "server_snapshot_created",
+        "server_id": srv.id,
+        "snapshot_id": snapshot_obj.id,
+        "name": snapshot_obj.name
+    })
+
+    return ServerSnapshotResponse.model_validate(snapshot_obj)
+
+
+@router.post("/{server_id}/snapshots/{snapshot_id}/revert", response_model=RevertServerSnapshotResponse)
+async def revert_server_snapshot_endpoint(
+    server_id: str,
+    snapshot_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_roles(["SUPER_ADMIN", "INFRASTRUCTURE_ADMIN"]))
+):
+    """Safely restores server system configurations to the chosen snapshot point."""
+    result = await db.execute(
+        select(Server).where(Server.id == server_id, Server.deleted_at == None)
+    )
+    srv = result.scalar_one_or_none()
+    if not srv:
+        raise HTTPException(status_code=404, detail="Server node not found.")
+
+    snap_res = await db.execute(
+        select(ServerSnapshot).where(
+            ServerSnapshot.id == snapshot_id,
+            ServerSnapshot.server_id == server_id,
+            ServerSnapshot.deleted_at == None
+        )
+    )
+    snap = snap_res.scalar_one_or_none()
+    if not snap:
+        raise HTTPException(status_code=404, detail="Server snapshot not found.")
+
+    res = revert_remote_server_snapshot(
+        server=srv,
+        snapshot_file_path=snap.file_path,
+        snapshot_id=snap.id
+    )
+
+    if not res.get("success"):
+        raise HTTPException(
+            status_code=500,
+            detail=f"Reverting snapshot failed on {srv.name}: {res.get('message')}"
+        )
+
+    snap.reverted_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    snap.status = "REVERTED"
+
+    await log_audit_event(
+        db=db,
+        action="REVERT_SERVER_SNAPSHOT",
+        entity_type="server",
+        username=current_user.username,
+        user_id=current_user.id,
+        entity_id=srv.id,
+        details={
+            "snapshot_id": snap.id,
+            "name": snap.name,
+            "file_path": snap.file_path,
+            "stdout": res.get("stdout")
+        },
+        result="SUCCESS"
+    )
+    await db.commit()
+
+    await ws_manager.broadcast({
+        "event": "server_snapshot_reverted",
+        "server_id": srv.id,
+        "snapshot_id": snap.id,
+        "name": snap.name
+    })
+
+    return RevertServerSnapshotResponse(
+        success=True,
+        snapshot_id=snap.id,
+        server_id=srv.id,
+        message=f"Server '{srv.name}' successfully reverted to snapshot '{snap.name}'.",
+        duration_ms=res.get("duration_ms", 0),
+        logs=res.get("stdout")
+    )
+
+
+@router.delete("/{server_id}/snapshots/{snapshot_id}")
+async def delete_server_snapshot_endpoint(
+    server_id: str,
+    snapshot_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_roles(["SUPER_ADMIN", "INFRASTRUCTURE_ADMIN"]))
+):
+    """Deletes a server snapshot record and removes the archive file from the host VPS."""
+    result = await db.execute(
+        select(Server).where(Server.id == server_id, Server.deleted_at == None)
+    )
+    srv = result.scalar_one_or_none()
+    if not srv:
+        raise HTTPException(status_code=404, detail="Server node not found.")
+
+    snap_res = await db.execute(
+        select(ServerSnapshot).where(
+            ServerSnapshot.id == snapshot_id,
+            ServerSnapshot.server_id == server_id,
+            ServerSnapshot.deleted_at == None
+        )
+    )
+    snap = snap_res.scalar_one_or_none()
+    if not snap:
+        raise HTTPException(status_code=404, detail="Server snapshot not found.")
+
+    delete_remote_server_snapshot(srv, snap.file_path)
+
+    snap.deleted_at = datetime.now(timezone.utc).replace(tzinfo=None)
+
+    await log_audit_event(
+        db=db,
+        action="DELETE_SERVER_SNAPSHOT",
+        entity_type="server",
+        username=current_user.username,
+        user_id=current_user.id,
+        entity_id=srv.id,
+        details={"snapshot_id": snap.id, "name": snap.name},
+        result="SUCCESS"
+    )
+    await db.commit()
+
+    return {"success": True, "message": f"Snapshot '{snap.name}' deleted successfully."}
+
 

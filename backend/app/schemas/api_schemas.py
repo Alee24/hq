@@ -176,6 +176,37 @@ class ServerCommandRequest(BaseModel):
     service_name: Optional[str] = None
     confirmation: Optional[str] = None # e.g. "RESTART" for dangerous actions
 
+class ServerSnapshotResponse(BaseModel):
+    id: str
+    server_id: str
+    name: str
+    description: Optional[str] = None
+    snapshot_type: str = "SYSTEM_CONFIG"
+    file_path: str
+    size_mb: float = 0.0
+    status: str = "COMPLETED"
+    manifest: Dict[str, Any] = {}
+    created_by: str
+    created_at: datetime
+    reverted_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+class CreateServerSnapshotRequest(BaseModel):
+    name: str
+    description: Optional[str] = None
+    snapshot_type: Optional[str] = "SYSTEM_CONFIG"
+
+class RevertServerSnapshotResponse(BaseModel):
+    success: bool
+    snapshot_id: str
+    server_id: str
+    message: str
+    duration_ms: int
+    logs: Optional[str] = None
+
+
 # ==========================================
 # Application Schemas
 # ==========================================

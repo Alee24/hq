@@ -471,6 +471,72 @@ class ApiClient {
   }
 
   // ==========================================
+  // Server Snapshots & Revert
+  // ==========================================
+  async listServerSnapshots(serverId: string) {
+    return this.request<Array<{
+      id: string;
+      server_id: string;
+      name: string;
+      description?: string;
+      snapshot_type: string;
+      file_path: string;
+      size_mb: number;
+      status: string;
+      manifest: any;
+      created_by: string;
+      created_at: string;
+      reverted_at?: string;
+    }>>(`/servers/${serverId}/snapshots`);
+  }
+
+  async createServerSnapshot(serverId: string, payload: {
+    name: string;
+    description?: string;
+    snapshot_type?: string;
+  }) {
+    return this.request<{
+      id: string;
+      server_id: string;
+      name: string;
+      description?: string;
+      snapshot_type: string;
+      file_path: string;
+      size_mb: number;
+      status: string;
+      manifest: any;
+      created_by: string;
+      created_at: string;
+    }>(`/servers/${serverId}/snapshots`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async revertServerSnapshot(serverId: string, snapshotId: string) {
+    return this.request<{
+      success: boolean;
+      snapshot_id: string;
+      server_id: string;
+      message: string;
+      safety_backup_path?: string;
+      duration_ms: number;
+      logs?: string;
+    }>(`/servers/${serverId}/snapshots/${snapshotId}/revert`, {
+      method: 'POST',
+    });
+  }
+
+  async deleteServerSnapshot(serverId: string, snapshotId: string) {
+    return this.request<{
+      success: boolean;
+      message: string;
+    }>(`/servers/${serverId}/snapshots/${snapshotId}`, {
+      method: 'DELETE',
+    });
+  }
+
+  // ==========================================
   // Monitoring
   // ==========================================
   async getMonitoringSummary(period: string = '24h') {

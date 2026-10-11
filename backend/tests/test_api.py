@@ -1,6 +1,7 @@
 import pytest
 import pytest_asyncio
 import uuid
+from unittest.mock import patch
 from httpx import AsyncClient, ASGITransport
 from backend.app.main import app
 from backend.app.core.config import settings
@@ -15,11 +16,13 @@ from backend.app.models.entities import Server, Application
 
 @pytest_asyncio.fixture(autouse=True, scope="module")
 async def clean_database_after_tests():
+    from backend.app.core.init_db import init_db
+    await init_db(seed_demo=False)
     yield
     # Clean up test-generated entities while strictly preserving user servers and apps
     async with AsyncSessionLocal() as db:
         await db.execute(delete(Application).where(Application.name.like("Test %") | Application.name.like("MClinic-Git-%") | Application.name.like("Unauthorized%")))
-        await db.execute(delete(Server).where(Server.name.like("vps-test-%") | Server.name.like("Git-Test-%") | Server.name.like("VPS-173.249%") | Server.name.like("vps-node-discovery") | Server.name.like("vps-detail-test") | Server.name.like("vps-docker-test")))
+        await db.execute(delete(Server).where(Server.name.like("vps-test-%") | Server.name.like("Git-Test-%") | Server.name.like("VPS-173.249%") | Server.name.like("vps-node-discovery") | Server.name.like("vps-detail-test") | Server.name.like("vps-docker-test") | Server.name.like("snapshot-test-%")))
         await db.commit()
 
 async def get_admin_token(ac: AsyncClient) -> str:
@@ -674,6 +677,90 @@ async def test_license_and_activate_alert():
         assert "license_id" in data
         assert "certificate" in data
         assert "-----BEGIN COMMAND CENTER LICENSE PAYLOAD-----" in data["certificate"]
+
+@pytest.mark.asyncio
+async def test_server_snapshot_and_revert_flow():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        token = await get_admin_token(ac)
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # 1. Register a test server node
+        srv_res = await ac.post("/api/servers", json={
+            "name": "snapshot-test-node",
+            "hostname": "snapshot.test.local",
+            "public_ip": "185.192.97.84",
+            "ssh_password": "TestPassword123"
+        }, headers=headers)
+        assert srv_res.status_code == 200
+        srv_id = srv_res.json()["id"]
+
+        test_snap_uuid = str(uuid.uuid4())
+
+        with patch("backend.app.api.servers.create_remote_server_snapshot") as mock_create, \
+             patch("backend.app.api.servers.revert_remote_server_snapshot") as mock_revert, \
+             patch("backend.app.api.servers.delete_remote_server_snapshot") as mock_delete:
+            
+            mock_create.return_value = {
+                "success": True,
+                "snapshot_id": test_snap_uuid,
+                "file_path": f"/var/backups/hq-snapshots/snapshot-{test_snap_uuid}.tar.gz",
+                "size_mb": 1.45,
+                "manifest": {"hostname": "snapshot.test.local", "archived_paths": "/etc/nginx /etc/systemd"},
+                "stdout": "Snapshot completed",
+                "stderr": "",
+                "exit_code": 0,
+                "duration_ms": 320,
+                "message": "Server snapshot created successfully"
+            }
+            mock_revert.return_value = {
+                "success": True,
+                "snapshot_id": test_snap_uuid,
+                "server_id": srv_id,
+                "safety_backup_path": "/var/backups/hq-snapshots/pre-revert-safety.tar.gz",
+                "message": "Server successfully reverted to snapshot",
+                "duration_ms": 480,
+                "stdout": "Pre-revert safety backup created. Services reloaded."
+            }
+            mock_delete.return_value = {"success": True}
+
+            # 2. Take server snapshot
+            snap_res = await ac.post(f"/api/servers/{srv_id}/snapshots", json={
+                "name": "Test Nginx & System Snapshot",
+                "description": "Pre-deployment configuration backup",
+                "snapshot_type": "system_config"
+            }, headers=headers)
+            assert snap_res.status_code == 200
+            snap_data = snap_res.json()
+            snap_id = snap_data["id"]
+            assert snap_data["name"] == "Test Nginx & System Snapshot"
+            assert snap_data["snapshot_type"] == "system_config"
+            assert snap_data["server_id"] == srv_id
+            assert snap_data["status"] == "COMPLETED"
+            assert snap_data["size_mb"] == 1.45
+
+            # 3. List snapshots for server
+            list_res = await ac.get(f"/api/servers/{srv_id}/snapshots", headers=headers)
+            assert list_res.status_code == 200
+            snapshots = list_res.json()
+            assert any(s["id"] == snap_id for s in snapshots)
+
+            # 4. Revert to snapshot
+            rev_res = await ac.post(f"/api/servers/{srv_id}/snapshots/{snap_id}/revert", headers=headers)
+            assert rev_res.status_code == 200
+            rev_data = rev_res.json()
+            assert rev_data["snapshot_id"] == snap_id
+            assert rev_data["server_id"] == srv_id
+            assert "message" in rev_data
+
+            # 5. Delete snapshot
+            del_res = await ac.delete(f"/api/servers/{srv_id}/snapshots/{snap_id}", headers=headers)
+            assert del_res.status_code == 200
+
+            # 6. Verify deleted from active list
+            list_after = await ac.get(f"/api/servers/{srv_id}/snapshots", headers=headers)
+            assert list_after.status_code == 200
+            assert not any(s["id"] == snap_id for s in list_after.json())
+
 
 
 

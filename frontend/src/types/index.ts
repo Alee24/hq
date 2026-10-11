@@ -265,3 +265,19 @@ export interface GlobalSearchResult {
   status?: string;
   url: string;
 }
+
+export interface ServerSnapshot {
+  id: string;
+  server_id: string;
+  name: string;
+  description?: string;
+  snapshot_type: string;
+  file_path?: string;
+  size_mb: number;
+  status: string;
+  manifest?: Record<string, any>;
+  created_by?: string;
+  created_at: string;
+  reverted_at?: string;
+}
+

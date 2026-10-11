@@ -141,6 +141,29 @@ async def apply_schema_migrations():
                 await conn.execute(text(f"ALTER TABLE backups ADD COLUMN IF NOT EXISTS {col_name} {col_type}"))
             for col_name, col_type in app_cols:
                 await conn.execute(text(f"ALTER TABLE applications ADD COLUMN IF NOT EXISTS {col_name} {col_type}"))
+
+            # Create server_snapshots table if not exists with indexes
+            await conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS server_snapshots (
+                    id VARCHAR(36) PRIMARY KEY,
+                    server_id VARCHAR(36) NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+                    name VARCHAR(150) NOT NULL,
+                    description TEXT,
+                    snapshot_type VARCHAR(50) DEFAULT 'SYSTEM_CONFIG',
+                    file_path VARCHAR(500) NOT NULL,
+                    size_mb DOUBLE PRECISION DEFAULT 0.0,
+                    status VARCHAR(30) DEFAULT 'COMPLETED',
+                    manifest JSONB DEFAULT '{}',
+                    created_by VARCHAR(100) NOT NULL DEFAULT 'System',
+                    created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT (NOW() AT TIME ZONE 'UTC'),
+                    reverted_at TIMESTAMP WITHOUT TIME ZONE,
+                    deleted_at TIMESTAMP WITHOUT TIME ZONE
+                )
+            """))
+            await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_server_snapshots_server_id ON server_snapshots(server_id)"))
+            await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_server_snapshots_status ON server_snapshots(status)"))
+            await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_server_snapshots_created_at ON server_snapshots(created_at)"))
+
             # Clean up bogus auto-discovered Apache comment artifacts
             await conn.execute(text("DELETE FROM domains WHERE domain_name IN ('#', 'directive', 'www.example.com')"))
             await conn.execute(text("DELETE FROM applications WHERE name IN ('#', 'directive', 'www.example.com') OR domain IN ('#', 'directive', 'www.example.com')"))
@@ -164,6 +187,26 @@ async def apply_schema_migrations():
                 for col_name, col_type in app_cols:
                     if col_name not in app_existing:
                         await conn.execute(text(f"ALTER TABLE applications ADD COLUMN {col_name} {col_type}"))
+
+                # Create server_snapshots table for SQLite
+                await conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS server_snapshots (
+                        id VARCHAR(36) PRIMARY KEY,
+                        server_id VARCHAR(36) NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+                        name VARCHAR(150) NOT NULL,
+                        description TEXT,
+                        snapshot_type VARCHAR(50) DEFAULT 'SYSTEM_CONFIG',
+                        file_path VARCHAR(500) NOT NULL,
+                        size_mb FLOAT DEFAULT 0.0,
+                        status VARCHAR(30) DEFAULT 'COMPLETED',
+                        manifest JSON DEFAULT '{}',
+                        created_by VARCHAR(100) NOT NULL DEFAULT 'System',
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        reverted_at DATETIME,
+                        deleted_at DATETIME
+                    )
+                """))
+                await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_server_snapshots_server_id ON server_snapshots(server_id)"))
 
                 # Clean up bogus auto-discovered Apache comment artifacts
                 await conn.execute(text("DELETE FROM domains WHERE domain_name IN ('#', 'directive', 'www.example.com')"))

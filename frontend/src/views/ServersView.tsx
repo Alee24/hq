@@ -5,6 +5,10 @@ import {
   RefreshCw,
   Power,
   RotateCw,
+  RotateCcw,
+  Camera,
+  Archive,
+  Clock,
   Cpu,
   HardDrive,
   Activity,
@@ -31,7 +35,7 @@ import {
 } from 'lucide-react';
 import { api } from '../api/client';
 
-import { Server, ServerMetric } from '../types';
+import { Server, ServerMetric, ServerSnapshot } from '../types';
 import { StatusBadge } from '../components/StatusBadge';
 import { ConfirmationModal } from '../components/ConfirmationModal';
 import { ServerTerminalModal } from '../components/ServerTerminalModal';
@@ -99,6 +103,20 @@ export const ServersView: React.FC<ServersViewProps> = ({ onSelectServer }) => {
     message: string;
   } | null>(null);
 
+  // Server Snapshot & Revert States
+  const [snapshotModalOpen, setSnapshotModalOpen] = useState(false);
+  const [snapshotServer, setSnapshotServer] = useState<Server | null>(null);
+  const [snapshotsList, setSnapshotsList] = useState<ServerSnapshot[]>([]);
+  const [snapshotsLoading, setSnapshotsLoading] = useState(false);
+  const [snapshotCreating, setSnapshotCreating] = useState(false);
+  const [revertingSnapshotId, setRevertingSnapshotId] = useState<string | null>(null);
+  const [deletingSnapshotId, setDeletingSnapshotId] = useState<string | null>(null);
+  const [newSnapshotName, setNewSnapshotName] = useState('');
+  const [newSnapshotDesc, setNewSnapshotDesc] = useState('');
+  const [newSnapshotType, setNewSnapshotType] = useState('system_config');
+  const [snapshotActionNotice, setSnapshotActionNotice] = useState<{ type: 'success' | 'error'; text: string; details?: string } | null>(null);
+  const [confirmRevertTarget, setConfirmRevertTarget] = useState<ServerSnapshot | null>(null);
+
   const loadServers = async (selectId?: string) => {
     try {
       const res = await api.listServers();
@@ -162,6 +180,109 @@ export const ServersView: React.FC<ServersViewProps> = ({ onSelectServer }) => {
       alert(err.message || 'Failed to scan server websites');
     } finally {
       setScanningWebsites(false);
+    }
+  };
+
+  const loadSnapshots = async (serverId: string) => {
+    setSnapshotsLoading(true);
+    try {
+      const list = await api.listServerSnapshots(serverId);
+      setSnapshotsList(list);
+    } catch (err: any) {
+      console.error('Failed to load snapshots:', err);
+    } finally {
+      setSnapshotsLoading(false);
+    }
+  };
+
+  const handleOpenSnapshots = (s: Server, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    setSnapshotServer(s);
+    setSnapshotModalOpen(true);
+    setSnapshotActionNotice(null);
+    setConfirmRevertTarget(null);
+    const now = new Date();
+    const dateStr = now.toISOString().slice(0, 16).replace('T', ' ');
+    setNewSnapshotName(`Snapshot - ${dateStr}`);
+    setNewSnapshotDesc('');
+    setNewSnapshotType('system_config');
+    loadSnapshots(s.id);
+  };
+
+  const handleCreateSnapshot = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!snapshotServer) return;
+    if (!newSnapshotName.trim()) {
+      setSnapshotActionNotice({ type: 'error', text: 'Snapshot name is required.' });
+      return;
+    }
+    setSnapshotCreating(true);
+    setSnapshotActionNotice(null);
+    try {
+      const res = await api.createServerSnapshot(snapshotServer.id, {
+        name: newSnapshotName.trim(),
+        description: newSnapshotDesc.trim() || undefined,
+        snapshot_type: newSnapshotType,
+      });
+      setSnapshotActionNotice({
+        type: 'success',
+        text: `Snapshot '${res.name}' created successfully (${(res.size_mb || 0).toFixed(2)} MB).`,
+        details: res.file_path ? `Archived to: ${res.file_path}` : undefined,
+      });
+      const now = new Date();
+      setNewSnapshotName(`Snapshot - ${now.toISOString().slice(0, 16).replace('T', ' ')}`);
+      setNewSnapshotDesc('');
+      await loadSnapshots(snapshotServer.id);
+    } catch (err: any) {
+      setSnapshotActionNotice({
+        type: 'error',
+        text: err?.message || 'Failed to create server snapshot.',
+      });
+    } finally {
+      setSnapshotCreating(false);
+    }
+  };
+
+  const handleRevertSnapshot = async (snapshot: ServerSnapshot) => {
+    if (!snapshotServer) return;
+    setRevertingSnapshotId(snapshot.id);
+    setSnapshotActionNotice(null);
+    try {
+      const res = await api.revertServerSnapshot(snapshotServer.id, snapshot.id);
+      setSnapshotActionNotice({
+        type: res.success ? 'success' : 'error',
+        text: res.message,
+        details: res.safety_backup_path ? `Safety backup created at: ${res.safety_backup_path}` : undefined,
+      });
+      setConfirmRevertTarget(null);
+      await loadSnapshots(snapshotServer.id);
+    } catch (err: any) {
+      setSnapshotActionNotice({
+        type: 'error',
+        text: err?.message || 'Failed to revert server snapshot.',
+      });
+    } finally {
+      setRevertingSnapshotId(null);
+    }
+  };
+
+  const handleDeleteSnapshot = async (snapshotId: string) => {
+    if (!snapshotServer) return;
+    setDeletingSnapshotId(snapshotId);
+    try {
+      await api.deleteServerSnapshot(snapshotServer.id, snapshotId);
+      setSnapshotsList((prev) => prev.filter((s) => s.id !== snapshotId));
+      setSnapshotActionNotice({
+        type: 'success',
+        text: 'Snapshot deleted successfully.',
+      });
+    } catch (err: any) {
+      setSnapshotActionNotice({
+        type: 'error',
+        text: err?.message || 'Failed to delete snapshot.',
+      });
+    } finally {
+      setDeletingSnapshotId(null);
     }
   };
 
@@ -360,6 +481,119 @@ export const ServersView: React.FC<ServersViewProps> = ({ onSelectServer }) => {
         </div>
       )}
 
+      {/* Managing Server Bar (Positioned ABOVE Server Cards) */}
+      {selectedServer && (
+        <div className="p-4 bg-slate-900 border border-slate-800 rounded-xl flex flex-wrap items-center justify-between gap-3 shadow-sm">
+          <div className="flex items-center gap-3">
+            <div className="w-3 h-3 rounded-full bg-emerald-400 animate-pulse"></div>
+            <div>
+              <span className="font-semibold text-white text-sm">Managing: {selectedServer.name}</span>
+              <span className="text-xs text-slate-400 ml-2 font-mono">({selectedServer.public_ip})</span>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              onClick={() => handleOpenSnapshots(selectedServer)}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-600 hover:bg-amber-500 text-white rounded-lg text-xs font-semibold shadow-sm transition-colors"
+              title="Server Snapshots & Instant Revert"
+            >
+              <Camera size={14} />
+              <span>Snapshots & Recovery</span>
+            </button>
+
+            <button
+              onClick={() => handleOpenTerminal(selectedServer)}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-semibold shadow-sm transition-colors"
+            >
+              <Terminal size={14} />
+              <span>Open Terminal</span>
+            </button>
+
+            {onSelectServer && (
+              <button
+                onClick={() => onSelectServer(selectedServer.id)}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-brand-600 hover:bg-brand-500 text-white rounded-lg text-xs font-semibold shadow-sm transition-colors"
+              >
+                <ExternalLink size={14} />
+                <span>Open Full Dashboard & Manage</span>
+              </button>
+            )}
+
+            <button
+              onClick={() => handleScanWebsites(selectedServer)}
+              disabled={scanningWebsites}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-purple-900/60 hover:bg-purple-800 text-purple-200 border border-purple-700/80 rounded-lg text-xs font-semibold shadow-sm transition-colors"
+              title="Audit Apache, Nginx, and Docker web apps to auto-import as Applications"
+            >
+              <Globe size={14} className={scanningWebsites ? "animate-spin text-purple-300" : "text-purple-400"} />
+              <span>{scanningWebsites ? 'Scanning Websites...' : 'Scan Hosted Websites'}</span>
+            </button>
+
+            <button
+              onClick={() => handleProbeSystem(selectedServer)}
+              disabled={probingSystem}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg text-xs font-semibold transition-colors"
+              title="Execute live hardware and OS telemetry probe via SSH"
+            >
+              <Activity size={14} className={probingSystem ? "animate-spin text-emerald-400" : "text-emerald-400"} />
+              <span>{probingSystem ? 'Probing...' : 'Probe Live Specs'}</span>
+            </button>
+
+            <button
+              onClick={() => handleOpenConnection(selectedServer)}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg text-xs font-semibold transition-colors"
+            >
+              <Wifi size={14} className="text-brand-400" />
+              <span>SSH & Agent Setup</span>
+            </button>
+
+            <button
+              onClick={() => handleOpenBackup(selectedServer)}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg text-xs font-semibold transition-colors"
+            >
+              <Database size={14} className="text-sky-400" />
+              <span>Database Backups</span>
+            </button>
+
+            <div className="h-5 w-px bg-slate-800 hidden sm:block"></div>
+
+            {/* Service Restarts */}
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => handleRestartService(selectedServer, 'docker')}
+                className="px-2.5 py-1.5 bg-slate-950 hover:bg-slate-800 text-slate-300 rounded text-[11px] font-mono border border-slate-800"
+                title="Restart Docker Daemon"
+              >
+                Restart Docker
+              </button>
+              <button
+                onClick={() => handleRestartService(selectedServer, 'nginx')}
+                className="px-2.5 py-1.5 bg-slate-950 hover:bg-slate-800 text-slate-300 rounded text-[11px] font-mono border border-slate-800"
+                title="Restart Nginx Web Server"
+              >
+                Restart Nginx
+              </button>
+              <button
+                onClick={() => handleRestartService(selectedServer, 'postgresql')}
+                className="px-2.5 py-1.5 bg-slate-950 hover:bg-slate-800 text-slate-300 rounded text-[11px] font-mono border border-slate-800"
+                title="Restart PostgreSQL"
+              >
+                Restart Postgres
+              </button>
+            </div>
+
+            <button
+              onClick={() => triggerSafeCommand(selectedServer, 'restart')}
+              className="flex items-center gap-1 px-3 py-1.5 bg-rose-950/60 hover:bg-rose-900 border border-rose-800 text-rose-300 rounded-lg text-xs font-semibold transition-colors"
+            >
+              <Power size={13} />
+              <span>Restart Host</span>
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Grid of Servers */}
       {loading ? (
         <div className="py-20 text-center text-slate-500 text-xs">Connecting to infrastructure nodes...</div>
@@ -477,29 +711,41 @@ export const ServersView: React.FC<ServersViewProps> = ({ onSelectServer }) => {
                 </div>
 
                 {/* Primary Card Actions */}
-                <div className="grid grid-cols-3 gap-2 pt-1 border-t border-slate-800/80">
+                <div className="grid grid-cols-4 gap-1.5 pt-1 border-t border-slate-800/80">
                   <button
                     onClick={(e) => handleOpenTerminal(srv, e)}
-                    className="flex items-center justify-center gap-1.5 py-1.5 px-2 bg-slate-950 hover:bg-emerald-950/60 hover:text-emerald-300 border border-slate-800 rounded-lg text-[11px] font-semibold text-slate-200 transition-colors"
+                    className="flex items-center justify-center gap-1 py-1.5 px-1 bg-slate-950 hover:bg-emerald-950/60 hover:text-emerald-300 border border-slate-800 rounded-lg text-[11px] font-semibold text-slate-200 transition-colors"
+                    title="Interactive SSH Terminal"
                   >
-                    <Terminal size={12} className="text-emerald-400" />
-                    <span>Terminal</span>
+                    <Terminal size={12} className="text-emerald-400 shrink-0" />
+                    <span className="truncate">Terminal</span>
                   </button>
 
                   <button
                     onClick={(e) => handleOpenConnection(srv, e)}
-                    className="flex items-center justify-center gap-1.5 py-1.5 px-2 bg-slate-950 hover:bg-brand-950/60 hover:text-brand-300 border border-slate-800 rounded-lg text-[11px] font-semibold text-slate-200 transition-colors"
+                    className="flex items-center justify-center gap-1 py-1.5 px-1 bg-slate-950 hover:bg-brand-950/60 hover:text-brand-300 border border-slate-800 rounded-lg text-[11px] font-semibold text-slate-200 transition-colors"
+                    title="SSH Credentials & Agent Setup"
                   >
-                    <Wifi size={12} className="text-brand-400" />
-                    <span>Connect</span>
+                    <Wifi size={12} className="text-brand-400 shrink-0" />
+                    <span className="truncate">Connect</span>
                   </button>
 
                   <button
                     onClick={(e) => handleOpenBackup(srv, e)}
-                    className="flex items-center justify-center gap-1.5 py-1.5 px-2 bg-slate-950 hover:bg-sky-950/60 hover:text-sky-300 border border-slate-800 rounded-lg text-[11px] font-semibold text-slate-200 transition-colors"
+                    className="flex items-center justify-center gap-1 py-1.5 px-1 bg-slate-950 hover:bg-sky-950/60 hover:text-sky-300 border border-slate-800 rounded-lg text-[11px] font-semibold text-slate-200 transition-colors"
+                    title="Database Backups"
                   >
-                    <Database size={12} className="text-sky-400" />
-                    <span>Backup</span>
+                    <Database size={12} className="text-sky-400 shrink-0" />
+                    <span className="truncate">Backup</span>
+                  </button>
+
+                  <button
+                    onClick={(e) => handleOpenSnapshots(srv, e)}
+                    className="flex items-center justify-center gap-1 py-1.5 px-1 bg-slate-950 hover:bg-amber-950/60 hover:text-amber-300 border border-slate-800 rounded-lg text-[11px] font-semibold text-slate-200 transition-colors"
+                    title="Server Snapshots & Recovery"
+                  >
+                    <Camera size={12} className="text-amber-400 shrink-0" />
+                    <span className="truncate">Snapshot</span>
                   </button>
                 </div>
 
@@ -567,112 +813,9 @@ export const ServersView: React.FC<ServersViewProps> = ({ onSelectServer }) => {
         </div>
       )}
 
-      {/* Selected Server Deep Dive */}
+      {/* Selected Server Deep Dive: Hardware Specs & Processes */}
       {selectedServer && (
-        <div className="space-y-4">
-          {/* Node Action Toolbar */}
-          <div className="p-4 bg-slate-900 border border-slate-800 rounded-xl flex flex-wrap items-center justify-between gap-3">
-            <div className="flex items-center gap-3">
-              <div className="w-3 h-3 rounded-full bg-emerald-400 animate-pulse"></div>
-              <div>
-                <span className="font-semibold text-white text-sm">Managing: {selectedServer.name}</span>
-                <span className="text-xs text-slate-400 ml-2 font-mono">({selectedServer.public_ip})</span>
-              </div>
-            </div>
-
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                onClick={() => handleOpenTerminal(selectedServer)}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-semibold shadow-sm transition-colors"
-              >
-                <Terminal size={14} />
-                <span>Open Terminal</span>
-              </button>
-
-              {onSelectServer && (
-                <button
-                  onClick={() => onSelectServer(selectedServer.id)}
-                  className="flex items-center gap-1.5 px-3 py-1.5 bg-brand-600 hover:bg-brand-500 text-white rounded-lg text-xs font-semibold shadow-sm transition-colors"
-                >
-                  <ExternalLink size={14} />
-                  <span>Open Full Dashboard & Manage</span>
-                </button>
-              )}
-
-              <button
-                onClick={() => handleScanWebsites(selectedServer)}
-                disabled={scanningWebsites}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-purple-900/60 hover:bg-purple-800 text-purple-200 border border-purple-700/80 rounded-lg text-xs font-semibold shadow-sm transition-colors"
-                title="Audit Apache, Nginx, and Docker web apps to auto-import as Applications"
-              >
-                <Globe size={14} className={scanningWebsites ? "animate-spin text-purple-300" : "text-purple-400"} />
-                <span>{scanningWebsites ? 'Scanning Websites...' : 'Scan Hosted Websites'}</span>
-              </button>
-
-              <button
-                onClick={() => handleProbeSystem(selectedServer)}
-                disabled={probingSystem}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg text-xs font-semibold transition-colors"
-                title="Execute live hardware and OS telemetry probe via SSH"
-              >
-                <Activity size={14} className={probingSystem ? "animate-spin text-emerald-400" : "text-emerald-400"} />
-                <span>{probingSystem ? 'Probing...' : 'Probe Live Specs'}</span>
-              </button>
-
-              <button
-                onClick={() => handleOpenConnection(selectedServer)}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg text-xs font-semibold transition-colors"
-              >
-                <Wifi size={14} className="text-brand-400" />
-                <span>SSH & Agent Setup</span>
-              </button>
-
-              <button
-                onClick={() => handleOpenBackup(selectedServer)}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg text-xs font-semibold transition-colors"
-              >
-                <Database size={14} className="text-sky-400" />
-                <span>Database Backups</span>
-              </button>
-
-              <div className="h-5 w-px bg-slate-800 hidden sm:block"></div>
-
-              {/* Service Restarts */}
-              <div className="flex items-center gap-1">
-                <button
-                  onClick={() => handleRestartService(selectedServer, 'docker')}
-                  className="px-2.5 py-1.5 bg-slate-950 hover:bg-slate-800 text-slate-300 rounded text-[11px] font-mono border border-slate-800"
-                  title="Restart Docker Daemon"
-                >
-                  Restart Docker
-                </button>
-                <button
-                  onClick={() => handleRestartService(selectedServer, 'nginx')}
-                  className="px-2.5 py-1.5 bg-slate-950 hover:bg-slate-800 text-slate-300 rounded text-[11px] font-mono border border-slate-800"
-                  title="Restart Nginx Web Server"
-                >
-                  Restart Nginx
-                </button>
-                <button
-                  onClick={() => handleRestartService(selectedServer, 'postgresql')}
-                  className="px-2.5 py-1.5 bg-slate-950 hover:bg-slate-800 text-slate-300 rounded text-[11px] font-mono border border-slate-800"
-                  title="Restart PostgreSQL"
-                >
-                  Restart Postgres
-                </button>
-              </div>
-
-              <button
-                onClick={() => triggerSafeCommand(selectedServer, 'restart')}
-                className="flex items-center gap-1 px-3 py-1.5 bg-rose-950/60 hover:bg-rose-900 border border-rose-800 text-rose-300 rounded-lg text-xs font-semibold transition-colors"
-              >
-                <Power size={13} />
-                <span>Restart Host</span>
-              </button>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             {/* Server Hardware & OS Inspector */}
             <div className="p-5 rounded-xl bg-slate-900 border border-slate-800 space-y-4">
               <div className="flex items-center justify-between">
@@ -837,7 +980,6 @@ export const ServersView: React.FC<ServersViewProps> = ({ onSelectServer }) => {
               </div>
             </div>
           </div>
-        </div>
       )}
 
       {/* Dangerous Server Operation Modal */}
@@ -1168,6 +1310,308 @@ export const ServersView: React.FC<ServersViewProps> = ({ onSelectServer }) => {
                 className="px-4 py-1.5 bg-brand-600 hover:bg-brand-500 text-white rounded-lg text-xs font-semibold shadow-sm transition-colors"
               >
                 Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Server Snapshots & Recovery Modal */}
+      {snapshotModalOpen && snapshotServer && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-150">
+          <div className="w-full max-w-3xl bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+            {/* Modal Header */}
+            <div className="p-5 border-b border-slate-800 flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-amber-950/80 border border-amber-800/80 rounded-xl text-amber-400">
+                  <Camera size={18} />
+                </div>
+                <div>
+                  <h3 className="font-semibold text-white text-sm">
+                    Server Snapshots & Recovery (SSH / System State)
+                  </h3>
+                  <p className="text-xs text-slate-400">
+                    Host: {snapshotServer.name} <span className="font-mono text-amber-400">({snapshotServer.public_ip})</span>
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setSnapshotModalOpen(false)}
+                className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition-colors text-xs"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-5 overflow-y-auto space-y-5 text-xs">
+              {/* Action Banner / Feedback */}
+              {snapshotActionNotice && (
+                <div
+                  className={`p-3.5 rounded-xl border text-xs space-y-1 ${
+                    snapshotActionNotice.type === 'success'
+                      ? 'bg-emerald-950/60 border-emerald-800/80 text-emerald-300'
+                      : 'bg-rose-950/60 border-rose-800/80 text-rose-300'
+                  }`}
+                >
+                  <div className="flex items-center gap-2 font-medium">
+                    {snapshotActionNotice.type === 'success' ? (
+                      <CheckCircle2 size={16} className="text-emerald-400 shrink-0" />
+                    ) : (
+                      <AlertTriangle size={16} className="text-rose-400 shrink-0" />
+                    )}
+                    <span>{snapshotActionNotice.text}</span>
+                  </div>
+                  {snapshotActionNotice.details && (
+                    <div className="font-mono text-[11px] opacity-80 pl-6">
+                      {snapshotActionNotice.details}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Take New Snapshot Form */}
+              <div className="p-4 bg-slate-950 border border-slate-800/80 rounded-xl space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold text-white text-xs flex items-center gap-1.5">
+                    <Plus size={14} className="text-amber-400" />
+                    Create New Server Snapshot
+                  </span>
+                  <span className="text-[10px] text-slate-500 font-mono">
+                    Storage: /var/backups/hq-snapshots/
+                  </span>
+                </div>
+
+                <form onSubmit={handleCreateSnapshot} className="space-y-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div className="sm:col-span-2 space-y-1">
+                      <label className="text-[11px] text-slate-400 font-medium">
+                        Snapshot Name <span className="text-rose-400">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={newSnapshotName}
+                        onChange={(e) => setNewSnapshotName(e.target.value)}
+                        placeholder="e.g. Pre-Upgrade Nginx"
+                        className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-lg text-slate-100 placeholder-slate-600 focus:outline-none focus:border-amber-500 text-xs"
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-[11px] text-slate-400 font-medium">Snapshot Scope</label>
+                      <select
+                        value={newSnapshotType}
+                        onChange={(e) => setNewSnapshotType(e.target.value)}
+                        className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-lg text-slate-100 text-xs focus:outline-none focus:border-amber-500"
+                      >
+                        <option value="system_config">System & Web Stack (/etc/*)</option>
+                        <option value="full_system">Full System Configs & State</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-[11px] text-slate-400 font-medium">
+                      Description <span className="text-slate-500">(Optional context)</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={newSnapshotDesc}
+                      onChange={(e) => setNewSnapshotDesc(e.target.value)}
+                      placeholder="e.g. Taken before updating reverse proxy configuration"
+                      className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-lg text-slate-100 placeholder-slate-600 focus:outline-none focus:border-amber-500 text-xs"
+                    />
+                  </div>
+
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pt-1">
+                    <div className="text-[10px] text-slate-500">
+                      Captures <code className="text-amber-400/90 font-mono">/etc/nginx</code>, <code className="text-amber-400/90 font-mono">/etc/apache2</code>, <code className="text-amber-400/90 font-mono">/etc/systemd</code>, <code className="text-amber-400/90 font-mono">crontab</code>, and hosts.
+                    </div>
+                    <button
+                      type="submit"
+                      disabled={snapshotCreating}
+                      className="px-4 py-2 bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors shadow-sm"
+                    >
+                      {snapshotCreating ? (
+                        <>
+                          <RefreshCw size={13} className="animate-spin" />
+                          <span>Archiving Remote VPS...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Camera size={13} />
+                          <span>Take Snapshot</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </form>
+              </div>
+
+              {/* Confirm Revert Prompt */}
+              {confirmRevertTarget && (
+                <div className="p-4 bg-rose-950/40 border border-rose-800/80 rounded-xl space-y-3 animate-in fade-in">
+                  <div className="flex items-start gap-2.5">
+                    <AlertTriangle size={18} className="text-rose-400 shrink-0 mt-0.5" />
+                    <div>
+                      <h4 className="text-xs font-bold text-rose-300">
+                        Confirm Server Revert to Snapshot: "{confirmRevertTarget.name}"
+                      </h4>
+                      <p className="text-[11px] text-rose-200/80 mt-1">
+                        Reverting will restore the archived configs from this snapshot over SSH. HQ will automatically create a pre-revert safety backup on the remote server before unpacking, then test and reload systemd & web services.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-end gap-2 pt-1">
+                    <button
+                      onClick={() => setConfirmRevertTarget(null)}
+                      className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs transition-colors"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={() => handleRevertSnapshot(confirmRevertTarget)}
+                      disabled={revertingSnapshotId === confirmRevertTarget.id}
+                      className="px-3.5 py-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors shadow-sm"
+                    >
+                      {revertingSnapshotId === confirmRevertTarget.id ? (
+                        <>
+                          <RefreshCw size={12} className="animate-spin" />
+                          <span>Reverting Remote Server...</span>
+                        </>
+                      ) : (
+                        <>
+                          <RotateCcw size={12} />
+                          <span>Confirm & Revert Now</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Existing Snapshots List */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold text-white text-xs">
+                    Saved Server Snapshots ({snapshotsList.length})
+                  </span>
+                  <button
+                    onClick={() => loadSnapshots(snapshotServer.id)}
+                    disabled={snapshotsLoading}
+                    className="flex items-center gap-1 text-[11px] text-slate-400 hover:text-white transition-colors"
+                  >
+                    <RefreshCw size={11} className={snapshotsLoading ? "animate-spin" : ""} />
+                    <span>Refresh</span>
+                  </button>
+                </div>
+
+                {snapshotsLoading && snapshotsList.length === 0 ? (
+                  <div className="py-8 text-center text-slate-500 text-xs">
+                    <RefreshCw size={18} className="animate-spin mx-auto mb-2 text-amber-400" />
+                    Loading server snapshots from remote host...
+                  </div>
+                ) : snapshotsList.length === 0 ? (
+                  <div className="p-8 text-center bg-slate-950 border border-slate-800/80 rounded-xl space-y-1 text-slate-400">
+                    <Archive size={24} className="mx-auto text-slate-600 mb-1" />
+                    <p className="font-medium text-slate-300 text-xs">No Snapshots Found</p>
+                    <p className="text-[11px] text-slate-500">
+                      Create your first snapshot above before performing system upgrades or web server config changes.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="rounded-xl border border-slate-800 overflow-hidden divide-y divide-slate-800/70">
+                    {snapshotsList.map((snap) => {
+                      const isReverting = revertingSnapshotId === snap.id;
+                      const isDeleting = deletingSnapshotId === snap.id;
+
+                      return (
+                        <div
+                          key={snap.id}
+                          className="p-3.5 bg-slate-900/60 hover:bg-slate-800/40 transition-colors flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                        >
+                          <div className="space-y-1">
+                            <div className="flex items-center gap-2">
+                              <span className="font-semibold text-white text-xs">{snap.name}</span>
+                              <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-amber-950/80 text-amber-300 border border-amber-800/60">
+                                {snap.snapshot_type}
+                              </span>
+                              <span
+                                className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${
+                                  snap.status === 'completed'
+                                    ? 'bg-emerald-950 text-emerald-300 border border-emerald-800/60'
+                                    : 'bg-rose-950 text-rose-300 border border-rose-800/60'
+                                }`}
+                              >
+                                {snap.status.toUpperCase()}
+                              </span>
+                              {snap.reverted_at && (
+                                <span className="px-1.5 py-0.5 rounded text-[10px] bg-sky-950 text-sky-300 border border-sky-800/60 flex items-center gap-1">
+                                  <RotateCcw size={9} />
+                                  <span>Reverted</span>
+                                </span>
+                              )}
+                            </div>
+
+                            {snap.description && (
+                              <p className="text-[11px] text-slate-300">{snap.description}</p>
+                            )}
+
+                            <div className="flex flex-wrap items-center gap-3 text-[11px] text-slate-400 font-mono">
+                              <span>Size: <strong className="text-slate-200">{(snap.size_mb || 0).toFixed(2)} MB</strong></span>
+                              <span>•</span>
+                              <span>Date: {new Date(snap.created_at).toLocaleString()}</span>
+                              {snap.file_path && (
+                                <>
+                                  <span>•</span>
+                                  <span className="truncate max-w-xs text-slate-500" title={snap.file_path}>
+                                    {snap.file_path}
+                                  </span>
+                                </>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-2 shrink-0">
+                            <button
+                              onClick={() => setConfirmRevertTarget(snap)}
+                              disabled={isReverting || isDeleting}
+                              className="px-3 py-1.5 bg-rose-950/70 hover:bg-rose-900 border border-rose-800/80 text-rose-300 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors shadow-sm disabled:opacity-50"
+                              title="Revert server configuration to this snapshot"
+                            >
+                              <RotateCcw size={12} className={isReverting ? "animate-spin" : ""} />
+                              <span>{isReverting ? "Reverting..." : "Revert"}</span>
+                            </button>
+
+                            <button
+                              onClick={() => handleDeleteSnapshot(snap.id)}
+                              disabled={isDeleting || isReverting}
+                              className="p-1.5 text-slate-400 hover:text-rose-400 hover:bg-slate-800 rounded-lg transition-colors border border-transparent hover:border-slate-700"
+                              title="Delete snapshot archive"
+                            >
+                              <Trash2 size={13} className={isDeleting ? "animate-spin text-rose-400" : ""} />
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="p-4 bg-slate-950 border-t border-slate-800 flex items-center justify-between">
+              <span className="text-[11px] text-slate-500">
+                HQ Automated Safety: Snapshots include pre-revert fallbacks.
+              </span>
+              <button
+                onClick={() => setSnapshotModalOpen(false)}
+                className="px-4 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-semibold transition-colors"
+              >
+                Close
               </button>
             </div>
           </div>
