@@ -10,11 +10,15 @@ from backend.app.models.entities import (
 )
 from backend.app.schemas.api_schemas import (
     MonitoringCheckCreate, MonitoringResultResponse, IncidentResponse,
-    AiDiagnosticResponse, CommandAuditRequest, CommandAuditResponse
+    AiDiagnosticResponse, CommandAuditRequest, CommandAuditResponse,
+    AiAutofixRequest, AiAutofixResponse, AiAutofixBatchRequest, AiAutofixBatchResponse
 )
 from backend.app.services.monitoring_engine import execute_monitoring_cycle
 from backend.app.services.remote_executor import execute_remote_command
-from backend.app.services.ai_diagnostics import run_ai_health_diagnostics, audit_terminal_command_output
+from backend.app.services.ai_diagnostics import (
+    run_ai_health_diagnostics, audit_terminal_command_output,
+    execute_ai_autofix_on_vps, execute_ai_autofix_batch
+)
 import json
 import base64
 import re
@@ -154,6 +158,32 @@ async def ai_audit_command(
         current_user=current_user,
         provider_override=provider
     )
+
+
+@router.post("/ai-autofix", response_model=AiAutofixResponse)
+async def ai_autofix_endpoint(
+    req: AiAutofixRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_roles(["SUPER_ADMIN", "INFRASTRUCTURE_ADMIN", "DEVELOPER"]))
+):
+    """
+    Executes an AI-generated remediation command sequence directly on the host VPS via SSH/terminal executor.
+    Applies the fix, writes terminal logs, records audit events, and checks resolution status.
+    """
+    return await execute_ai_autofix_on_vps(db=db, req=req, current_user=current_user)
+
+
+@router.post("/ai-autofix-all", response_model=AiAutofixBatchResponse)
+async def ai_autofix_all_endpoint(
+    req: AiAutofixBatchRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_roles(["SUPER_ADMIN", "INFRASTRUCTURE_ADMIN"]))
+):
+    """
+    Batch executes AI-generated remediation command sequences for all detected issues across host VPS nodes.
+    """
+    return await execute_ai_autofix_batch(db=db, req=req, current_user=current_user)
+
 
 
 

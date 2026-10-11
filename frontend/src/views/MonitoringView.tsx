@@ -28,10 +28,12 @@ import {
   ChevronUp,
   ShieldAlert,
   ArrowUp,
-  Check
+  Check,
+  Wrench
 } from 'lucide-react';
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip } from 'recharts';
-import { api, AiDiagnosticResponse, AiDiagnosticItem } from '../api/client';
+import { api, AiDiagnosticResponse, AiDiagnosticItem, AiAutofixResponse, AiAutofixRequest } from '../api/client';
+import { CommandAuditModal, CommandExecutionData } from '../components/CommandAuditModal';
 import { StatusBadge } from '../components/StatusBadge';
 import { Button } from '../components/common';
 import { Server, Application } from '../types';
@@ -72,6 +74,18 @@ export const MonitoringView: React.FC = () => {
   const [aiDiagnosticResult, setAiDiagnosticResult] = useState<AiDiagnosticResponse | null>(null);
   const [aiPanelOpen, setAiPanelOpen] = useState(true);
   const [copiedFixId, setCopiedFixId] = useState<string | null>(null);
+
+  // AI Auto-Fix State
+  const [fixingItemId, setFixingItemId] = useState<string | null>(null);
+  const [fixingAll, setFixingAll] = useState(false);
+  const [remediatedItems, setRemediatedItems] = useState<Record<string, {
+    success: boolean;
+    message: string;
+    exitCode: number;
+    executionData: CommandExecutionData;
+  }>>({});
+  const [auditModalOpen, setAuditModalOpen] = useState(false);
+  const [auditExecutionData, setAuditExecutionData] = useState<CommandExecutionData | null>(null);
 
   // Terminal Log Tail Mode: defaults to 'latest10' reverse-chronological (latest on top)
   const [logTailMode, setLogTailMode] = useState<'latest10' | 'full80'>('latest10');
@@ -244,6 +258,128 @@ export const MonitoringView: React.FC = () => {
     }
   };
 
+  // Execute Auto-Fix for a single diagnostic issue on the remote VPS
+  const handleAutoFixItem = async (item: AiDiagnosticItem) => {
+    if (!item.fix_commands) {
+      showToast('No executable remediation command available for this issue.', 'error');
+      return;
+    }
+
+    const targetServerId = item.server_id || selectedServerId || (servers[0]?.id);
+    setFixingItemId(item.id);
+
+    try {
+      const res = await api.autofixIssue({
+        diagnostic_id: item.id,
+        title: item.title,
+        target: item.target,
+        target_type: item.target_type,
+        fix_commands: item.fix_commands,
+        server_id: targetServerId,
+        error_details: item.error_details
+      });
+
+      const execData: CommandExecutionData = {
+        command: res.command,
+        stdout: res.stdout,
+        stderr: res.stderr,
+        exit_code: res.exit_code,
+        duration_ms: res.duration_ms,
+        server_id: res.server_id,
+        server_name: res.server_name,
+        server_ip: res.server_ip,
+        context_type: 'AI_HEALTH_AUTOFIX',
+        title: `Auto-Fix: ${item.title}`
+      };
+
+      setRemediatedItems(prev => ({
+        ...prev,
+        [item.id]: {
+          success: res.success,
+          message: res.verification_message || res.message,
+          exitCode: res.exit_code,
+          executionData: execData
+        }
+      }));
+
+      setAuditExecutionData(execData);
+      setAuditModalOpen(true);
+
+      if (res.success) {
+        showToast(`Successfully auto-fixed ${item.id} on ${res.server_name}!`, 'success');
+      } else {
+        showToast(`Auto-fix executed on ${res.server_name} with non-zero exit code (${res.exit_code}).`, 'error');
+      }
+    } catch (err: any) {
+      showToast(err.message || 'Auto-fix execution failed on remote VPS', 'error');
+    } finally {
+      setFixingItemId(null);
+    }
+  };
+
+  // Batch execute Auto-Fix for all detected diagnostic issues across VPS nodes
+  const handleAutoFixAll = async () => {
+    if (!aiDiagnosticResult || aiDiagnosticResult.items.length === 0) return;
+    const fixableItems = aiDiagnosticResult.items.filter(it => it.fix_commands);
+    if (fixableItems.length === 0) {
+      showToast('No automated remediation commands found among detected issues.', 'error');
+      return;
+    }
+
+    setFixingAll(true);
+    try {
+      const payload = {
+        items: fixableItems.map(it => ({
+          diagnostic_id: it.id,
+          title: it.title,
+          target: it.target,
+          target_type: it.target_type,
+          fix_commands: it.fix_commands || '',
+          server_id: it.server_id || selectedServerId || (servers[0]?.id),
+          error_details: it.error_details
+        })),
+        server_id: selectedServerId || (servers[0]?.id)
+      };
+
+      const batchRes = await api.autofixAllIssues(payload);
+      
+      const newRemediations: Record<string, any> = {};
+      batchRes.results.forEach(r => {
+        if (r.diagnostic_id) {
+          newRemediations[r.diagnostic_id] = {
+            success: r.success,
+            message: r.verification_message || r.message,
+            exitCode: r.exit_code,
+            executionData: {
+              command: r.command,
+              stdout: r.stdout,
+              stderr: r.stderr,
+              exit_code: r.exit_code,
+              duration_ms: r.duration_ms,
+              server_id: r.server_id,
+              server_name: r.server_name,
+              server_ip: r.server_ip,
+              context_type: 'AI_HEALTH_AUTOFIX',
+              title: `Auto-Fix Batch: ${r.diagnostic_id}`
+            }
+          };
+        }
+      });
+      setRemediatedItems(prev => ({ ...prev, ...newRemediations }));
+
+      if (batchRes.total_successful > 0) {
+        showToast(batchRes.summary_message, batchRes.total_failed === 0 ? 'success' : 'info');
+        await loadMonitoring();
+      } else {
+        showToast(batchRes.summary_message, 'error');
+      }
+    } catch (err: any) {
+      showToast(err.message || 'Batch auto-fix execution failed', 'error');
+    } finally {
+      setFixingAll(false);
+    }
+  };
+
   // ==============================================================
   // LOG PARSING: EXTRACT LAST 10 LINES & REVERSE (NEWEST ON TOP)
   // ==============================================================
@@ -361,17 +497,38 @@ export const MonitoringView: React.FC = () => {
               </div>
             </div>
 
-            <div className="flex items-center gap-2 self-start sm:self-auto">
+            <div className="flex items-center gap-2 self-start sm:self-auto flex-wrap">
               {aiDiagnosticResult.status === 'ALL_HEALTHY' ? (
                 <span className="px-3 py-1 rounded-full text-xs font-bold bg-emerald-950 text-emerald-400 border border-emerald-800 flex items-center gap-1.5">
                   <CheckCircle2 size={13} />
                   ALL NODES HEALTHY
                 </span>
               ) : (
-                <span className="px-3 py-1 rounded-full text-xs font-bold bg-rose-950 text-rose-300 border border-rose-800 flex items-center gap-1.5 animate-pulse">
-                  <AlertTriangle size={13} />
-                  {aiDiagnosticResult.total_errors} ERROR(S) DETECTED
-                </span>
+                <>
+                  <span className="px-3 py-1 rounded-full text-xs font-bold bg-rose-950 text-rose-300 border border-rose-800 flex items-center gap-1.5 animate-pulse">
+                    <AlertTriangle size={13} />
+                    {aiDiagnosticResult.total_errors} ERROR(S) DETECTED
+                  </span>
+
+                  <button
+                    onClick={handleAutoFixAll}
+                    disabled={fixingAll || Boolean(fixingItemId)}
+                    className="flex items-center gap-1.5 px-3 py-1 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold rounded-lg text-xs shadow-md shadow-emerald-950/40 border border-emerald-500/40 transition-all disabled:opacity-50"
+                    title="Automatically run remediation commands for all detected errors across host VPS servers"
+                  >
+                    {fixingAll ? (
+                      <>
+                        <RefreshCw size={12} className="animate-spin" />
+                        <span>Auto-Fixing All Issues...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles size={12} className="text-amber-300 animate-pulse" />
+                        <span>Auto-Fix All Issues on VPS</span>
+                      </>
+                    )}
+                  </button>
+                </>
               )}
 
               <button
@@ -421,10 +578,44 @@ export const MonitoringView: React.FC = () => {
                           <span className="text-xs font-bold text-white">{item.title}</span>
                         </div>
 
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
                           <span className="text-[11px] font-mono px-2 py-0.5 bg-slate-900 border border-slate-800 text-slate-300 rounded">
                             Target: {item.target}
                           </span>
+                          {item.server_name && (
+                            <span className="text-[11px] font-mono px-2 py-0.5 bg-slate-900 border border-slate-800 text-brand-300 rounded flex items-center gap-1">
+                              <ServerIcon size={11} className="text-brand-400" />
+                              {item.server_name}
+                            </span>
+                          )}
+                          {item.fix_commands && (
+                            <button
+                              onClick={() => handleAutoFixItem(item)}
+                              disabled={fixingItemId === item.id || fixingAll}
+                              className={`flex items-center gap-1 px-2.5 py-0.5 rounded text-[11px] font-bold transition-all shadow-sm ${
+                                remediatedItems[item.id]?.success
+                                  ? 'bg-emerald-950 text-emerald-300 border border-emerald-700'
+                                  : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-950/40'
+                              }`}
+                            >
+                              {fixingItemId === item.id ? (
+                                <>
+                                  <RefreshCw size={11} className="animate-spin" />
+                                  <span>Fixing...</span>
+                                </>
+                              ) : remediatedItems[item.id]?.success ? (
+                                <>
+                                  <CheckCircle2 size={11} className="text-emerald-400" />
+                                  <span>Fixed</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Sparkles size={11} className="text-amber-300" />
+                                  <span>Auto-Fix</span>
+                                </>
+                              )}
+                            </button>
+                          )}
                         </div>
                       </div>
 
@@ -468,30 +659,90 @@ export const MonitoringView: React.FC = () => {
 
                       {/* Terminal Fix Commands */}
                       {item.fix_commands && (
-                        <div className="space-y-1 pt-1">
-                          <div className="flex items-center justify-between text-[11px] font-bold text-slate-300">
+                        <div className="space-y-2 pt-1">
+                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-[11px] font-bold text-slate-300">
                             <span className="flex items-center gap-1.5 uppercase font-mono">
                               <Terminal size={12} className="text-brand-400" />
                               <span>Fix / Terminal Commands</span>
                             </span>
-                            <button
-                              onClick={() => handleCopyFix(item)}
-                              className="flex items-center gap-1 px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded text-[11px] font-medium border border-slate-700 transition-colors"
-                              title="Copy command sequence to clipboard"
-                            >
-                              {copiedFixId === item.id ? (
-                                <>
-                                  <Check size={11} className="text-emerald-400" />
-                                  <span className="text-emerald-400">Copied</span>
-                                </>
-                              ) : (
-                                <>
-                                  <Copy size={11} />
-                                  <span>Copy Commands</span>
-                                </>
-                              )}
-                            </button>
+                            <div className="flex items-center gap-2 flex-wrap">
+                              {/* Prominent Auto-Fix on VPS Button */}
+                              <button
+                                onClick={() => handleAutoFixItem(item)}
+                                disabled={fixingItemId === item.id || fixingAll}
+                                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all shadow-md ${
+                                  remediatedItems[item.id]?.success
+                                    ? 'bg-emerald-950 hover:bg-emerald-900 text-emerald-300 border border-emerald-600'
+                                    : 'bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white shadow-emerald-950/40 border border-emerald-500/50'
+                                }`}
+                                title="Execute this remediation command sequence directly on the host VPS"
+                              >
+                                {fixingItemId === item.id ? (
+                                  <>
+                                    <RefreshCw size={13} className="animate-spin text-white" />
+                                    <span>Applying AI Fix on VPS...</span>
+                                  </>
+                                ) : remediatedItems[item.id]?.success ? (
+                                  <>
+                                    <CheckCircle2 size={13} className="text-emerald-400" />
+                                    <span>Auto-Fixed (Exit {remediatedItems[item.id].exitCode})</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <Sparkles size={13} className="text-amber-300 animate-pulse" />
+                                    <span>Auto-Fix on VPS</span>
+                                  </>
+                                )}
+                              </button>
+
+                              <button
+                                onClick={() => handleCopyFix(item)}
+                                className="flex items-center gap-1 px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-medium border border-slate-700 transition-colors"
+                                title="Copy command sequence to clipboard"
+                              >
+                                {copiedFixId === item.id ? (
+                                  <>
+                                    <Check size={12} className="text-emerald-400" />
+                                    <span className="text-emerald-400">Copied</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <Copy size={12} />
+                                    <span>Copy Commands</span>
+                                  </>
+                                )}
+                              </button>
+                            </div>
                           </div>
+
+                          {/* Remediation Status Banner if already executed */}
+                          {remediatedItems[item.id] && (
+                            <div className={`p-2.5 rounded-lg border text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 ${
+                              remediatedItems[item.id].success
+                                ? 'bg-emerald-950/70 border-emerald-700/80 text-emerald-200'
+                                : 'bg-rose-950/70 border-rose-800/80 text-rose-200'
+                            }`}>
+                              <div className="flex items-center gap-2">
+                                {remediatedItems[item.id].success ? (
+                                  <CheckCircle2 size={15} className="text-emerald-400 shrink-0" />
+                                ) : (
+                                  <AlertTriangle size={15} className="text-rose-400 shrink-0" />
+                                )}
+                                <span className="font-medium">{remediatedItems[item.id].message}</span>
+                              </div>
+                              <button
+                                onClick={() => {
+                                  setAuditExecutionData(remediatedItems[item.id].executionData);
+                                  setAuditModalOpen(true);
+                                }}
+                                className="px-2.5 py-1 bg-slate-900 hover:bg-slate-800 border border-slate-700 rounded-md text-[11px] font-semibold text-slate-200 shrink-0 self-start sm:self-auto flex items-center gap-1"
+                              >
+                                <Terminal size={11} className="text-brand-400" />
+                                <span>Inspect Terminal Output & AI Audit</span>
+                              </button>
+                            </div>
+                          )}
+
                           <pre className="p-3 bg-black/90 border border-slate-800 rounded-lg text-xs font-mono text-emerald-400 overflow-x-auto whitespace-pre-wrap leading-relaxed select-all">
                             {item.fix_commands}
                           </pre>
@@ -961,6 +1212,33 @@ export const MonitoringView: React.FC = () => {
           </table>
         </div>
       </div>
+
+      <CommandAuditModal
+        isOpen={auditModalOpen}
+        onClose={() => setAuditModalOpen(false)}
+        executionData={auditExecutionData}
+        onRunFix={async (fixCommand) => {
+          if (auditExecutionData?.server_id) {
+            const res = await api.runServerTroubleshoot(auditExecutionData.server_id, {
+              command_key: 'CUSTOM',
+              custom_command: fixCommand
+            });
+            setAuditExecutionData({
+              command: fixCommand,
+              stdout: res.stdout || '',
+              stderr: res.stderr || '',
+              exit_code: res.exit_code || 0,
+              duration_ms: res.duration_ms || 0,
+              server_id: auditExecutionData.server_id,
+              server_name: auditExecutionData.server_name,
+              server_ip: auditExecutionData.server_ip,
+              context_type: 'CUSTOM_FIX_RETRY',
+              title: `Fix Command Execution: ${fixCommand.slice(0, 30)}...`
+            });
+            showToast('Remediation command re-executed on VPS', 'info');
+          }
+        }}
+      />
     </div>
   );
 };

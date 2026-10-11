@@ -1212,3 +1212,75 @@ async def test_ai_audit_command_endpoint():
         assert "proxy" in err_data["solution"].lower() or "apache2ctl" in err_data["solution"].lower() or len(err_data["solution"]) > 0
         assert len(err_data["reason"]) > 0
 
+
+@pytest.mark.asyncio
+async def test_ai_autofix_endpoints():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        token = await get_admin_token(ac)
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # Create a test server
+        srv_res = await ac.post("/api/servers", json={
+            "name": "AutoFix-Test-VPS",
+            "public_ip": "172.16.0.50",
+            "ssh_port": 22,
+            "ssh_user": "root",
+            "auth_type": "PASSWORD",
+            "ssh_password": "testpassword"
+        }, headers=headers)
+        assert srv_res.status_code == 200
+        server_id = srv_res.json()["id"]
+
+        with patch("backend.app.services.ai_diagnostics.execute_remote_command") as mock_exec:
+            mock_exec.return_value = {
+                "success": True,
+                "stdout": "Restarting nginx... OK\nConfiguration syntax ok.",
+                "stderr": "",
+                "exit_code": 0,
+                "duration_ms": 140
+            }
+
+            # 1. Test single autofix endpoint
+            fix_res = await ac.post("/api/monitoring/ai-autofix", json={
+                "diagnostic_id": "ERR-001",
+                "title": "502 Bad Gateway: Reverse Proxy",
+                "target": "AutoFix-Test-VPS",
+                "target_type": "server",
+                "fix_commands": "nginx -t && systemctl reload nginx",
+                "server_id": server_id
+            }, headers=headers)
+            assert fix_res.status_code == 200
+            data = fix_res.json()
+            assert data["success"] is True
+            assert data["diagnostic_id"] == "ERR-001"
+            assert data["exit_code"] == 0
+            assert "Restarting nginx" in data["stdout"]
+            assert data["server_id"] == server_id
+
+            # 2. Test batch autofix endpoint
+            batch_res = await ac.post("/api/monitoring/ai-autofix-all", json={
+                "items": [
+                    {
+                        "diagnostic_id": "ERR-001",
+                        "title": "502 Bad Gateway",
+                        "target": "AutoFix-Test-VPS",
+                        "fix_commands": "systemctl restart nginx",
+                        "server_id": server_id
+                    },
+                    {
+                        "diagnostic_id": "ERR-002",
+                        "title": "SSL Validation Error",
+                        "target": "AutoFix-Test-VPS",
+                        "fix_commands": "certbot renew",
+                        "server_id": server_id
+                    }
+                ],
+                "server_id": server_id
+            }, headers=headers)
+            assert batch_res.status_code == 200
+            b_data = batch_res.json()
+            assert b_data["success"] is True
+            assert b_data["total_attempted"] == 2
+            assert b_data["total_successful"] == 2
+
+

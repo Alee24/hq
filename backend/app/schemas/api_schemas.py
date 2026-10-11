@@ -853,6 +853,9 @@ class AiDiagnosticItem(BaseModel):
     explanation: str
     possible_fixes: List[str]
     fix_commands: Optional[str] = None
+    server_id: Optional[str] = None
+    server_name: Optional[str] = None
+    server_ip: Optional[str] = None
 
 class AiDiagnosticResponse(BaseModel):
     success: bool
@@ -891,6 +894,47 @@ class CommandAuditResponse(BaseModel):
     provider_used: str
     model_name: str
     execution_time_ms: int
+
+
+class AiAutofixRequest(BaseModel):
+    diagnostic_id: Optional[str] = None
+    title: Optional[str] = None
+    target: str
+    target_type: Optional[str] = "application"
+    fix_commands: str
+    server_id: Optional[str] = None
+    error_details: Optional[str] = None
+
+
+class AiAutofixResponse(BaseModel):
+    success: bool
+    diagnostic_id: Optional[str] = None
+    command: str
+    stdout: str
+    stderr: str
+    exit_code: int
+    duration_ms: int
+    server_id: str
+    server_name: str
+    server_ip: str
+    verified: bool
+    verification_message: str
+    message: str
+
+
+class AiAutofixBatchRequest(BaseModel):
+    items: List[AiAutofixRequest]
+    server_id: Optional[str] = None
+
+
+class AiAutofixBatchResponse(BaseModel):
+    success: bool
+    total_attempted: int
+    total_successful: int
+    total_failed: int
+    results: List[AiAutofixResponse]
+    summary_message: str
+
 
 
 

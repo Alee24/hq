@@ -43,6 +43,49 @@ export interface AiDiagnosticItem {
   explanation: string;
   possible_fixes: string[];
   fix_commands?: string | null;
+  server_id?: string | null;
+  server_name?: string | null;
+  server_ip?: string | null;
+}
+
+export interface AiAutofixRequest {
+  diagnostic_id?: string;
+  title?: string;
+  target: string;
+  target_type?: string;
+  fix_commands: string;
+  server_id?: string;
+  error_details?: string;
+}
+
+export interface AiAutofixResponse {
+  success: boolean;
+  diagnostic_id?: string;
+  command: string;
+  stdout: string;
+  stderr: string;
+  exit_code: number;
+  duration_ms: number;
+  server_id: string;
+  server_name: string;
+  server_ip: string;
+  verified: boolean;
+  verification_message: string;
+  message: string;
+}
+
+export interface AiAutofixBatchRequest {
+  items: AiAutofixRequest[];
+  server_id?: string;
+}
+
+export interface AiAutofixBatchResponse {
+  success: boolean;
+  total_attempted: number;
+  total_successful: number;
+  total_failed: number;
+  results: AiAutofixResponse[];
+  summary_message: string;
 }
 
 export interface AiDiagnosticResponse {
@@ -1315,6 +1358,20 @@ class ApiClient {
   async auditCommand(data: CommandAuditRequest, provider?: string) {
     const q = provider ? `?provider=${encodeURIComponent(provider)}` : '';
     return this.request<CommandAuditResponse>(`/monitoring/ai-audit-command${q}`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async autofixIssue(data: AiAutofixRequest) {
+    return this.request<AiAutofixResponse>('/monitoring/ai-autofix', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async autofixAllIssues(data: AiAutofixBatchRequest) {
+    return this.request<AiAutofixBatchResponse>('/monitoring/ai-autofix-all', {
       method: 'POST',
       body: JSON.stringify(data),
     });

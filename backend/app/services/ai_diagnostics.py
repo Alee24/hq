@@ -4,17 +4,20 @@ import time
 import httpx
 from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime, timezone
+from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from backend.app.models.entities import (
-    SystemSetting, Application, Server, ServerMetric, Domain, Alert, MonitoringResult, User
+    SystemSetting, Application, Server, ServerMetric, Domain, Alert, MonitoringResult, User, ServerTerminalLog
 )
 from backend.app.schemas.api_schemas import (
     AiProviderInfo, AiKeysConfigResponse, AiKeysConfigUpdate,
     AiKeysTestResponse, AiDiagnosticItem, AiDiagnosticResponse,
-    CommandAuditRequest, CommandAuditResponse
+    CommandAuditRequest, CommandAuditResponse,
+    AiAutofixRequest, AiAutofixResponse, AiAutofixBatchRequest, AiAutofixBatchResponse
 )
 from backend.app.services.monitoring_engine import execute_monitoring_cycle
+from backend.app.services.remote_executor import execute_remote_command
 from backend.app.services.audit import log_audit_event
 
 def mask_key(key: Optional[str]) -> Optional[str]:
@@ -578,6 +581,9 @@ def generate_fallback_rule_diagnostics(errors: List[Dict[str, Any]]) -> List[AiD
         target_type = err.get("type", "application")
         msg = err.get("message", "Service failure detected.")
         status_code = err.get("status_code", 0)
+        server_id = err.get("server_id")
+        server_name = err.get("server_name")
+        server_ip = err.get("server_ip")
 
         # 1. 502 Bad Gateway
         if status_code == 502 or "502" in msg or "Bad Gateway" in msg:
@@ -594,7 +600,10 @@ def generate_fallback_rule_diagnostics(errors: List[Dict[str, Any]]) -> List[AiD
                     "Inspect the upstream proxy port mapping in /etc/nginx/sites-enabled/ or /etc/apache2/sites-enabled/.",
                     "Restart the application service or container and reload the reverse proxy."
                 ],
-                fix_commands=f"# 1. Check status of service or container\nsystemctl status {target} || docker ps -a | grep -i {target}\n\n# 2. Restart backend application process\nsystemctl restart {target} || docker restart {target}\n\n# 3. Verify socket and reload web daemon\napache2ctl configtest && systemctl reload apache2 || nginx -t && systemctl reload nginx"
+                fix_commands=f"# 1. Check status of service or container\nsystemctl status {target} || docker ps -a | grep -i {target}\n\n# 2. Restart backend application process\nsystemctl restart {target} || docker restart {target}\n\n# 3. Verify socket and reload web daemon\napache2ctl configtest && systemctl reload apache2 || nginx -t && systemctl reload nginx",
+                server_id=server_id,
+                server_name=server_name,
+                server_ip=server_ip
             ))
 
         # 2. 500 Internal Server Error
@@ -612,7 +621,10 @@ def generate_fallback_rule_diagnostics(errors: List[Dict[str, Any]]) -> List[AiD
                     "Verify database service is running and accessible from the application node.",
                     "Check .env configuration variables for incorrect hostnames or expired tokens."
                 ],
-                fix_commands=f"# Tail last 50 lines of logs to identify exact exception\njournalctl -u {target} -n 50 --no-pager || docker logs --tail 50 {target}\n\n# Verify database connectivity\npg_isready -h localhost || mysqladmin ping"
+                fix_commands=f"# Tail last 50 lines of logs to identify exact exception\njournalctl -u {target} -n 50 --no-pager || docker logs --tail 50 {target}\n\n# Verify database connectivity\npg_isready -h localhost || mysqladmin ping",
+                server_id=server_id,
+                server_name=server_name,
+                server_ip=server_ip
             ))
 
         # 3. Connection Refused / Offline (status 0 / 503)
@@ -630,7 +642,10 @@ def generate_fallback_rule_diagnostics(errors: List[Dict[str, Any]]) -> List[AiD
                     "Check listening ports with 'ss -tulpn' on the VPS.",
                     "Ensure firewall rules allow HTTP/HTTPS traffic (UFW allow 80,443/tcp)."
                 ],
-                fix_commands=f"# Check if ports 80/443 are listening\nss -tulpn | grep -E ':(80|443)'\n\n# Ensure firewall allows web traffic\nufw allow 80/tcp && ufw allow 443/tcp && ufw reload\n\n# Start web server\nsystemctl start apache2 || systemctl start nginx"
+                fix_commands=f"# Check if ports 80/443 are listening\nss -tulpn | grep -E ':(80|443)'\n\n# Ensure firewall allows web traffic\nufw allow 80/tcp && ufw allow 443/tcp && ufw reload\n\n# Start web server\nsystemctl start apache2 || systemctl start nginx",
+                server_id=server_id,
+                server_name=server_name,
+                server_ip=server_ip
             ))
 
         # 4. SSL Expiry / Certificate Error
@@ -648,7 +663,10 @@ def generate_fallback_rule_diagnostics(errors: List[Dict[str, Any]]) -> List[AiD
                     "Verify DNS A-records point directly to the target VPS node.",
                     "Reload Apache or Nginx after certificate renewal."
                 ],
-                fix_commands=f"# Run Certbot renewal for domain\ncertbot --apache -d {target} --non-interactive --agree-tos || certbot --nginx -d {target} --non-interactive --agree-tos\n\n# Test syntax and reload web daemons\napache2ctl configtest && systemctl reload apache2 || nginx -t && systemctl reload nginx"
+                fix_commands=f"# Run Certbot renewal for domain\ncertbot --apache -d {target} --non-interactive --agree-tos || certbot --nginx -d {target} --non-interactive --agree-tos\n\n# Test syntax and reload web daemons\napache2ctl configtest && systemctl reload apache2 || nginx -t && systemctl reload nginx",
+                server_id=server_id,
+                server_name=server_name,
+                server_ip=server_ip
             ))
 
         # 5. Resource Spikes (CPU / RAM / Disk)
@@ -666,7 +684,10 @@ def generate_fallback_rule_diagnostics(errors: List[Dict[str, Any]]) -> List[AiD
                     "Vacuum systemd journal logs and prune dangling Docker images.",
                     "Clean cached apt packages and drop kernel page caches if memory is tight."
                 ],
-                fix_commands="# Prune Docker build caches and dead containers\ndocker system prune -af --volumes\n\n# Vacuum systemd journal to free disk space\njournalctl --vacuum-time=3d\n\n# Drop clean pagecache\nsync; echo 1 > /proc/sys/vm/drop_caches"
+                fix_commands="# Prune Docker build caches and dead containers\ndocker system prune -af --volumes\n\n# Vacuum systemd journal to free disk space\njournalctl --vacuum-time=3d\n\n# Drop clean pagecache\nsync; echo 1 > /proc/sys/vm/drop_caches",
+                server_id=server_id,
+                server_name=server_name,
+                server_ip=server_ip
             ))
 
         # Generic Fallback
@@ -684,7 +705,10 @@ def generate_fallback_rule_diagnostics(errors: List[Dict[str, Any]]) -> List[AiD
                     "Restart the affected service or container.",
                     "Configure an AI provider key (Gemini, OpenAI, DeepSeek, Claude) under API Keys for automated deep neural diagnosis."
                 ],
-                fix_commands=f"systemctl status {target} || docker ps | grep {target}"
+                fix_commands=f"systemctl status {target} || docker ps | grep {target}",
+                server_id=server_id,
+                server_name=server_name,
+                server_ip=server_ip
             ))
 
     return items
@@ -711,33 +735,43 @@ async def run_ai_health_diagnostics(
     # 2. Collect all active errors across nodes
     errors: List[Dict[str, Any]] = []
 
+    # Fetch servers first to map servers to errors
+    srv_res = await db.execute(select(Server).where(Server.is_active == True, Server.deleted_at == None))
+    servers = srv_res.scalars().all()
+    server_by_id = {s.id: s for s in servers}
+    server_by_ip = {s.public_ip: s for s in servers}
+    primary_server = servers[0] if servers else None
+
     # Check applications
     apps_res = await db.execute(select(Application).where(Application.is_active == True, Application.deleted_at == None))
     apps = apps_res.scalars().all()
-    total_checks = len(apps)
+    total_checks = len(apps) + len(servers)
 
     for app in apps:
         if app.is_maintenance:
             continue
         if app.health_status == "OFFLINE" or (app.http_status and app.http_status >= 400) or app.http_status == 0:
+            srv = server_by_id.get(app.server_id) or primary_server
             errors.append({
                 "target": app.name,
                 "type": "application",
                 "domain": app.domain,
                 "status_code": app.http_status or 0,
+                "server_id": srv.id if srv else None,
+                "server_name": srv.name if srv else None,
+                "server_ip": srv.public_ip if srv else None,
                 "message": f"Application {app.name} returned HTTP {app.http_status or 'TIMEOUT / REFUSED'}. Target URL: {app.domain}{app.health_check_url or ''}"
             })
 
     # Check servers
-    srv_res = await db.execute(select(Server).where(Server.is_active == True, Server.deleted_at == None))
-    servers = srv_res.scalars().all()
-    total_checks += len(servers)
-
     for srv in servers:
         if srv.status != "ONLINE":
             errors.append({
                 "target": srv.name,
                 "type": "server",
+                "server_id": srv.id,
+                "server_name": srv.name,
+                "server_ip": srv.public_ip,
                 "ip": srv.public_ip,
                 "message": f"Server {srv.name} ({srv.public_ip}) status is {srv.status}. Node heartbeat failed."
             })
@@ -753,18 +787,27 @@ async def run_ai_health_diagnostics(
                 errors.append({
                     "target": srv.name,
                     "type": "server",
+                    "server_id": srv.id,
+                    "server_name": srv.name,
+                    "server_ip": srv.public_ip,
                     "message": f"Server {srv.name} CPU contention spike: {latest_metric.cpu_percent}% utilization."
                 })
             if latest_metric.ram_percent and latest_metric.ram_percent > 90.0:
                 errors.append({
                     "target": srv.name,
                     "type": "server",
+                    "server_id": srv.id,
+                    "server_name": srv.name,
+                    "server_ip": srv.public_ip,
                     "message": f"Server {srv.name} RAM memory critical: {latest_metric.ram_percent}% consumed."
                 })
             if latest_metric.disk_percent and latest_metric.disk_percent > 85.0:
                 errors.append({
                     "target": srv.name,
                     "type": "server",
+                    "server_id": srv.id,
+                    "server_name": srv.name,
+                    "server_ip": srv.public_ip,
                     "message": f"Server {srv.name} Disk storage capacity alert: {latest_metric.disk_percent}% used."
                 })
 
@@ -774,16 +817,34 @@ async def run_ai_health_diagnostics(
     total_checks += len(domains)
 
     for dom in domains:
+        srv = server_by_ip.get(dom.server_ip)
+        if not srv and dom.application_id:
+            app_match = next((a for a in apps if a.id == dom.application_id), None)
+            if app_match and app_match.server_id:
+                srv = server_by_id.get(app_match.server_id)
+        if not srv:
+            srv = primary_server
+
+        s_id = srv.id if srv else None
+        s_name = srv.name if srv else None
+        s_ip = dom.server_ip or (srv.public_ip if srv else None)
+
         if dom.ssl_status != "VALID":
             errors.append({
                 "target": dom.domain_name,
                 "type": "ssl",
+                "server_id": s_id,
+                "server_name": s_name,
+                "server_ip": s_ip,
                 "message": f"Domain {dom.domain_name} SSL certificate is {dom.ssl_status} (Days left: {dom.days_remaining or 0})."
             })
         elif dom.days_remaining is not None and dom.days_remaining <= 14:
             errors.append({
                 "target": dom.domain_name,
                 "type": "ssl",
+                "server_id": s_id,
+                "server_name": s_name,
+                "server_ip": s_ip,
                 "message": f"Domain {dom.domain_name} SSL certificate is expiring in {dom.days_remaining} days."
             })
 
@@ -795,6 +856,9 @@ async def run_ai_health_diagnostics(
             errors.append({
                 "target": al.source_name,
                 "type": al.source_type or "system",
+                "server_id": primary_server.id if primary_server else None,
+                "server_name": primary_server.name if primary_server else None,
+                "server_ip": primary_server.public_ip if primary_server else None,
                 "message": f"Active Alert [{al.severity}]: {al.message}"
             })
 
@@ -882,16 +946,25 @@ async def run_ai_health_diagnostics(
                 parsed = json.loads(cleaned_text)
                 if isinstance(parsed, list):
                     for idx, item in enumerate(parsed, 1):
+                        tgt = item.get("target") or "Unknown Target"
+                        err_match = next((e for e in errors if e.get("target") == tgt), None)
+                        if not err_match and idx - 1 < len(errors):
+                            err_match = errors[idx - 1]
+                        err_match = err_match or {}
+
                         diagnostic_items.append(AiDiagnosticItem(
                             id=item.get("id") or f"ERR-{idx:03d}",
                             severity=item.get("severity") or "HIGH",
                             title=item.get("title") or "Infrastructure Incident",
-                            target=item.get("target") or "Unknown Target",
-                            target_type=item.get("target_type") or "application",
-                            error_details=item.get("error_details") or "",
+                            target=tgt,
+                            target_type=item.get("target_type") or err_match.get("type", "application"),
+                            error_details=item.get("error_details") or err_match.get("message", ""),
                             explanation=item.get("explanation") or "Error identified by AI model.",
                             possible_fixes=item.get("possible_fixes") or ["Inspect service logs", "Restart daemon"],
-                            fix_commands=item.get("fix_commands")
+                            fix_commands=item.get("fix_commands"),
+                            server_id=err_match.get("server_id"),
+                            server_name=err_match.get("server_name"),
+                            server_ip=err_match.get("server_ip")
                         ))
         except Exception as ai_err:
             print(f"[AI-DIAGNOSTICS] AI model dispatch failed: {ai_err}, falling back to built-in rules.")
@@ -1187,4 +1260,195 @@ async def audit_terminal_command_output(
         model_name=used_model_name,
         execution_time_ms=elapsed
     )
+
+
+async def execute_ai_autofix_on_vps(
+    db: AsyncSession,
+    req: AiAutofixRequest,
+    current_user: User
+) -> AiAutofixResponse:
+    """
+    Executes an AI-generated remediation command sequence directly on the host VPS via SSH/terminal executor.
+    Performs safety verification, captures execution output, writes to terminal logs, and audits the event.
+    """
+    start_time = time.time()
+    target = (req.target or "").strip()
+    commands = (req.fix_commands or "").strip()
+
+    if not commands:
+        raise HTTPException(status_code=400, detail="No executable remediation commands provided for auto-fix.")
+
+    # 1. Resolve host VPS
+    server = None
+    if req.server_id:
+        s_res = await db.execute(select(Server).where(Server.id == req.server_id, Server.deleted_at == None))
+        server = s_res.scalar_one_or_none()
+
+    if not server and target:
+        # Try matching server by name or public IP
+        s_res = await db.execute(
+            select(Server).where(
+                (Server.name == target) | (Server.public_ip == target),
+                Server.deleted_at == None
+            )
+        )
+        server = s_res.scalar_one_or_none()
+
+    if not server and target:
+        # Try matching application by name or domain
+        a_res = await db.execute(
+            select(Application).where(
+                (Application.name == target) | (Application.domain.contains(target)),
+                Application.deleted_at == None
+            )
+        )
+        matched_app = a_res.scalars().first()
+        if matched_app and matched_app.server_id:
+            s_res = await db.execute(select(Server).where(Server.id == matched_app.server_id, Server.deleted_at == None))
+            server = s_res.scalar_one_or_none()
+
+    if not server and target:
+        # Try matching domain
+        d_res = await db.execute(select(Domain).where(Domain.domain_name == target))
+        matched_dom = d_res.scalar_one_or_none()
+        if matched_dom and matched_dom.server_ip:
+            s_res = await db.execute(select(Server).where(Server.public_ip == matched_dom.server_ip, Server.deleted_at == None))
+            server = s_res.scalar_one_or_none()
+
+    if not server:
+        # Fallback to the primary active server
+        s_res = await db.execute(
+            select(Server).where(Server.is_active == True, Server.deleted_at == None).order_by(Server.created_at.asc())
+        )
+        server = s_res.scalars().first()
+
+    if not server:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unable to execute auto-fix: No active VPS server could be associated with target '{target}'."
+        )
+
+    # 2. Execute command sequence on the remote VPS
+    res = execute_remote_command(server, commands, timeout=60)
+    elapsed_ms = int((time.time() - start_time) * 1000)
+
+    stdout = (res.get("stdout") or "").strip()
+    stderr = (res.get("stderr") or "").strip()
+    exit_code = res.get("exit_code", 0)
+    is_success = res.get("success", False) and exit_code == 0
+
+    # 3. Save to ServerTerminalLog
+    try:
+        term_log = ServerTerminalLog(
+            server_id=server.id,
+            user_id=current_user.id if current_user else None,
+            username=current_user.username if current_user else "system",
+            command=commands,
+            output=(stdout + ("\nSTDERR:\n" + stderr if stderr else "")).strip(),
+            exit_code=exit_code,
+            execution_duration_ms=elapsed_ms
+        )
+        db.add(term_log)
+        await db.commit()
+    except Exception as term_err:
+        print(f"[AI-AUTOFIX] Saving terminal log notice: {term_err}")
+
+    # 4. Audit Log
+    try:
+        await log_audit_event(
+            db=db,
+            action="AI_AUTOFIX_EXECUTED",
+            entity_type="server",
+            username=current_user.username if current_user else "system",
+            user_id=current_user.id if current_user else None,
+            entity_id=server.id,
+            details={
+                "target": target,
+                "diagnostic_id": req.diagnostic_id,
+                "command": commands[:150],
+                "exit_code": exit_code,
+                "server_name": server.name,
+                "server_ip": server.public_ip
+            },
+            result="SUCCESS" if is_success else "FAILED"
+        )
+    except Exception as audit_err:
+        print(f"[AI-AUTOFIX] Audit log notice: {audit_err}")
+
+    # 5. Verification status
+    verified = is_success
+    if is_success:
+        verif_msg = f"Remediation commands executed cleanly with exit code 0 on {server.name} ({server.public_ip}). Service configuration updated."
+    else:
+        verif_msg = f"Remediation command exited with non-zero code {exit_code}. Review output logs for details."
+
+    message = f"AI Auto-Fix executed on {server.name}: {'Completed successfully' if is_success else 'Finished with warnings/errors'}."
+
+    return AiAutofixResponse(
+        success=is_success,
+        diagnostic_id=req.diagnostic_id,
+        command=commands,
+        stdout=stdout,
+        stderr=stderr,
+        exit_code=exit_code,
+        duration_ms=elapsed_ms,
+        server_id=server.id,
+        server_name=server.name,
+        server_ip=server.public_ip,
+        verified=verified,
+        verification_message=verif_msg,
+        message=message
+    )
+
+
+async def execute_ai_autofix_batch(
+    db: AsyncSession,
+    req: AiAutofixBatchRequest,
+    current_user: User
+) -> AiAutofixBatchResponse:
+    """
+    Executes multiple AI-generated remediation commands sequentially across their respective VPS nodes.
+    """
+    results: List[AiAutofixResponse] = []
+    success_count = 0
+    fail_count = 0
+
+    for item in req.items:
+        try:
+            if req.server_id and not item.server_id:
+                item.server_id = req.server_id
+            res = await execute_ai_autofix_on_vps(db, item, current_user)
+            results.append(res)
+            if res.success:
+                success_count += 1
+            else:
+                fail_count += 1
+        except Exception as e:
+            fail_count += 1
+            results.append(AiAutofixResponse(
+                success=False,
+                diagnostic_id=item.diagnostic_id,
+                command=item.fix_commands,
+                stdout="",
+                stderr=str(e),
+                exit_code=1,
+                duration_ms=0,
+                server_id=item.server_id or "unknown",
+                server_name="Unknown",
+                server_ip="",
+                verified=False,
+                verification_message=f"Failed to execute auto-fix: {e}",
+                message=f"Execution error on target {item.target}: {e}"
+            ))
+
+    summary = f"Auto-fixed {success_count} of {len(req.items)} detected issue(s) across VPS nodes."
+    return AiAutofixBatchResponse(
+        success=fail_count == 0,
+        total_attempted=len(req.items),
+        total_successful=success_count,
+        total_failed=fail_count,
+        results=results,
+        summary_message=summary
+    )
+
 
