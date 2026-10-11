@@ -208,6 +208,30 @@ class ApiClient {
     });
   }
 
+  async executeComponentAction(id: string, componentName: string, action: string, params?: Record<string, any>) {
+    return this.request<{
+      success: boolean;
+      message: string;
+      stdout?: string;
+      stderr?: string;
+      exit_code?: number;
+    }>(`/applications/${id}/components/${encodeURIComponent(componentName)}/action`, {
+      method: 'POST',
+      body: JSON.stringify({ action, ...(params || {}) }),
+    });
+  }
+
+  async executeSuiteAction(id: string, action: string, componentNames?: string[]) {
+    return this.request<{
+      success: boolean;
+      message: string;
+      results?: Array<{ component: string; success: boolean; message: string }>;
+    }>(`/applications/${id}/suite/action`, {
+      method: 'POST',
+      body: JSON.stringify({ action, component_names: componentNames }),
+    });
+  }
+
   // ==========================================
   // Servers
   // ==========================================
@@ -552,7 +576,8 @@ class ApiClient {
     return this.request<any[]>(`/monitoring/incidents${q}`);
   }
 
-  async getLiveApplicationMonitor(appId: string) {
+  async getLiveApplicationMonitor(appId: string, component?: string) {
+    const q = component ? `?component=${encodeURIComponent(component)}` : '';
     return this.request<{
       application_id: string;
       application_name: string;
@@ -576,7 +601,7 @@ class ApiClient {
       }>;
       terminal_logs: string;
       timestamp: string;
-    }>(`/monitoring/live/${appId}`);
+    }>(`/monitoring/live/${appId}${q}`);
   }
 
   // ==========================================

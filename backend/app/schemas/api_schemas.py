@@ -255,6 +255,19 @@ class MaintenanceModeRequest(BaseModel):
     reason: str
     expected_duration_minutes: int = 60
 
+class ApplicationComponentInfo(BaseModel):
+    id: str
+    name: str
+    service_name: str
+    container_name: str
+    role: str = "standalone"  # frontend, backend, database, cache, certbot, worker, standalone
+    role_label: str = "Application"  # Frontend Web, Backend API, Database, etc.
+    port: int = 80
+    health_status: str = "ONLINE"
+    app_type: str = "Docker Container"
+    process_manager: str = "Docker"
+    uptime_percent: Optional[float] = 99.98
+
 class ApplicationResponse(BaseModel):
     id: str
     name: str
@@ -289,6 +302,10 @@ class ApplicationResponse(BaseModel):
     health_status: str
     is_maintenance: bool
     created_at: datetime
+    group_name: Optional[str] = None
+    is_suite: Optional[bool] = False
+    components: Optional[List[ApplicationComponentInfo]] = None
+    component_count: Optional[int] = 0
 
     class Config:
         from_attributes = True

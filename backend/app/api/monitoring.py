@@ -134,6 +134,7 @@ async def list_incidents(
 @router.get("/live/{application_id}")
 async def get_live_application_monitor(
     application_id: str,
+    component: Optional[str] = Query(None, description="Optional container/service component to monitor"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -156,9 +157,9 @@ async def get_live_application_monitor(
     if not server:
         raise HTTPException(status_code=400, detail="No active server found hosting this application.")
 
-    app_name = app.name
-    svc_name = app.service_name or app_name
-    is_docker = app.process_manager == "Docker" or (svc_name and "docker" in svc_name.lower())
+    app_name = component.strip() if component else app.name
+    svc_name = component.strip() if component else (app.service_name or app.name)
+    is_docker = True if component else (app.process_manager == "Docker" or (svc_name and "docker" in svc_name.lower()) or getattr(app, 'app_type', '') == 'Docker Container')
 
     probe_script = f"""import os, sys, re, json, subprocess, glob, time
 

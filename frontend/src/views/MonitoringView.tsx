@@ -19,7 +19,8 @@ import {
   Pause,
   Trash2,
   Search,
-  ExternalLink
+  ExternalLink,
+  Box
 } from 'lucide-react';
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip } from 'recharts';
 import { api } from '../api/client';
@@ -62,6 +63,7 @@ export const MonitoringView: React.FC = () => {
   const [applications, setApplications] = useState<Application[]>([]);
   const [selectedServerId, setSelectedServerId] = useState<string>('');
   const [selectedAppId, setSelectedAppId] = useState<string>('');
+  const [selectedComponentName, setSelectedComponentName] = useState<string>('');
   const [liveMonitorData, setLiveMonitorData] = useState<LiveMonitorData | null>(null);
   const [loadingLive, setLoadingLive] = useState(false);
   const [isStreaming, setIsStreaming] = useState(true);
@@ -115,6 +117,7 @@ export const MonitoringView: React.FC = () => {
   // When selected server changes, auto-select first matching app if needed
   const handleServerChange = (srvId: string) => {
     setSelectedServerId(srvId);
+    setSelectedComponentName('');
     const matchingApps = applications.filter(a => a.server_id === srvId);
     if (matchingApps.length > 0) {
       setSelectedAppId(matchingApps[0].id);
@@ -125,11 +128,11 @@ export const MonitoringView: React.FC = () => {
   };
 
   // Fetch live application logs & traffic
-  const fetchLiveMonitor = async (appId: string) => {
+  const fetchLiveMonitor = async (appId: string, compName?: string) => {
     if (!appId) return;
     setLoadingLive(true);
     try {
-      const res = await api.getLiveApplicationMonitor(appId);
+      const res = await api.getLiveApplicationMonitor(appId, compName || undefined);
       setLiveMonitorData(res);
     } catch (err: any) {
       console.error('Failed to fetch live monitor', err);
@@ -140,18 +143,18 @@ export const MonitoringView: React.FC = () => {
 
   useEffect(() => {
     if (selectedAppId) {
-      fetchLiveMonitor(selectedAppId);
+      fetchLiveMonitor(selectedAppId, selectedComponentName);
     }
-  }, [selectedAppId]);
+  }, [selectedAppId, selectedComponentName]);
 
   // Live polling stream every 4 seconds when streaming is active
   useEffect(() => {
     if (!isStreaming || !selectedAppId) return;
     const interval = setInterval(() => {
-      fetchLiveMonitor(selectedAppId);
+      fetchLiveMonitor(selectedAppId, selectedComponentName);
     }, 4000);
     return () => clearInterval(interval);
-  }, [isStreaming, selectedAppId]);
+  }, [isStreaming, selectedAppId, selectedComponentName]);
 
   const handleTriggerNow = async () => {
     setTriggering(true);
@@ -174,6 +177,7 @@ export const MonitoringView: React.FC = () => {
     : '';
 
   const matchingApps = applications.filter(a => !selectedServerId || a.server_id === selectedServerId);
+  const selectedApp = applications.find(a => a.id === selectedAppId);
 
   return (
     <div className="p-6 md:p-8 space-y-6 max-w-7xl mx-auto">
@@ -266,7 +270,10 @@ export const MonitoringView: React.FC = () => {
               <span className="text-slate-500 font-medium">Application:</span>
               <select
                 value={selectedAppId}
-                onChange={(e) => setSelectedAppId(e.target.value)}
+                onChange={(e) => {
+                  setSelectedAppId(e.target.value);
+                  setSelectedComponentName('');
+                }}
                 className="bg-transparent border-none text-white focus:outline-none text-xs font-semibold cursor-pointer"
               >
                 {matchingApps.length === 0 ? (
@@ -274,12 +281,34 @@ export const MonitoringView: React.FC = () => {
                 ) : (
                   matchingApps.map((a) => (
                     <option key={a.id} value={a.id} className="bg-slate-900 text-white">
-                      {a.name} ({a.framework || 'Web App'})
+                      {a.name} {a.is_suite ? `(${a.components?.length || a.component_count || 1} Services)` : `(${a.framework || 'Web App'})`}
                     </option>
                   ))
                 )}
               </select>
             </div>
+
+            {/* Service Component Selector (For Multi-Container Docker Suites) */}
+            {selectedApp?.is_suite && selectedApp?.components && selectedApp.components.length > 1 && (
+              <div className="flex items-center gap-1.5 bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-slate-300">
+                <Box size={13} className="text-sky-400 shrink-0" />
+                <span className="text-slate-500 font-medium">Service:</span>
+                <select
+                  value={selectedComponentName}
+                  onChange={(e) => setSelectedComponentName(e.target.value)}
+                  className="bg-transparent border-none text-white focus:outline-none text-xs font-semibold cursor-pointer"
+                >
+                  <option value="" className="bg-slate-900 text-white">
+                    All Services (Composite)
+                  </option>
+                  {selectedApp.components.map((c) => (
+                    <option key={c.id || c.name} value={c.name} className="bg-slate-900 text-white">
+                      {c.role_label} &mdash; {c.name} :{c.port}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
 
             {/* Stream Toggle & Manual Refresh */}
             <button

@@ -64,6 +64,20 @@ export interface Server {
   latest_metric?: ServerMetric;
 }
 
+export interface ApplicationComponent {
+  id: string;
+  name: string;
+  service_name: string;
+  container_name: string;
+  role: 'frontend' | 'backend' | 'database' | 'cache' | 'certbot' | 'worker' | 'agent' | 'standalone' | string;
+  role_label: string;
+  port: number;
+  health_status: 'ONLINE' | 'DEGRADED' | 'OFFLINE' | 'MAINTENANCE' | 'STOPPED' | string;
+  app_type: string;
+  process_manager: string;
+  uptime_percent?: number;
+}
+
 export interface Application {
   id: string;
   name: string;
@@ -98,6 +112,10 @@ export interface Application {
   health_status: 'ONLINE' | 'DEGRADED' | 'OFFLINE' | 'MAINTENANCE' | 'UNKNOWN';
   is_maintenance: boolean;
   created_at: string;
+  group_name?: string;
+  is_suite?: boolean;
+  components?: ApplicationComponent[];
+  component_count?: number;
 }
 
 export interface DomainItem {
