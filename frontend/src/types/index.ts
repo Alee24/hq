@@ -124,6 +124,8 @@ export interface DomainItem {
   application_id?: string;
   application_name?: string;
   server_ip: string;
+  server_id?: string;
+  server_name?: string;
   dns_status: string;
   ssl_status: string;
   ssl_issuer: string;

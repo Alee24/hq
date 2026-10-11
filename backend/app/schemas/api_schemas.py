@@ -327,6 +327,8 @@ class DomainResponse(BaseModel):
     application_id: Optional[str]
     application_name: Optional[str] = None
     server_ip: str
+    server_id: Optional[str] = None
+    server_name: Optional[str] = None
     dns_status: str
     ssl_status: str
     ssl_issuer: str

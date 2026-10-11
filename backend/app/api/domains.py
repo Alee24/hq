@@ -28,14 +28,36 @@ async def list_domains(
     result = await db.execute(stmt)
     domains = result.scalars().all()
 
+    # Preload servers and applications for fast, accurate relationship resolution
+    srv_stmt = select(Server).where(Server.deleted_at == None)
+    srv_res = await db.execute(srv_stmt)
+    all_servers = srv_res.scalars().all()
+    servers_by_ip = {s.public_ip.strip(): s for s in all_servers if s.public_ip}
+    servers_by_id = {s.id: s for s in all_servers}
+
+    app_stmt = select(Application).where(Application.deleted_at == None)
+    app_res = await db.execute(app_stmt)
+    all_apps = {a.id: a for a in app_res.scalars().all()}
+
     enriched = []
     for d in domains:
         d_resp = DomainResponse.model_validate(d)
-        if d.application_id:
-            app_res = await db.execute(select(Application).where(Application.id == d.application_id))
-            app = app_res.scalar_one_or_none()
-            if app:
-                d_resp.application_name = app.name
+        app = all_apps.get(d.application_id) if d.application_id else None
+        if app:
+            d_resp.application_name = app.name
+
+        clean_ip = (d.server_ip or "").strip()
+        srv = servers_by_ip.get(clean_ip) or servers_by_id.get(clean_ip)
+        if not srv and app and app.server_id:
+            srv = servers_by_id.get(app.server_id)
+
+        if srv:
+            d_resp.server_id = srv.id
+            d_resp.server_name = srv.name
+        elif all_servers:
+            d_resp.server_id = all_servers[0].id
+            d_resp.server_name = all_servers[0].name
+
         enriched.append(d_resp)
     return enriched
 
@@ -237,6 +259,7 @@ async def backup_domain_config(
     )
 
 @router.delete("/{domain_id}/delete-from-server", response_model=DomainDeleteFromServerResponse)
+@router.post("/{domain_id}/delete-from-server", response_model=DomainDeleteFromServerResponse)
 async def delete_domain_from_server(
     domain_id: str,
     db: AsyncSession = Depends(get_db),

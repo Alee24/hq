@@ -3483,31 +3483,73 @@ mkdir -p "$BACKUP_DIR"
 TS=$(date +%s)
 
 FOUND=""
-for p in /etc/apache2/sites-enabled/*$DOM*.conf /etc/nginx/sites-enabled/*$DOM* /etc/nginx/conf.d/*$DOM*.conf /etc/apache2/sites-available/*$DOM*.conf; do
+for p in \
+    /etc/apache2/sites-enabled/*$DOM*.conf \
+    /etc/apache2/sites-available/*$DOM*.conf \
+    /etc/apache2/sites-available/*$DOM*-le-ssl.conf \
+    /etc/nginx/sites-enabled/*$DOM* \
+    /etc/nginx/sites-available/*$DOM* \
+    /etc/nginx/conf.d/*$DOM*.conf; do
     if [ -f "$p" ] || [ -L "$p" ]; then
         FOUND="$FOUND $p"
     fi
 done
 
-if [ -z "$FOUND" ]; then
-    echo "NO_CONFIG_FOUND: No configuration files found matching $DOM in /etc/apache2 or /etc/nginx"
-    exit 0
-fi
-
-# 1. Archive files safely before deletion
-tar -czf "$BACKUP_DIR/${{DOM}}_${{TS}}.tar.gz" $FOUND 2>/dev/null || true
-
-# 2. Remove symlinks and config files
-for f in $FOUND; do
-    rm -f "$f"
-    echo "REMOVED: $f"
+# Check Certbot renewal and certificate directories
+CERTBOT_FOUND=""
+for cp in \
+    /etc/letsencrypt/renewal/$DOM*.conf \
+    /etc/letsencrypt/live/$DOM* \
+    /etc/letsencrypt/archive/$DOM*; do
+    if [ -e "$cp" ]; then
+        CERTBOT_FOUND="$CERTBOT_FOUND $cp"
+    fi
 done
 
-# 3. Test syntax and reload
+TOTAL_FILES="$FOUND $CERTBOT_FOUND"
+
+if [ -n "$TOTAL_FILES" ]; then
+    # 1. Archive files safely before permanent deletion
+    tar -czf "$BACKUP_DIR/${{DOM}}_${{TS}}.tar.gz" $TOTAL_FILES 2>/dev/null || true
+fi
+
+# 2. Safely disable and purge from Apache
+if command -v a2dissite >/dev/null 2>&1; then
+    for f in /etc/apache2/sites-enabled/*$DOM*.conf; do
+        if [ -e "$f" ]; then
+            base_site=$(basename "$f")
+            a2dissite "$base_site" 2>/dev/null || true
+        fi
+    done
+fi
+
+for f in $FOUND; do
+    rm -f "$f"
+    echo "REMOVED_CONFIG: $f"
+done
+
+# 3. Clean up Certbot certificates & renewal records from server
+if command -v certbot >/dev/null 2>&1; then
+    certbot delete --cert-name "$DOM" --non-interactive 2>/dev/null || true
+    echo "CERTBOT_RECORD_PURGED: $DOM certificate purged via certbot delete"
+fi
+
+for cp in $CERTBOT_FOUND; do
+    rm -rf "$cp"
+    echo "REMOVED_SSL_RECORD: $cp"
+done
+
+# 4. Clean up /etc/hosts if domain entry was registered locally
+if [ -f /etc/hosts ] && grep -q "$DOM" /etc/hosts; then
+    sed -i "/[[:space:]]$DOM\([[:space:]]\|$\)/d" /etc/hosts 2>/dev/null || true
+    echo "REMOVED_HOSTS_ENTRY: Purged $DOM from /etc/hosts"
+fi
+
+# 5. Validate syntax and reload web daemons
 SYNTAX_OK=true
 if command -v apache2ctl >/dev/null 2>&1; then
     if apache2ctl configtest 2>/dev/null; then
-        systemctl reload apache2 2>/dev/null || true
+        systemctl reload apache2 2>/dev/null || apache2ctl graceful 2>/dev/null || true
         echo "APACHE_RELOADED: apache2 configtest passed and daemon reloaded"
     else
         SYNTAX_OK=false
@@ -3517,7 +3559,7 @@ fi
 
 if command -v nginx >/dev/null 2>&1; then
     if nginx -t 2>/dev/null; then
-        systemctl reload nginx 2>/dev/null || true
+        systemctl reload nginx 2>/dev/null || nginx -s reload 2>/dev/null || true
         echo "NGINX_RELOADED: nginx -t passed and daemon reloaded"
     else
         SYNTAX_OK=false
@@ -3525,7 +3567,7 @@ if command -v nginx >/dev/null 2>&1; then
     fi
 fi
 
-echo "DOMAIN_TEARDOWN_COMPLETED: $DOM removed from server. Backup: $BACKUP_DIR/${{DOM}}_${{TS}}.tar.gz"
+echo "DOMAIN_TEARDOWN_COMPLETED: $DOM and all associated configurations, certificates, and records permanently removed from server. Backup: $BACKUP_DIR/${{DOM}}_${{TS}}.tar.gz"
 """
     res = execute_remote_command(server, script, timeout=45)
     out = res.get("stdout", "")

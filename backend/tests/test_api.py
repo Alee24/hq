@@ -1115,13 +1115,55 @@ async def test_ai_provider_response_parsers_and_gemini_edge_cases():
     assert err is None
 
 
+@pytest.mark.asyncio
+async def test_domain_vps_association_and_server_teardown():
+    import uuid, random
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        token = await get_admin_token(ac)
+        headers = {"Authorization": f"Bearer {token}"}
 
+        test_uid = uuid.uuid4().hex[:8]
+        test_ip = f"185.192.{random.randint(100, 250)}.{random.randint(10, 250)}"
 
+        # 1. Register test server
+        srv_res = await ac.post("/api/servers", json={
+            "public_ip": test_ip,
+            "name": f"Teardown-VPS-{test_uid}",
+            "ssh_password": "TestPassword!2026"
+        }, headers=headers)
+        assert srv_res.status_code == 200
+        srv_id = srv_res.json()["id"]
+        srv_ip = srv_res.json()["public_ip"]
 
+        # 2. Register domain mapped to this server
+        test_domain_name = f"teardown-{test_uid}.kkdes.co.ke"
+        dom_res = await ac.post("/api/domains", json={
+            "domain_name": test_domain_name,
+            "server_ip": srv_ip,
+            "redirect_status": "HTTP_TO_HTTPS",
+            "auto_renew": True
+        }, headers=headers)
+        assert dom_res.status_code == 200
+        dom_id = dom_res.json()["id"]
 
+        # 3. Verify GET /api/domains returns server_id and server_name
+        list_res = await ac.get("/api/domains", headers=headers)
+        assert list_res.status_code == 200
+        domains_list = list_res.json()
+        target_dom = next((d for d in domains_list if d["id"] == dom_id), None)
+        assert target_dom is not None
+        assert target_dom["server_id"] == srv_id
+        assert target_dom["server_name"] == f"Teardown-VPS-{test_uid}"
 
+        # 4. Execute permanent server teardown & deletion
+        del_res = await ac.post(f"/api/domains/{dom_id}/delete-from-server", headers=headers)
+        assert del_res.status_code == 200
+        del_data = del_res.json()
+        assert del_data["success"] is True
+        assert del_data["domain_name"] == test_domain_name
 
-
-
-
-
+        # 5. Verify domain was removed from database
+        verify_res = await ac.get("/api/domains", headers=headers)
+        assert verify_res.status_code == 200
+        remaining_ids = [d["id"] for d in verify_res.json()]
+        assert dom_id not in remaining_ids

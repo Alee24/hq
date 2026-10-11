@@ -90,10 +90,15 @@ interface DomainDeepDiveData {
   days_remaining: number;
 }
 
-export const DomainsView: React.FC = () => {
+interface DomainsViewProps {
+  initialServerId?: string;
+}
+
+export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId }) => {
   const [domains, setDomains] = useState<DomainItem[]>([]);
   const [servers, setServers] = useState<Server[]>([]);
-  const [selectedServerFilter, setSelectedServerFilter] = useState<string>('ALL');
+  const [applications, setApplications] = useState<any[]>([]);
+  const [selectedServerId, setSelectedServerId] = useState<string | null>(initialServerId || null);
   const [searchQuery, setSearchQuery] = useState('');
   const [loading, setLoading] = useState(true);
 
@@ -126,6 +131,7 @@ export const DomainsView: React.FC = () => {
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [newDomain, setNewDomain] = useState('');
   const [newIp, setNewIp] = useState('');
+  const [newAppId, setNewAppId] = useState('');
 
   const showToast = (text: string, type: 'success' | 'error' | 'info' = 'success') => {
     setToastMessage({ text, type });
@@ -134,12 +140,14 @@ export const DomainsView: React.FC = () => {
 
   const loadData = async () => {
     try {
-      const [resDomains, resServers] = await Promise.all([
+      const [resDomains, resServers, resApps] = await Promise.all([
         api.listDomains(),
-        api.listServers().catch(() => [])
+        api.listServers().catch(() => []),
+        api.listApplications().catch(() => [])
       ]);
       setDomains(resDomains);
       setServers(resServers);
+      setApplications(resApps);
     } catch (e) {
       console.error(e);
     } finally {
@@ -377,14 +385,16 @@ export const DomainsView: React.FC = () => {
 
   const executeConfirmedTeardown = async () => {
     if (!selectedDomainForTeardown) return;
+    const target = selectedDomainForTeardown;
     setTeardownRunning(true);
     try {
-      const res = await api.deleteDomainFromServer(selectedDomainForTeardown.id);
+      const res = await api.deleteDomainFromServer(target.id);
       if (res.success) {
-        showToast(res.message || `Configuration removed from server for ${selectedDomainForTeardown.domain_name}`, 'success');
+        showToast(res.message || `Domain '${target.domain_name}' and all server configurations permanently removed.`, 'success');
       } else {
-        showToast(res.message || 'Teardown reported warnings', 'error');
+        showToast(res.message || 'Teardown reported warnings on server', 'error');
       }
+      setDomains(prev => prev.filter(d => d.id !== target.id));
       setTeardownModalOpen(false);
       setSelectedDomainForTeardown(null);
       await loadData();
@@ -410,36 +420,52 @@ export const DomainsView: React.FC = () => {
 
   const handleCreateDomain = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!newDomain.trim() || !newIp.trim()) {
+      showToast('Domain name and target VPS server are required.', 'error');
+      return;
+    }
     try {
       await api.createDomain({
-        domain_name: newDomain,
-        server_ip: newIp,
+        domain_name: newDomain.trim(),
+        server_ip: newIp.trim(),
+        application_id: newAppId || undefined,
         redirect_status: 'HTTP_TO_HTTPS',
         auto_renew: true,
       });
       setCreateModalOpen(false);
       setNewDomain('');
       setNewIp('');
-      showToast(`Domain ${newDomain} registered successfully.`, 'success');
+      setNewAppId('');
+      showToast(`Domain '${newDomain}' registered successfully.`, 'success');
       await loadData();
     } catch (err: any) {
       showToast(err.message || 'Failed to register domain', 'error');
     }
   };
 
-  // Filter domains by server and search query
-  const filteredDomains = domains.filter((d) => {
-    const matchesServer =
-      selectedServerFilter === 'ALL' ||
-      d.server_ip === selectedServerFilter ||
-      servers.find(s => s.id === selectedServerFilter)?.public_ip === d.server_ip;
+  const selectedServer = servers.find(
+    (s) => s.id === selectedServerId || s.public_ip === selectedServerId
+  ) || null;
 
-    const matchesSearch =
-      d.domain_name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (d.application_name && d.application_name.toLowerCase().includes(searchQuery.toLowerCase())) ||
-      d.server_ip.toLowerCase().includes(searchQuery.toLowerCase());
+  // Domains hosted strictly on the selected VPS
+  const serverDomains = selectedServer
+    ? domains.filter((d) =>
+        d.server_id === selectedServer.id ||
+        d.server_ip === selectedServer.public_ip ||
+        (d.server_ip && d.server_ip.trim() === selectedServer.public_ip.trim()) ||
+        (d.application_id && applications.find((a) => a.id === d.application_id)?.server_id === selectedServer.id)
+      )
+    : [];
 
-    return matchesServer && matchesSearch;
+  // Filter within selected VPS domains by search query
+  const filteredDomains = serverDomains.filter((d) => {
+    const q = searchQuery.toLowerCase().trim();
+    if (!q) return true;
+    return (
+      d.domain_name.toLowerCase().includes(q) ||
+      (d.application_name && d.application_name.toLowerCase().includes(q)) ||
+      (d.server_ip && d.server_ip.toLowerCase().includes(q))
+    );
   });
 
   return (
@@ -465,119 +491,315 @@ export const DomainsView: React.FC = () => {
         </div>
       )}
 
-      {/* Header Bar */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-2 border-b border-slate-800">
-        <div>
-          <h1 className="text-2xl font-bold text-white tracking-tight flex items-center gap-2.5">
-            <Globe className="text-brand-400" size={24} />
-            <span>Domains & SSL Certificate Gateway</span>
-          </h1>
-          <p className="text-xs text-slate-400 mt-1">
-            Deep-dive software runtime telemetry, RAM utilization, live web traffic analytics, remote VirtualHost teardown, and automated Let's Encrypt SSL issuance.
-          </p>
-        </div>
+      {!selectedServer ? (
+        /* Step 1: VPS Selection Screen */
+        <div className="space-y-6">
+          {/* Header Bar */}
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-2 border-b border-slate-800">
+            <div>
+              <h1 className="text-2xl font-bold text-white tracking-tight flex items-center gap-2.5">
+                <Globe className="text-brand-400" size={24} />
+                <span>Domains & SSL Certificate Gateway</span>
+              </h1>
+              <p className="text-xs text-slate-400 mt-1">
+                Select a target VPS node below to inspect and manage hosted domains, virtualhosts, and SSL certificates.
+              </p>
+            </div>
 
-        <div className="flex items-center gap-2.5 flex-wrap">
-          <button
-            onClick={() => loadData()}
-            className="p-2 bg-slate-900 hover:bg-slate-800 border border-slate-800 rounded-lg text-slate-300 hover:text-white transition-colors"
-            title="Refresh Domains"
-          >
-            <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
-          </button>
+            <div className="flex items-center gap-2.5 flex-wrap">
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => loadData()}
+                isLoading={loading}
+                leftIcon={<RefreshCw size={14} className={loading ? 'animate-spin' : ''} />}
+              >
+                Refresh Servers
+              </Button>
+            </div>
+          </div>
 
-          <button
-            onClick={() => setCreateModalOpen(true)}
-            className="flex items-center gap-1.5 px-3.5 py-1.5 bg-brand-600 hover:bg-brand-500 text-white rounded-lg text-xs font-semibold shadow-sm transition-colors"
-          >
-            <Plus size={14} />
-            <span>Register New Domain</span>
-          </button>
-        </div>
-      </div>
+          {/* Step 1 Selection Banner */}
+          <div className="p-4 rounded-xl bg-slate-900/90 border border-brand-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-lg">
+            <div className="flex items-center gap-3">
+              <div className="p-2.5 rounded-lg bg-brand-500/20 text-brand-400 border border-brand-500/30 shrink-0">
+                <ServerIcon size={20} />
+              </div>
+              <div>
+                <h2 className="text-sm font-semibold text-white flex items-center gap-2">
+                  <span>Step 1: Select Target VPS Server</span>
+                  <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full bg-brand-500/20 text-brand-300 border border-brand-500/30">
+                    Required First Step
+                  </span>
+                </h2>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  VirtualHosts and Let's Encrypt certificates are hosted per server node. Select a server to inspect its domains and execute teardown or renewal actions.
+                </p>
+              </div>
+            </div>
+            <div className="text-xs font-semibold text-brand-300 bg-brand-950/80 px-3.5 py-1.5 rounded-lg border border-brand-800/60 shrink-0 self-start sm:self-auto">
+              {servers.length} Registered VPS {servers.length === 1 ? 'Node' : 'Nodes'}
+            </div>
+          </div>
 
-      {/* Filter & Search Bar */}
-      <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 bg-slate-900/60 p-3 rounded-xl border border-slate-800">
-        <div className="flex items-center gap-2 flex-1">
-          {/* Server Filter Dropdown */}
-          <div className="flex items-center gap-2 bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-300">
-            <Filter size={13} className="text-brand-400 shrink-0" />
-            <span className="text-slate-500 font-medium hidden md:inline">Server Filter:</span>
-            <select
-              value={selectedServerFilter}
-              onChange={(e) => setSelectedServerFilter(e.target.value)}
-              className="bg-transparent border-none text-white focus:outline-none text-xs cursor-pointer font-medium"
-            >
-              <option value="ALL" className="bg-slate-900 text-white">All Servers ({domains.length} domains)</option>
-              {servers.map((s) => {
-                const count = domains.filter(d => d.server_ip === s.public_ip).length;
+          {/* VPS Grid */}
+          {loading ? (
+            <div className="py-20 text-center text-slate-500 bg-slate-900/40 rounded-2xl border border-slate-800">
+              <RefreshCw size={28} className="animate-spin mx-auto mb-3 text-brand-400" />
+              <p className="text-sm font-medium text-slate-300">Scanning VPS servers & domain registries...</p>
+              <p className="text-xs text-slate-500 mt-1">Inspecting Apache, Nginx, and Certbot configurations</p>
+            </div>
+          ) : servers.length === 0 ? (
+            <div className="p-12 text-center rounded-2xl bg-slate-900/60 border border-slate-800">
+              <ServerIcon size={44} className="mx-auto text-slate-600 mb-3" />
+              <h3 className="text-base font-semibold text-white mb-1">No VPS Servers Configured</h3>
+              <p className="text-xs text-slate-400 max-w-md mx-auto mb-4">
+                Please register a VPS server node first in Servers & Nodes before configuring domains and SSL certificates.
+              </p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+              {servers.map((srv) => {
+                const srvDomains = domains.filter((d) =>
+                  d.server_id === srv.id ||
+                  d.server_ip === srv.public_ip ||
+                  (d.server_ip && d.server_ip.trim() === srv.public_ip.trim()) ||
+                  (d.application_id && applications.find((a) => a.id === d.application_id)?.server_id === srv.id)
+                );
+                const validSsl = srvDomains.filter((d) => d.ssl_status === 'VALID').length;
+                const expiringSsl = srvDomains.filter((d) => d.days_remaining <= 30 && d.ssl_status === 'VALID').length;
+
                 return (
-                  <option key={s.id} value={s.public_ip} className="bg-slate-900 text-white">
-                    {s.name} ({s.public_ip}) — {count} domains
-                  </option>
+                  <div
+                    key={srv.id}
+                    onClick={() => {
+                      setSelectedServerId(srv.id);
+                      setNewIp(srv.public_ip);
+                    }}
+                    className="group relative bg-slate-900 hover:bg-slate-850 border border-slate-800 hover:border-brand-500/60 rounded-2xl p-5 transition-all duration-200 cursor-pointer shadow-lg hover:shadow-brand-500/10 flex flex-col justify-between"
+                  >
+                    <div>
+                      {/* Header: Name and Status */}
+                      <div className="flex items-start justify-between gap-3 mb-3">
+                        <div className="flex items-center gap-2.5">
+                          <div className="p-2 rounded-xl bg-slate-850 group-hover:bg-brand-500/20 text-brand-400 border border-slate-750 group-hover:border-brand-500/40 transition-colors">
+                            <ServerIcon size={18} />
+                          </div>
+                          <div>
+                            <h3 className="text-sm font-bold text-white group-hover:text-brand-300 transition-colors">
+                              {srv.name}
+                            </h3>
+                            <div className="flex items-center gap-2 text-[11px] text-slate-400 mt-0.5 mono">
+                              <span>{srv.public_ip}</span>
+                              {srv.provider && <span>· {srv.provider}</span>}
+                            </div>
+                          </div>
+                        </div>
+                        <StatusBadge status={srv.status || 'ONLINE'} />
+                      </div>
+
+                      {/* Server specs badge */}
+                      <div className="flex items-center gap-2 text-[11px] text-slate-400 mb-4 bg-slate-950/70 px-3 py-1.5 rounded-lg border border-slate-800/80">
+                        <Cpu size={12} className="text-slate-500 shrink-0" />
+                        <span className="truncate">{srv.os || 'Linux'} {srv.os_version ? `(${srv.os_version})` : ''}</span>
+                        {srv.hostname && <span className="text-slate-500 truncate">· {srv.hostname}</span>}
+                      </div>
+
+                      {/* Metrics Stats Grid */}
+                      <div className="grid grid-cols-3 gap-2 py-3 px-3 rounded-xl bg-slate-950/50 border border-slate-800/60 mb-4 text-center">
+                        <div>
+                          <div className="text-lg font-bold text-white mono">{srvDomains.length}</div>
+                          <div className="text-[10px] text-slate-400 uppercase tracking-wider mt-0.5">Domains</div>
+                        </div>
+                        <div>
+                          <div className="text-lg font-bold text-emerald-400 mono">{validSsl}</div>
+                          <div className="text-[10px] text-slate-400 uppercase tracking-wider mt-0.5">SSL Valid</div>
+                        </div>
+                        <div>
+                          <div className={`text-lg font-bold mono ${expiringSsl > 0 ? 'text-amber-400' : 'text-slate-400'}`}>
+                            {expiringSsl}
+                          </div>
+                          <div className="text-[10px] text-slate-400 uppercase tracking-wider mt-0.5">Expiring</div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Action Button */}
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      className="w-full justify-center group-hover:bg-brand-500"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectedServerId(srv.id);
+                        setNewIp(srv.public_ip);
+                      }}
+                      rightIcon={<ChevronRight size={14} className="group-hover:translate-x-0.5 transition-transform" />}
+                    >
+                      <span>Select VPS & Manage Domains</span>
+                    </Button>
+                  </div>
                 );
               })}
-            </select>
+            </div>
+          )}
+        </div>
+      ) : (
+        /* Step 2: Selected VPS Domains Management View */
+        <div className="space-y-6">
+          {/* Header Bar */}
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-2 border-b border-slate-800">
+            <div>
+              <div className="flex items-center gap-2 text-xs text-brand-400 font-medium mb-1">
+                <button
+                  onClick={() => setSelectedServerId(null)}
+                  className="hover:underline flex items-center gap-1 text-slate-400 hover:text-brand-300 transition-colors"
+                >
+                  <Globe size={13} />
+                  <span>All VPS Nodes</span>
+                </button>
+                <ChevronRight size={12} className="text-slate-600" />
+                <span className="text-white font-semibold">{selectedServer.name}</span>
+              </div>
+              <h1 className="text-2xl font-bold text-white tracking-tight flex items-center gap-2.5">
+                <span>{selectedServer.name}</span>
+                <span className="text-sm font-normal text-slate-400 mono">({selectedServer.public_ip})</span>
+              </h1>
+              <p className="text-xs text-slate-400 mt-1">
+                Managing VirtualHosts, runtime telemetry, live web analytics, and SSL certificates hosted on this VPS.
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2.5 flex-wrap">
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => setSelectedServerId(null)}
+                leftIcon={<RotateCcw size={14} />}
+              >
+                Switch VPS
+              </Button>
+
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => loadData()}
+                isLoading={loading}
+                leftIcon={<RefreshCw size={14} className={loading ? 'animate-spin' : ''} />}
+              >
+                Refresh
+              </Button>
+
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={() => {
+                  setNewIp(selectedServer.public_ip);
+                  setCreateModalOpen(true);
+                }}
+                leftIcon={<Plus size={14} />}
+              >
+                Register New Domain
+              </Button>
+            </div>
           </div>
 
-          {/* Search Input */}
-          <div className="relative flex-1 max-w-md">
-            <Search size={13} className="absolute left-3 top-2.5 text-slate-500" />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search by domain, application name, or IP..."
-              className="w-full pl-8 pr-3 py-1.5 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-brand-500"
-            />
-          </div>
-        </div>
+          {/* Active VPS Banner & Quick Switcher */}
+          <div className="p-3.5 rounded-xl bg-slate-900 border border-slate-800 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 shadow-md">
+            <div className="flex items-center gap-3">
+              <div className="p-2 rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 shrink-0">
+                <ServerIcon size={16} />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-semibold text-white">Active VPS Node: {selectedServer.name}</span>
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                  <span className="text-[11px] text-emerald-400 font-medium">Connected</span>
+                </div>
+                <div className="text-[11px] text-slate-400 mono mt-0.5">
+                  Public IP: {selectedServer.public_ip} {selectedServer.provider ? `· ${selectedServer.provider}` : ''} {selectedServer.os ? `· ${selectedServer.os}` : ''}
+                </div>
+              </div>
+            </div>
 
-        <div className="text-xs text-slate-400 flex items-center gap-2 self-end sm:self-auto">
-          <span>Showing <strong className="text-white">{filteredDomains.length}</strong> of {domains.length} active domains</span>
-        </div>
-      </div>
+            <div className="flex items-center gap-2 self-end sm:self-auto">
+              <span className="text-xs text-slate-400 whitespace-nowrap">Switch VPS:</span>
+              <select
+                value={selectedServer.id}
+                onChange={(e) => {
+                  setSelectedServerId(e.target.value);
+                  const newSrv = servers.find((s) => s.id === e.target.value);
+                  if (newSrv) setNewIp(newSrv.public_ip);
+                }}
+                className="bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-brand-500 cursor-pointer font-medium"
+              >
+                {servers.map((s) => (
+                  <option key={s.id} value={s.id} className="bg-slate-900 text-white">
+                    {s.name} ({s.public_ip})
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
 
-      {/* Primary KPI Row */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <div className="p-4 rounded-xl bg-slate-900 border border-slate-800 space-y-1">
-          <span className="text-xs text-slate-500">Active Mapped Domains</span>
-          <div className="text-2xl font-bold text-white mono">{domains.length}</div>
-          <div className="text-[11px] text-emerald-400 flex items-center gap-1">
-            <CheckCircle2 size={12} /> 100% VirtualHosts mapped
-          </div>
-        </div>
+          {/* Scoped KPI Row */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div className="p-4 rounded-xl bg-slate-900 border border-slate-800 space-y-1">
+              <span className="text-xs text-slate-500">Domains on this VPS</span>
+              <div className="text-2xl font-bold text-white mono">{serverDomains.length}</div>
+              <div className="text-[11px] text-emerald-400 flex items-center gap-1">
+                <CheckCircle2 size={12} /> Scoped to {selectedServer.name}
+              </div>
+            </div>
 
-        <div className="p-4 rounded-xl bg-slate-900 border border-slate-800 space-y-1">
-          <span className="text-xs text-slate-500">TLS/SSL Secured (Valid)</span>
-          <div className="text-2xl font-bold text-emerald-400 mono">
-            {domains.filter(d => d.ssl_status === 'VALID').length}
-          </div>
-          <div className="text-[11px] text-slate-400">Let's Encrypt Authority</div>
-        </div>
+            <div className="p-4 rounded-xl bg-slate-900 border border-slate-800 space-y-1">
+              <span className="text-xs text-slate-500">TLS/SSL Secured (Valid)</span>
+              <div className="text-2xl font-bold text-emerald-400 mono">
+                {serverDomains.filter((d) => d.ssl_status === 'VALID').length}
+              </div>
+              <div className="text-[11px] text-slate-400">Let's Encrypt / TLS</div>
+            </div>
 
-        <div className="p-4 rounded-xl bg-slate-900 border border-slate-800 space-y-1">
-          <span className="text-xs text-slate-500">Expiring Within 30 Days</span>
-          <div className="text-2xl font-bold text-amber-400 mono">
-            {domains.filter(d => d.days_remaining <= 30 && d.ssl_status === 'VALID').length}
-          </div>
-          <div className="text-[11px] text-amber-400 flex items-center gap-1">
-            <Clock size={12} /> Auto-renewal configured
-          </div>
-        </div>
+            <div className="p-4 rounded-xl bg-slate-900 border border-slate-800 space-y-1">
+              <span className="text-xs text-slate-500">Expiring Within 30 Days</span>
+              <div className="text-2xl font-bold text-amber-400 mono">
+                {serverDomains.filter((d) => d.days_remaining <= 30 && d.ssl_status === 'VALID').length}
+              </div>
+              <div className="text-[11px] text-amber-400 flex items-center gap-1">
+                <Clock size={12} /> Auto-renewal active
+              </div>
+            </div>
 
-        <div className="p-4 rounded-xl bg-slate-900 border border-slate-800 space-y-1">
-          <span className="text-xs text-slate-500">Global SSL Coverage</span>
-          <div className="text-2xl font-bold text-white mono">
-            {domains.length > 0
-              ? `${Math.round((domains.filter(d => d.ssl_status === 'VALID').length / domains.length) * 100)}%`
-              : '100%'}
+            <div className="p-4 rounded-xl bg-slate-900 border border-slate-800 space-y-1">
+              <span className="text-xs text-slate-500">VPS SSL Coverage</span>
+              <div className="text-2xl font-bold text-white mono">
+                {serverDomains.length > 0
+                  ? `${Math.round((serverDomains.filter((d) => d.ssl_status === 'VALID').length / serverDomains.length) * 100)}%`
+                  : '100%'}
+              </div>
+              <div className="text-[11px] text-emerald-400 flex items-center gap-1">
+                <ShieldCheck size={12} /> HTTPS 301 enforced
+              </div>
+            </div>
           </div>
-          <div className="text-[11px] text-emerald-400 flex items-center gap-1">
-            <ShieldCheck size={12} /> HTTPS 301 enforced
+
+          {/* Search Bar */}
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 bg-slate-900/60 p-3 rounded-xl border border-slate-800">
+            <div className="relative flex-1 max-w-md">
+              <Search size={13} className="absolute left-3 top-2.5 text-slate-500" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder={`Search domains on ${selectedServer.name}...`}
+                className="w-full pl-8 pr-3 py-1.5 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-brand-500"
+              />
+            </div>
+
+            <div className="text-xs text-slate-400 flex items-center gap-2 self-end sm:self-auto">
+              <span>Showing <strong className="text-white">{filteredDomains.length}</strong> of {serverDomains.length} domains</span>
+            </div>
           </div>
-        </div>
-      </div>
 
       {/* Domains Table */}
       <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-sm">
@@ -608,14 +830,23 @@ export const DomainsView: React.FC = () => {
                   <td colSpan={8} className="py-12 text-center text-slate-500">
                     <div className="flex flex-col items-center justify-center gap-2">
                       <Globe size={28} className="text-slate-600" />
-                      <p className="font-medium text-slate-400">No domains matching current filter.</p>
-                      <button
-                        onClick={() => setCreateModalOpen(true)}
-                        className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-brand-600 hover:bg-brand-500 text-white rounded-lg text-xs font-semibold shadow-sm transition-colors mt-1"
+                      <p className="font-medium text-slate-400">
+                        {searchQuery
+                          ? `No domains matching "${searchQuery}" on this VPS.`
+                          : `No domains mapped on ${selectedServer.name} (${selectedServer.public_ip}).`}
+                      </p>
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        onClick={() => {
+                          setNewIp(selectedServer.public_ip);
+                          setCreateModalOpen(true);
+                        }}
+                        leftIcon={<Plus size={14} />}
+                        className="mt-1"
                       >
-                        <Plus size={14} />
-                        <span>Add First Domain</span>
-                      </button>
+                        Add First Domain on this VPS
+                      </Button>
                     </div>
                   </td>
                 </tr>
@@ -1100,6 +1331,8 @@ export const DomainsView: React.FC = () => {
           </table>
         </div>
       </div>
+    </div>
+  )}
 
       {/* Add Domain Modal */}
       <ModalShell
@@ -1129,14 +1362,46 @@ export const DomainsView: React.FC = () => {
             placeholder="e.g. portal.kkdes.co.ke"
           />
 
-          <InputField
-            label="Target Hosting Server IP"
-            isRequired
-            value={newIp}
-            onChange={(e) => setNewIp(e.target.value)}
-            placeholder="e.g. 185.192.97.84"
-            className="mono"
-          />
+          <div className="space-y-1.5">
+            <label className="block text-xs font-medium text-slate-300">
+              Target Hosting VPS Server <span className="text-rose-400">*</span>
+            </label>
+            <select
+              value={newIp}
+              onChange={(e) => setNewIp(e.target.value)}
+              className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-xs text-white focus:outline-none focus:border-brand-500 font-mono"
+              required
+            >
+              <option value="" disabled>Select target VPS server</option>
+              {servers.map((s) => (
+                <option key={s.id} value={s.public_ip}>
+                  {s.name} ({s.public_ip})
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {applications.length > 0 && (
+            <div className="space-y-1.5">
+              <label className="block text-xs font-medium text-slate-300">
+                Associated Application (Optional)
+              </label>
+              <select
+                value={newAppId}
+                onChange={(e) => setNewAppId(e.target.value)}
+                className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-xs text-white focus:outline-none focus:border-brand-500"
+              >
+                <option value="">None / Standalone VirtualHost</option>
+                {applications
+                  .filter((a) => !newIp || !a.server_ip || a.server_ip === newIp)
+                  .map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.name} ({a.language || a.framework || 'Web App'})
+                    </option>
+                  ))}
+              </select>
+            </div>
+          )}
         </form>
       </ModalShell>
 
@@ -1145,14 +1410,18 @@ export const DomainsView: React.FC = () => {
         <ConfirmationModal
           isOpen={teardownModalOpen}
           title="Tear Down & Delete Configuration from Server"
-          message={`Are you sure you want to delete the configuration for '${selectedDomainForTeardown.domain_name}' from the host server (${selectedDomainForTeardown.server_ip})? This will:
-1. Safely archive the configuration file into /var/backups/hq-deleted-configs/
-2. Unlink and remove the VirtualHost files from /etc/apache2/sites-enabled/ and /etc/nginx/sites-enabled/
-3. Run syntax validation (apache2ctl configtest / nginx -t)
-4. Reload the web server daemon to reduce the number of active domains
-5. Remove this domain from the Central Software Command Center.`}
+          message={`Are you sure you want to permanently delete '${selectedDomainForTeardown.domain_name}' and all associated configurations from server (${selectedDomainForTeardown.server_ip})?
+
+This will permanently:
+1. Safely archive current configurations to /var/backups/hq-deleted-configs/
+2. Permanently delete all Apache VirtualHost files (/etc/apache2/sites-enabled/ & sites-available/)
+3. Permanently delete all Nginx server block configs (/etc/nginx/sites-enabled/, sites-available/, and conf.d/)
+4. Purge all Certbot Let's Encrypt certificates and renewal configs (/etc/letsencrypt/renewal/, live/, archive/)
+5. Purge local /etc/hosts domain mappings
+6. Run configuration syntax checks (apache2ctl configtest / nginx -t) and reload web daemons
+7. Permanently remove the domain record and all associations from HQ.`}
           confirmKeyword="DELETE"
-          confirmButtonText={teardownRunning ? "Removing from Server..." : "Delete Configuration from Server"}
+          confirmButtonText={teardownRunning ? "Purging from Server..." : "Permanently Delete from Server"}
           isDestructive={true}
           isLoading={teardownRunning}
           onConfirm={executeConfirmedTeardown}
