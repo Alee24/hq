@@ -380,6 +380,36 @@ export const MonitoringView: React.FC = () => {
     }
   };
 
+  // Investigate live application stream logs using AI
+  const handleInvestigateLiveTerminalLogs = () => {
+    if (!liveMonitorData) {
+      showToast('No active application selected for log investigation', 'info');
+      return;
+    }
+
+    const logContent = (liveMonitorData.terminal_logs || displayedLogLines.join('\n') || '').trim();
+    if (!logContent) {
+      showToast('No terminal logs available to investigate', 'info');
+      return;
+    }
+
+    const hasError = /error|fatal|exception|fail|500|502|503|crit/i.test(logContent);
+
+    setAuditExecutionData({
+      command: `${liveMonitorData.framework} logs --tail 80`,
+      stdout: logContent,
+      stderr: hasError ? 'Detected error indicators in live stdout stream.' : '',
+      exit_code: hasError ? 1 : 0,
+      duration_ms: 120,
+      server_id: liveMonitorData.server_id,
+      server_name: liveMonitorData.server_name,
+      server_ip: liveMonitorData.server_ip,
+      context_type: 'LIVE_TERMINAL_STREAM',
+      title: `Live Log Investigation: ${liveMonitorData.application_name || 'Application'}`
+    });
+    setAuditModalOpen(true);
+  };
+
   // ==============================================================
   // LOG PARSING: EXTRACT LAST 10 LINES & REVERSE (NEWEST ON TOP)
   // ==============================================================
@@ -982,7 +1012,18 @@ export const MonitoringView: React.FC = () => {
                   </span>
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
+                  {/* Investigate Logs with AI */}
+                  <button
+                    type="button"
+                    onClick={handleInvestigateLiveTerminalLogs}
+                    className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-gradient-to-r from-brand-600 to-indigo-600 hover:from-brand-500 hover:to-indigo-500 text-white text-[11px] font-semibold shadow-md shadow-brand-900/30 transition-all hover:scale-[1.02] active:scale-[0.98]"
+                    title="Investigate current live console output with AI to diagnose errors and generate bash fixes"
+                  >
+                    <Sparkles size={12} className="text-amber-300" />
+                    <span>Investigate Logs with AI</span>
+                  </button>
+
                   {/* Tail Mode Toggle */}
                   <div className="flex bg-slate-900 border border-slate-800 rounded p-0.5 text-[10px] font-semibold">
                     <button

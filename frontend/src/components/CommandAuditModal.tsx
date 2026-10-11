@@ -54,11 +54,13 @@ export const CommandAuditModal: React.FC<CommandAuditModalProps> = ({
   const [auditResult, setAuditResult] = useState<CommandAuditResponse | null>(null);
   const [activeTab, setActiveTab] = useState<'ai' | 'terminal'>('ai');
   const [runningFix, setRunningFix] = useState(false);
+  const [showInlineAi, setShowInlineAi] = useState(false);
 
   // When executionData changes and modal opens, auto-run or reset AI audit
   React.useEffect(() => {
     if (isOpen && executionData) {
       setAuditResult(null);
+      setShowInlineAi(executionData.exit_code !== 0);
       runAiAudit();
     }
   }, [isOpen, executionData?.command, executionData?.exit_code, executionData?.stdout]);
@@ -131,6 +133,13 @@ export const CommandAuditModal: React.FC<CommandAuditModalProps> = ({
       await onRunFix(auditResult.suggested_command);
     } finally {
       setRunningFix(false);
+    }
+  };
+
+  const handleInvestigateConsoleOutput = () => {
+    setShowInlineAi(true);
+    if (!auditResult || !auditLoading) {
+      runAiAudit();
     }
   };
 
@@ -366,26 +375,66 @@ export const CommandAuditModal: React.FC<CommandAuditModalProps> = ({
         {/* Tab 2: Raw Terminal Output */}
         {activeTab === 'terminal' && (
           <div className="space-y-3">
-            <div className="flex items-center justify-between text-xs text-slate-400">
-              <span className="font-semibold text-slate-300 flex items-center gap-1.5">
-                <Terminal size={13} className="text-slate-400" />
-                <span>Console Output</span>
-              </span>
-              <button
-                onClick={() =>
-                  copyToClipboard(
-                    `${executionData.stdout}\n${executionData.stderr}`.trim(),
-                    setCopiedOutput
-                  )
-                }
-                className="hover:text-white transition-colors flex items-center gap-1 text-[11px]"
-              >
-                {copiedOutput ? <Check size={12} className="text-emerald-400" /> : <Copy size={12} />}
-                <span>{copiedOutput ? 'Copied' : 'Copy Output'}</span>
-              </button>
+            {/* Console Output Header Bar */}
+            <div className="flex flex-wrap items-center justify-between text-xs text-slate-400 gap-2 pb-1 border-b border-slate-800/80">
+              <div className="flex items-center gap-2">
+                <span className="font-semibold text-slate-200 flex items-center gap-1.5">
+                  <Terminal size={14} className="text-emerald-400" />
+                  <span>Console Output</span>
+                </span>
+                <span className="text-[11px] text-slate-500 hidden sm:inline">
+                  (stdout & stderr streams)
+                </span>
+              </div>
+
+              <div className="flex items-center gap-2 flex-wrap">
+                {/* Prominent "Investigate Error with AI" / "Investigate with AI" button */}
+                <button
+                  type="button"
+                  onClick={handleInvestigateConsoleOutput}
+                  disabled={auditLoading}
+                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold shadow-md transition-all ${
+                    auditLoading
+                      ? 'bg-brand-600/60 text-brand-200 cursor-wait'
+                      : !isSuccess
+                      ? 'bg-gradient-to-r from-amber-500 via-rose-500 to-pink-500 hover:from-amber-400 hover:via-rose-400 hover:to-pink-400 text-white shadow-rose-900/40 hover:scale-[1.02] active:scale-[0.98]'
+                      : 'bg-gradient-to-r from-brand-600 to-indigo-600 hover:from-brand-500 hover:to-indigo-500 text-white shadow-brand-900/40 hover:scale-[1.02] active:scale-[0.98]'
+                  }`}
+                  title="Run AI root-cause analysis on this console output to explain the issue and generate terminal remediation commands"
+                >
+                  <Sparkles
+                    size={13}
+                    className={auditLoading ? 'animate-spin text-amber-300' : 'text-amber-200'}
+                  />
+                  <span>
+                    {auditLoading
+                      ? 'Investigating with AI...'
+                      : !isSuccess
+                      ? 'Investigate Error with AI'
+                      : 'Investigate Output with AI'}
+                  </span>
+                </button>
+
+                {/* Copy Output Button */}
+                <button
+                  type="button"
+                  onClick={() =>
+                    copyToClipboard(
+                      `${executionData.stdout}\n${executionData.stderr}`.trim(),
+                      setCopiedOutput
+                    )
+                  }
+                  className="px-2.5 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-800 transition-colors flex items-center gap-1 text-[11px]"
+                  title="Copy Raw Terminal Output"
+                >
+                  {copiedOutput ? <Check size={12} className="text-emerald-400" /> : <Copy size={12} />}
+                  <span>{copiedOutput ? 'Copied' : 'Copy Output'}</span>
+                </button>
+              </div>
             </div>
 
-            <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 font-mono text-xs overflow-x-auto max-h-[380px] overflow-y-auto space-y-2">
+            {/* Console Output Terminal Block */}
+            <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 font-mono text-xs overflow-x-auto max-h-[360px] overflow-y-auto space-y-2">
               {executionData.stdout && (
                 <pre className="text-slate-300 whitespace-pre-wrap leading-relaxed select-all">
                   {executionData.stdout}
@@ -407,6 +456,164 @@ export const CommandAuditModal: React.FC<CommandAuditModalProps> = ({
                 </div>
               )}
             </div>
+
+            {/* Inline AI Root-Cause Diagnosis & Fix Card */}
+            {showInlineAi && (
+              <div className="p-4 rounded-xl bg-slate-950/90 border border-brand-500/30 space-y-3.5 shadow-xl transition-all">
+                {/* Header */}
+                <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5 border-b border-slate-800">
+                  <div className="flex items-center gap-2">
+                    <div className="p-1.5 rounded-lg bg-brand-500/20 text-brand-400">
+                      <Sparkles size={16} />
+                    </div>
+                    <div>
+                      <div className="text-xs font-bold text-white flex items-center gap-2">
+                        <span>AI Root-Cause Diagnosis & Fix</span>
+                        {auditResult && (
+                          <span
+                            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold border ${getStatusColor(
+                              statusLevel
+                            )}`}
+                          >
+                            {statusLevel}
+                          </span>
+                        )}
+                      </div>
+                      {auditResult && (
+                        <div className="text-[11px] text-slate-400">
+                          Audited by{' '}
+                          <span className="text-slate-200 font-medium">{auditResult.provider_used}</span>{' '}
+                          ({auditResult.model_name})
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab('ai')}
+                      className="text-xs text-brand-400 hover:text-brand-300 hover:underline flex items-center gap-1 font-medium transition-colors"
+                    >
+                      <span>View Full AI Tab</span>
+                      <ArrowRight size={12} />
+                    </button>
+                    <Button
+                      variant="ghost"
+                      size="xs"
+                      onClick={runAiAudit}
+                      isLoading={auditLoading}
+                      leftIcon={<RefreshCw size={11} />}
+                      title="Re-analyze console output with AI"
+                    >
+                      Re-Analyze
+                    </Button>
+                  </div>
+                </div>
+
+                {auditLoading ? (
+                  <div className="py-6 text-center space-y-2">
+                    <RefreshCw size={24} className="animate-spin text-brand-400 mx-auto" />
+                    <div className="text-xs font-semibold text-white">AI Engine Investigating Console Output...</div>
+                    <p className="text-[11px] text-slate-400 max-w-sm mx-auto">
+                      Diagnosing root cause, analyzing exit codes & error traces, and synthesizing bash remediation commands.
+                    </p>
+                  </div>
+                ) : auditResult ? (
+                  <div className="space-y-3">
+                    {/* Summary Banner */}
+                    <div
+                      className={`p-3 rounded-lg border text-xs flex items-start gap-2.5 ${getStatusColor(
+                        auditResult.status_level
+                      )}`}
+                    >
+                      <div className="p-1 rounded bg-black/20 shrink-0 mt-0.5">
+                        {auditResult.status_level === 'SUCCESS' ? (
+                          <CheckCircle2 size={15} />
+                        ) : auditResult.status_level === 'CRITICAL' ? (
+                          <AlertOctagon size={15} />
+                        ) : (
+                          <AlertTriangle size={15} />
+                        )}
+                      </div>
+                      <div className="flex-1 min-w-0 font-medium leading-relaxed">
+                        {auditResult.summary}
+                      </div>
+                    </div>
+
+                    {/* Reason / Root Cause */}
+                    <div className="p-3 bg-slate-900/80 rounded-lg border border-slate-800 space-y-1.5">
+                      <div className="flex items-center gap-1.5 text-xs font-semibold text-amber-400">
+                        <ShieldAlert size={14} />
+                        <span>Reason & Root-Cause Explanation</span>
+                      </div>
+                      <div className="text-xs text-slate-300 leading-relaxed whitespace-pre-wrap pl-4">
+                        {auditResult.reason}
+                      </div>
+                    </div>
+
+                    {/* Recommended Solution */}
+                    <div className="p-3 bg-slate-900/80 rounded-lg border border-slate-800 space-y-1.5">
+                      <div className="flex items-center gap-1.5 text-xs font-semibold text-emerald-400">
+                        <Sparkles size={14} />
+                        <span>Recommended Solution & Actionable Steps</span>
+                      </div>
+                      <div className="text-xs text-slate-300 leading-relaxed whitespace-pre-wrap pl-4">
+                        {auditResult.solution}
+                      </div>
+                    </div>
+
+                    {/* Suggested Bash Remediation Command */}
+                    {auditResult.suggested_command && (
+                      <div className="p-3.5 bg-brand-950/40 rounded-lg border border-brand-500/30 space-y-2">
+                        <div className="flex flex-wrap items-center justify-between text-xs gap-2">
+                          <span className="font-semibold text-brand-300 flex items-center gap-1.5">
+                            <Play size={12} className="text-brand-400" />
+                            <span>Remediation Terminal Commands</span>
+                          </span>
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => copyToClipboard(auditResult.suggested_command!, setCopiedFix)}
+                              className="text-brand-300 hover:text-white transition-colors flex items-center gap-1 text-[11px] px-2.5 py-1 rounded bg-brand-900/40 hover:bg-brand-900/60 border border-brand-500/20"
+                            >
+                              {copiedFix ? <Check size={11} className="text-emerald-400" /> : <Copy size={11} />}
+                              <span>{copiedFix ? 'Copied' : 'Copy Commands'}</span>
+                            </button>
+                            {onRunFix && (
+                              <Button
+                                variant="primary"
+                                size="xs"
+                                onClick={handleExecuteFix}
+                                isLoading={runningFix}
+                                leftIcon={<Play size={11} />}
+                                className="bg-emerald-600 hover:bg-emerald-500 text-white font-semibold shadow-sm"
+                              >
+                                Run Fix on VPS
+                              </Button>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="p-2.5 bg-slate-950 border border-brand-500/20 rounded font-mono text-xs text-emerald-400 select-all overflow-x-auto whitespace-pre">
+                          {auditResult.suggested_command}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="py-4 text-center">
+                    <button
+                      type="button"
+                      onClick={runAiAudit}
+                      className="text-xs text-brand-400 hover:text-brand-300 underline font-medium"
+                    >
+                      Click here to run AI diagnosis on this output
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
       </div>

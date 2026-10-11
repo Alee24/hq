@@ -2231,17 +2231,43 @@ export const ServerDetailView: React.FC<ServerDetailViewProps> = ({
             {/* Output Box */}
             {terminalOutput && (
               <div className="p-4 bg-slate-950 border border-slate-800 rounded-xl font-mono text-xs text-slate-200 space-y-2">
-                <div className="flex items-center justify-between text-slate-500 border-b border-slate-800/80 pb-2">
-                  <span>$ {terminalOutput.command}</span>
-                  <button
-                    onClick={() => {
-                      navigator.clipboard.writeText(terminalOutput.stdout || terminalOutput.stderr);
-                      showToast('Output copied to clipboard', 'info');
-                    }}
-                    className="hover:text-white flex items-center gap-1 text-[11px]"
-                  >
-                    <Copy size={11} /> Copy
-                  </button>
+                <div className="flex flex-wrap items-center justify-between text-slate-500 border-b border-slate-800/80 pb-2 gap-2">
+                  <span className="truncate max-w-[500px] text-emerald-400 font-mono">$ {terminalOutput.command}</span>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAuditExecutionData({
+                          command: terminalOutput.command,
+                          stdout: terminalOutput.stdout,
+                          stderr: terminalOutput.stderr,
+                          exit_code: terminalOutput.exit_code,
+                          duration_ms: terminalOutput.duration_ms,
+                          server_id: server?.id,
+                          server_name: server?.name,
+                          server_ip: server?.public_ip,
+                          context_type: 'DIRECT_TERMINAL_OUTPUT',
+                          title: `Terminal Output Audit: ${terminalOutput.command.slice(0, 35)}`
+                        });
+                        setAuditModalOpen(true);
+                      }}
+                      className="px-2.5 py-1 rounded-md text-[11px] font-semibold bg-gradient-to-r from-brand-600 to-indigo-600 hover:from-brand-500 hover:to-indigo-500 text-white shadow-sm flex items-center gap-1 transition-all"
+                      title="Investigate command output with AI"
+                    >
+                      <Sparkles size={11} className="text-amber-300" />
+                      <span>Investigate with AI</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigator.clipboard.writeText(terminalOutput.stdout || terminalOutput.stderr);
+                        showToast('Output copied to clipboard', 'info');
+                      }}
+                      className="hover:text-white flex items-center gap-1 text-[11px] text-slate-400 px-2 py-1 rounded bg-slate-900 border border-slate-800 transition-colors"
+                    >
+                      <Copy size={11} /> Copy
+                    </button>
+                  </div>
                 </div>
                 <pre className="max-h-80 overflow-y-auto whitespace-pre-wrap leading-relaxed text-slate-300">
                   {terminalOutput.stdout || terminalOutput.stderr || '(No output returned)'}

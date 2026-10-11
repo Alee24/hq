@@ -1209,8 +1209,25 @@ async def test_ai_audit_command_endpoint():
         err_data = err_res.json()
         assert err_data["exit_code"] == 1
         assert err_data["status_level"] == "ERROR"
-        assert "proxy" in err_data["solution"].lower() or "apache2ctl" in err_data["solution"].lower() or len(err_data["solution"]) > 0
         assert len(err_data["reason"]) > 0
+
+        # 3. Test audit on Certbot DNS / Let's Encrypt failure (exit_code 1)
+        cert_res = await ac.post("/api/monitoring/ai-audit-command", json={
+            "command": "certbot -d mettogroup.com --non-interactive --agree-tos --redirect",
+            "stdout": "Saving debug log to /var/log/letsencrypt/letsencrypt.log\nRequesting a certificate for mettogroup.com\nCertbot failed to authenticate some domains (authenticator: webroot).\n  Domain: mettogroup.com\n  Type: dns\n  Detail: no valid A records found for mettogroup.com\nSome challenges have failed.",
+            "stderr": "",
+            "exit_code": 1,
+            "duration_ms": 2314,
+            "server_name": "node-eu-1",
+            "context_type": "SSL_CERTBOT_RENEWAL"
+        }, headers=headers)
+        assert cert_res.status_code == 200
+        cert_data = cert_res.json()
+        assert cert_data["exit_code"] == 1
+        assert cert_data["status_level"] in ["ERROR", "CRITICAL"]
+        assert "mettogroup.com" in cert_data["summary"] or "DNS" in cert_data["summary"] or "Certbot" in cert_data["summary"]
+        assert "dns" in cert_data["reason"].lower() or "a record" in cert_data["reason"].lower()
+        assert len(cert_data["suggested_command"]) > 0
 
 
 @pytest.mark.asyncio

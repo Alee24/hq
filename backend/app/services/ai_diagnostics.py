@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import time
 import httpx
@@ -1110,7 +1111,98 @@ def generate_fallback_command_audit(
                 "suggested_command": "journalctl -xeu $(echo '" + command + "' | awk '{print $NF}') -n 50 --no-pager"
             }
 
-    # 5. Generic Error (exit_code != 0)
+    # 5. Let's Encrypt / Certbot / SSL / DNS Challenges
+    if any(k in cmd_lower or k in full_output.lower() for k in [
+        "certbot", "letsencrypt", "no valid a records", "no valid aaaa records",
+        "challenges have failed", "failed to authenticate", "nxdomain", "acme-challenge"
+    ]):
+        domain_match = re.search(r'(?:Domain:\s*|Requesting a certificate for\s*|-d\s+)([a-zA-Z0-9.-]+)', full_output + " " + command)
+        domain = domain_match.group(1).strip() if domain_match else "your domain"
+
+        if any(k in full_output.lower() for k in ["no valid a records", "no valid aaaa records", "nxdomain", "dns"]):
+            return {
+                "summary": f"Certbot ACME challenge failed for {domain}: No valid DNS A/AAAA records found.",
+                "status_level": "ERROR",
+                "reason": (
+                    f"Let's Encrypt Certificate Authority attempted to validate domain '{domain}', but DNS resolution failed. "
+                    f"The domain has no active DNS 'A' or 'AAAA' record pointing to this VPS public IP address. "
+                    f"Because Let's Encrypt validates ownership over the public internet, certificates cannot be issued until DNS points to this server."
+                ),
+                "solution": (
+                    f"1. Log into your DNS management provider (e.g., Cloudflare, Namecheap, GoDaddy, Route 53).\n"
+                    f"2. Add or update an 'A' record for '{domain}' pointing to this VPS public IP address.\n"
+                    f"3. If using Cloudflare proxy (orange cloud), temporarily set SSL mode to Full or switch to DNS-only during issuance.\n"
+                    f"4. Wait 2-5 minutes for DNS propagation, verify with 'host {domain}' or 'dig +short {domain} A', and re-run Certbot."
+                ),
+                "suggested_command": f"# 1. Test DNS resolution from VPS\nhost {domain} || dig +short {domain} A\n\n# 2. Verify port 80 HTTP is accessible\nufw allow 80/tcp 2>/dev/null || iptables -I INPUT -p tcp --dport 80 -j ACCEPT 2>/dev/null\n\n# 3. Test webroot challenge path\nmkdir -p /var/www/html/.well-known/acme-challenge\nchmod -R 755 /var/www/html/.well-known"
+            }
+        else:
+            return {
+                "summary": f"Certbot SSL renewal or certificate issuance failed for {domain}.",
+                "status_level": "ERROR",
+                "reason": (
+                    f"Certbot challenge failed to authenticate {domain}. The web server may not be serving challenge files "
+                    f"from the configured webroot path, or port 80 (HTTP) is blocked by a host firewall."
+                ),
+                "solution": (
+                    f"1. Ensure port 80 is open to the public internet ('ufw allow 80/tcp').\n"
+                    f"2. Check that Apache/Nginx is running and configured with a matching VirtualHost for {domain}.\n"
+                    f"3. Verify webroot directory permissions (/var/www/html)."
+                ),
+                "suggested_command": "ufw allow 80/tcp && certbot certificates"
+            }
+
+    # 6. Git Operations
+    if "git" in cmd_lower:
+        if exit_code != 0:
+            if "overwritten by merge" in full_output.lower():
+                return {
+                    "summary": "Git pull failed: local untracked or modified files would be overwritten.",
+                    "status_level": "WARNING",
+                    "reason": "Local changes exist on the server that conflict with incoming commits from the remote branch. Git aborts to prevent accidental data loss.",
+                    "solution": (
+                        "1. Stash local server modifications: 'git stash'\n"
+                        "2. Pull the latest commits: 'git pull origin main'\n"
+                        "3. Optionally restore local changes: 'git stash pop'"
+                    ),
+                    "suggested_command": "git stash && git pull origin main && git stash pop"
+                }
+            elif "permission denied (publickey)" in full_output.lower():
+                return {
+                    "summary": "Git authentication failed: SSH deploy key rejected.",
+                    "status_level": "ERROR",
+                    "reason": "The server's SSH public key is not registered in the remote Git repository's deploy keys, or the SSH agent lacks the private key.",
+                    "solution": "Generate a new deploy key on the server ('ssh-keygen') and add the public key to GitHub/GitLab Deploy Keys with read permissions.",
+                    "suggested_command": "ssh-keygen -t ed25519 -C 'hq-deploy' -f /root/.ssh/id_ed25519 -N '' && cat /root/.ssh/id_ed25519.pub"
+                }
+            else:
+                return {
+                    "summary": f"Git command failed with exit code {exit_code}.",
+                    "status_level": "ERROR",
+                    "reason": f"Git error: {stderr or stdout}. Working tree may be in a detached HEAD or uncommitted state.",
+                    "solution": "Check repository status using 'git status' and inspect remote URLs using 'git remote -v'.",
+                    "suggested_command": "git status && git remote -v"
+                }
+
+    # 7. Port Conflicts & Address In Use
+    if any(k in full_output.lower() for k in ["address already in use", "bind: address already in use", "eaddrinuse"]):
+        port_match = re.search(r'(?:port|:)\s*([0-9]{2,5})', full_output)
+        port_str = port_match.group(1) if port_match else "the requested port"
+        return {
+            "summary": f"Network port binding failed: Port {port_str} is already occupied by another daemon.",
+            "status_level": "ERROR",
+            "reason": (
+                f"Another process on the VPS is already bound to port {port_str}. "
+                f"Two services cannot bind to the same IP:port combination simultaneously."
+            ),
+            "solution": (
+                f"1. Identify which daemon is listening on port {port_str} using 'ss -tulpn'.\n"
+                f"2. Gracefully stop or reconfigure the conflicting daemon, or update this service's port."
+            ),
+            "suggested_command": f"ss -tulpn | grep -E ':{port_str}\\b' || lsof -i :{port_str}"
+        }
+
+    # 8. Generic Error (exit_code != 0)
     if exit_code != 0:
         return {
             "summary": f"Command returned non-zero exit code ({exit_code}).",
@@ -1120,7 +1212,7 @@ def generate_fallback_command_audit(
             "suggested_command": command
         }
 
-    # 6. Generic Success
+    # 9. Generic Success
     return {
         "summary": "Command executed successfully with exit code 0.",
         "status_level": "SUCCESS",
@@ -1234,8 +1326,8 @@ async def audit_terminal_command_output(
             user_id=current_user.id if current_user else None,
             username=current_user.username if current_user else "system",
             action="COMMAND_AI_AUDIT",
-            resource="TerminalCommand",
-            resource_id=req.server_id or "local",
+            entity_type="TerminalCommand",
+            entity_id=req.server_id or "local",
             details={
                 "command": command[:150],
                 "exit_code": exit_code,
