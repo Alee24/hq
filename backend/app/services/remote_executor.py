@@ -141,6 +141,21 @@ def execute_remote_command(server: Server, command: str, working_dir: Optional[s
 
     # 1. Attempt live SSH execution if credentials and IP are configured
     if server.public_ip not in ["127.0.0.1", "localhost", "0.0.0.0"] and (server.ssh_key or server.ssh_password):
+        # Fast socket probe before full SSH setup to fail unreachable / unroutable IPs within 2.0s
+        try:
+            with socket.create_connection((target_ip, port), timeout=min(float(timeout), 2.0)):
+                pass
+        except Exception as sock_err:
+            duration_ms = int((time.time() - start_time) * 1000)
+            return {
+                "success": False,
+                "command": clean_cmd,
+                "stdout": "",
+                "stderr": f"SSH connection to {server.public_ip}:{port} failed: {str(sock_err)}",
+                "exit_code": 255,
+                "duration_ms": duration_ms
+            }
+
         client = paramiko.SSHClient()
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         conn_timeout = min(float(timeout), 4.0)
@@ -162,7 +177,8 @@ def execute_remote_command(server: Server, command: str, working_dir: Optional[s
                     username=server.ssh_user or "root",
                     pkey=pkey,
                     timeout=conn_timeout,
-                    auth_timeout=conn_timeout
+                    auth_timeout=conn_timeout,
+                    banner_timeout=conn_timeout
                 )
             else:
                 client.connect(
@@ -171,7 +187,8 @@ def execute_remote_command(server: Server, command: str, working_dir: Optional[s
                     username=server.ssh_user or "root",
                     password=server.ssh_password,
                     timeout=conn_timeout,
-                    auth_timeout=conn_timeout
+                    auth_timeout=conn_timeout,
+                    banner_timeout=conn_timeout
                 )
 
             stdin, stdout, stderr = client.exec_command(full_cmd, timeout=float(timeout))
@@ -578,6 +595,54 @@ try:
             })
 except Exception:
     pass
+
+# 4. Enrich discovered items with live Git repository metadata if available
+for it in items:
+    rp = it.get('root_path') or ''
+    c_name = it.get('name') or ''
+    git_dir = None
+    
+    if rp and os.path.exists(rp):
+        curr = os.path.abspath(rp)
+        for _ in range(4):
+            if os.path.isdir(os.path.join(curr, '.git')):
+                git_dir = curr
+                break
+            parent = os.path.dirname(curr)
+            if parent == curr:
+                break
+            curr = parent
+            
+    if not git_dir and it.get('is_container'):
+        try:
+            p_insp = subprocess.run(['docker', 'inspect', c_name], capture_output=True, text=True, timeout=3)
+            if p_insp.returncode == 0:
+                cdata = json.loads(p_insp.stdout)[0]
+                wdir = cdata.get('Config', {}).get('Labels', {}).get('com.docker.compose.project.working_dir', '')
+                if wdir and os.path.isdir(os.path.join(wdir, '.git')):
+                    git_dir = wdir
+                    it['root_path'] = wdir
+        except Exception:
+            pass
+
+    if git_dir:
+        try:
+            it['is_git_repo'] = True
+            subprocess.run(['git', 'config', '--global', '--add', 'safe.directory', git_dir], capture_output=True)
+            p_h = subprocess.run(['git', '-C', git_dir, 'rev-parse', 'HEAD'], capture_output=True, text=True, timeout=3)
+            if p_h.returncode == 0:
+                it['current_commit'] = p_h.stdout.strip()
+            p_b = subprocess.run(['git', '-C', git_dir, 'rev-parse', '--abbrev-ref', 'HEAD'], capture_output=True, text=True, timeout=3)
+            if p_b.returncode == 0:
+                it['git_branch'] = p_b.stdout.strip()
+            p_u = subprocess.run(['git', '-C', git_dir, 'remote', 'get-url', 'origin'], capture_output=True, text=True, timeout=3)
+            if p_u.returncode == 0:
+                it['repo_url'] = p_u.stdout.strip()
+            p_v = subprocess.run(['git', '-C', git_dir, 'describe', '--tags', '--always'], capture_output=True, text=True, timeout=3)
+            if p_v.returncode == 0:
+                it['version'] = p_v.stdout.strip()
+        except Exception:
+            pass
 
 print(json.dumps(items))
 """
@@ -2387,12 +2452,13 @@ else:
                 if compose_candidate:
                     break
 
-        cmd_display = f"git -C {target_dir} pull origin {target_branch} && cd {compose_dir} && docker compose build --no-cache && docker compose up -d && docker image prune -f"
-        out_log.append(f"\\n--- [HQ Docker Rebuild & Swap Pipeline] ---")
-        out_log.append(f"Directory: {compose_dir}")
-        out_log.append("Command: docker compose build --no-cache && docker compose up -d && docker image prune -f\\n")
+        if compose_candidate:
+            cmd_display = f"git -C {target_dir} pull origin {target_branch} && cd {compose_dir} && docker compose build --no-cache && docker compose up -d && docker image prune -f"
+            out_log.append(f"\n--- [HQ Docker Rebuild & Swap Pipeline] ---")
+            out_log.append(f"Directory: {compose_dir}")
+            out_log.append("Command: docker compose build --no-cache && docker compose up -d && docker image prune -f\n")
 
-        deploy_sh = f'''
+            deploy_sh = f'''
 cd "{compose_dir}" && \\
 if docker compose version >/dev/null 2>&1; then
     DC="docker compose"
@@ -2405,19 +2471,29 @@ $DC build --no-cache && \\
 $DC up -d && \\
 (docker image prune -f || true)
 '''
-        p_dep = subprocess.run(deploy_sh, shell=True, executable='/bin/bash', capture_output=True, text=True, timeout=240)
-        if p_dep.returncode != 0:
-            exit_code = p_dep.returncode
-            if p_dep.stdout.strip():
-                out_log.append(p_dep.stdout.strip())
-            if p_dep.stderr.strip():
-                err_log.append(p_dep.stderr.strip())
+            p_dep = subprocess.run(deploy_sh, shell=True, executable='/bin/bash', capture_output=True, text=True, timeout=240)
+            if p_dep.returncode != 0:
+                exit_code = p_dep.returncode
+                if p_dep.stdout.strip():
+                    out_log.append(p_dep.stdout.strip())
+                if p_dep.stderr.strip():
+                    err_log.append(p_dep.stderr.strip())
+            else:
+                if p_dep.stdout.strip():
+                    out_log.append(p_dep.stdout.strip())
+                if p_dep.stderr.strip():
+                    out_log.append(p_dep.stderr.strip())
+                out_log.append("\n[HQ Success] Code pulled and Docker Compose containers rebuilt and deployed successfully.")
         else:
-            if p_dep.stdout.strip():
-                out_log.append(p_dep.stdout.strip())
-            if p_dep.stderr.strip():
-                out_log.append(p_dep.stderr.strip())
-            out_log.append("\\n[HQ Success] Code pulled and Docker Compose containers rebuilt and deployed successfully.")
+            cmd_display = f"git -C {target_dir} pull origin {target_branch} && systemctl reload apache2 / nginx"
+            out_log.append(f"\n--- [HQ Native Web Service Pipeline] ---")
+            out_log.append(f"Directory: {target_dir}")
+            subprocess.run("apache2ctl configtest >/dev/null 2>&1 && systemctl reload apache2 >/dev/null 2>&1 || nginx -t >/dev/null 2>&1 && systemctl reload nginx >/dev/null 2>&1 || true", shell=True, executable='/bin/bash', capture_output=True, text=True, timeout=20)
+            if app_service:
+                subprocess.run(f"systemctl restart {app_service} >/dev/null 2>&1 || true", shell=True, executable='/bin/bash', timeout=15)
+            out_log.append("\n[HQ Success] Code pulled from remote origin. Web server daemons refreshed with zero downtime.")
+
+    elif act in ['fetch', 'sync']:
         cmd_display = f"git -C {target_dir} fetch origin --prune && git -C {target_dir} remote -v && git -C {target_dir} branch -vv"
         p1 = subprocess.run(['git', '-C', target_dir, 'fetch', 'origin', '--prune'], capture_output=True, text=True, timeout=15)
         p2 = subprocess.run(['git', '-C', target_dir, 'remote', '-v'], capture_output=True, text=True, timeout=5)
@@ -3541,7 +3617,7 @@ done
 
 # 4. Clean up /etc/hosts if domain entry was registered locally
 if [ -f /etc/hosts ] && grep -q "$DOM" /etc/hosts; then
-    sed -i "/[[:space:]]$DOM\([[:space:]]\|$\)/d" /etc/hosts 2>/dev/null || true
+    sed -i "/[[:space:]]$DOM\\([[:space:]]\\|$\\)/d" /etc/hosts 2>/dev/null || true
     echo "REMOVED_HOSTS_ENTRY: Purged $DOM from /etc/hosts"
 fi
 

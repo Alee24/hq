@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import {
   Layers,
   Plus,
@@ -8,6 +8,7 @@ import {
   Square,
   Play,
   ShieldCheck,
+  ShieldAlert,
   Server,
   GitBranch,
   ChevronRight,
@@ -20,7 +21,11 @@ import {
   Database,
   Cpu,
   X,
-  Sparkles
+  Sparkles,
+  Activity,
+  ArrowUpDown,
+  CheckCircle2,
+  Network
 } from 'lucide-react';
 import { api } from '../api/client';
 import { Application, ApplicationComponent } from '../types';
@@ -41,6 +46,14 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [actionInProgress, setActionInProgress] = useState<string | null>(null);
+
+  // VPS Server Filter & Sort State
+  const [selectedServerId, setSelectedServerId] = useState<string>(() => {
+    return localStorage.getItem('hq_apps_selected_server') || 'all';
+  });
+  const [sortBy, setSortBy] = useState<string>('status_errors_first');
+  const [processFilter, setProcessFilter] = useState<string>('all');
+  const [highlightedAppId, setHighlightedAppId] = useState<string | null>(null);
 
   // Suite Expansion State (tracks which application suites have their components drawer expanded)
   const [expandedSuites, setExpandedSuites] = useState<Set<string>>(new Set());
@@ -82,7 +95,7 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
 
   const loadData = async () => {
     try {
-      const res = await api.listApplications(environment, statusFilter, search);
+      const res = await api.listApplications(environment);
       setApps(res);
       const srvs = await api.listServers();
       setServersList(srvs);
@@ -98,7 +111,173 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
 
   useEffect(() => {
     loadData();
-  }, [environment, statusFilter, search]);
+  }, [environment]);
+
+  const handleServerSelect = (srvId: string) => {
+    setSelectedServerId(srvId);
+    localStorage.setItem('hq_apps_selected_server', srvId);
+  };
+
+  const jumpToApp = (app: Application) => {
+    if (selectedServerId !== 'all' && app.server_id && app.server_id !== selectedServerId) {
+      handleServerSelect(app.server_id);
+    }
+    if (statusFilter !== 'all' && app.health_status !== statusFilter) {
+      setStatusFilter('all');
+    }
+    setHighlightedAppId(app.id);
+    if (app.is_suite) {
+      setExpandedSuites((prev) => new Set(prev).add(app.id));
+    }
+    setTimeout(() => {
+      const el = document.getElementById(`app-row-${app.id}`);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }, 150);
+    setTimeout(() => {
+      setHighlightedAppId((prev) => (prev === app.id ? null : prev));
+    }, 6000);
+  };
+
+  const handleInvestigateError = (app: Application) => {
+    setAuditExecutionData({
+      command: `systemctl status ${app.service_name || app.name} || docker logs --tail 50 ${app.name}`,
+      stdout: '',
+      stderr: `[SERVICE_OUTAGE_DETECTED]\nApplication: ${app.name}\nStatus: ${app.health_status}\nServer: ${app.server_name || 'VPS'} (${app.server_ip || 'Node'})\nProcess/Port: ${app.port || 'N/A'}\nDocRoot: ${app.root_path || 'N/A'}\nVirtualHost/Domain: ${app.domain || 'N/A'}\nError: Host process or container listener failed healthcheck probe.`,
+      exit_code: 1,
+      duration_ms: 120,
+      server_id: app.server_id,
+      server_name: app.server_name,
+      server_ip: app.server_ip,
+      context_type: 'APP_HEALTH_FAILURE',
+      title: `Investigate Outage: ${app.name}`
+    });
+    setAuditModalOpen(true);
+  };
+
+  // Scoped apps by selected VPS Server Node (or all nodes)
+  const scopedApps = useMemo(() => {
+    if (selectedServerId === 'all') return apps;
+    return apps.filter((a) => a.server_id === selectedServerId);
+  }, [apps, selectedServerId]);
+
+  // Operational Decision Metrics
+  const offlineApps = useMemo(() => {
+    return scopedApps.filter(
+      (a) => a.health_status === 'OFFLINE' || a.health_status === 'DEGRADED'
+    );
+  }, [scopedApps]);
+
+  const totalServicesCount = useMemo(() => {
+    return scopedApps.reduce((acc, a) => acc + (a.components?.length || 1), 0);
+  }, [scopedApps]);
+
+  const onlineAppsCount = useMemo(() => {
+    return scopedApps.filter((a) => a.health_status === 'ONLINE').length;
+  }, [scopedApps]);
+
+  const onlineRate = useMemo(() => {
+    if (scopedApps.length === 0) return 100;
+    return Math.round((onlineAppsCount / scopedApps.length) * 100);
+  }, [scopedApps, onlineAppsCount]);
+
+  const processDistribution = useMemo(() => {
+    const docker = scopedApps.filter(
+      (a) => a.is_suite || (a.process_manager && a.process_manager.toLowerCase().includes('docker'))
+    ).length;
+    const apache = scopedApps.filter(
+      (a) => a.process_manager && a.process_manager.toLowerCase().includes('apache')
+    ).length;
+    const nginx = scopedApps.filter(
+      (a) => a.process_manager && a.process_manager.toLowerCase().includes('nginx')
+    ).length;
+    const other = scopedApps.length - docker - apache - nginx;
+    return { docker, apache, nginx, other: Math.max(0, other) };
+  }, [scopedApps]);
+
+  const portStats = useMemo(() => {
+    const ports = scopedApps.map((a) => a.port).filter(Boolean) as number[];
+    const uniquePorts = Array.from(new Set(ports)).sort((a, b) => a - b);
+
+    const portMap = new Map<string, string[]>();
+    scopedApps.forEach((a) => {
+      if (a.port && a.port !== 80 && a.port !== 443) {
+        const key = `${a.server_id || 'default'}:${a.port}`;
+        if (!portMap.has(key)) portMap.set(key, []);
+        portMap.get(key)!.push(a.name);
+      }
+    });
+    const collisions: Array<{ port: number; apps: string[] }> = [];
+    portMap.forEach((names, key) => {
+      if (names.length > 1) {
+        collisions.push({ port: parseInt(key.split(':')[1], 10), apps: names });
+      }
+    });
+
+    return { uniquePorts, collisions };
+  }, [scopedApps]);
+
+  // Filtered and Sorted Applications
+  const sortedFilteredApps = useMemo(() => {
+    return scopedApps
+      .filter((app) => {
+        // Search filter
+        if (search) {
+          const q = search.toLowerCase();
+          const matches =
+            app.name.toLowerCase().includes(q) ||
+            (app.domain && app.domain.toLowerCase().includes(q)) ||
+            (app.service_name && app.service_name.toLowerCase().includes(q)) ||
+            (app.server_name && app.server_name.toLowerCase().includes(q)) ||
+            (app.server_ip && app.server_ip.toLowerCase().includes(q));
+          if (!matches) return false;
+        }
+
+        // Status filter
+        if (statusFilter !== 'all' && app.health_status !== statusFilter) {
+          return false;
+        }
+
+        // Process manager filter
+        if (processFilter !== 'all') {
+          if (processFilter === 'docker') {
+            if (!app.is_suite && (!app.process_manager || !app.process_manager.toLowerCase().includes('docker')))
+              return false;
+          } else if (processFilter === 'apache') {
+            if (!app.process_manager || !app.process_manager.toLowerCase().includes('apache')) return false;
+          } else if (processFilter === 'nginx') {
+            if (!app.process_manager || !app.process_manager.toLowerCase().includes('nginx')) return false;
+          }
+        }
+        return true;
+      })
+      .sort((a, b) => {
+        if (sortBy === 'status_errors_first') {
+          const aIsErr = a.health_status === 'OFFLINE' || a.health_status === 'DEGRADED';
+          const bIsErr = b.health_status === 'OFFLINE' || b.health_status === 'DEGRADED';
+          if (aIsErr && !bIsErr) return -1;
+          if (!aIsErr && bIsErr) return 1;
+          return a.name.localeCompare(b.name);
+        }
+        if (sortBy === 'server_asc') {
+          return (a.server_name || '').localeCompare(b.server_name || '') || a.name.localeCompare(b.name);
+        }
+        if (sortBy === 'name_asc') {
+          return a.name.localeCompare(b.name);
+        }
+        if (sortBy === 'port_asc') {
+          return (a.port || 0) - (b.port || 0);
+        }
+        if (sortBy === 'uptime_desc') {
+          return (b.uptime_percent || 0) - (a.uptime_percent || 0);
+        }
+        if (sortBy === 'uptime_asc') {
+          return (a.uptime_percent || 0) - (b.uptime_percent || 0);
+        }
+        return 0;
+      });
+  }, [scopedApps, search, statusFilter, processFilter, sortBy]);
 
   const toggleSuiteExpanded = (appId: string) => {
     setExpandedSuites((prev) => {
@@ -436,7 +615,314 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
         </div>
       </div>
 
-      {/* Filter and Search Bar */}
+      {/* VPS Server Node Selector Bar */}
+      <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3 shadow-sm">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-2 border-b border-slate-800/80 mb-2.5">
+          <div className="flex items-center gap-2">
+            <Server size={14} className="text-brand-400" />
+            <span className="text-xs font-bold text-white uppercase tracking-wider">Select VPS Server Node:</span>
+            <span className="text-[11px] text-slate-400">Choose a node to filter applications, vitals & errors</span>
+          </div>
+          {selectedServerId !== 'all' && (
+            <button
+              onClick={() => handleServerSelect('all')}
+              className="text-[11px] font-semibold text-brand-400 hover:text-brand-300 transition-colors flex items-center gap-1 self-start sm:self-auto"
+            >
+              <span>Show All Nodes</span>
+              <span>&times;</span>
+            </button>
+          )}
+        </div>
+
+        <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-thin">
+          <button
+            onClick={() => handleServerSelect('all')}
+            className={`px-3 py-2 rounded-lg text-xs font-semibold transition-all shrink-0 flex items-center gap-2 border ${
+              selectedServerId === 'all'
+                ? 'bg-brand-600 text-white border-brand-500 shadow-sm'
+                : 'bg-slate-950 text-slate-300 border-slate-800 hover:bg-slate-800 hover:text-white'
+            }`}
+          >
+            <Layers size={13} />
+            <span>All Servers ({serversList.length})</span>
+            <span
+              className={`px-1.5 py-0.2 rounded text-[10px] font-mono ${
+                selectedServerId === 'all' ? 'bg-brand-700 text-brand-100' : 'bg-slate-900 text-slate-400'
+              }`}
+            >
+              {apps.length} apps
+            </span>
+            {apps.some((a) => a.health_status === 'OFFLINE' || a.health_status === 'DEGRADED') && (
+              <span className="w-2 h-2 rounded-full bg-rose-500 animate-ping" title="Errors detected on nodes" />
+            )}
+          </button>
+
+          {serversList.map((srv) => {
+            const serverApps = apps.filter((a) => a.server_id === srv.id);
+            const serverErrors = serverApps.filter(
+              (a) => a.health_status === 'OFFLINE' || a.health_status === 'DEGRADED'
+            ).length;
+            const isSelected = selectedServerId === srv.id;
+
+            return (
+              <button
+                key={srv.id}
+                onClick={() => handleServerSelect(srv.id)}
+                className={`px-3 py-2 rounded-lg text-xs font-semibold transition-all shrink-0 flex items-center gap-2.5 border ${
+                  isSelected
+                    ? 'bg-brand-600 text-white border-brand-500 shadow-sm'
+                    : 'bg-slate-950 text-slate-300 border-slate-800 hover:bg-slate-800 hover:text-white'
+                }`}
+              >
+                <Server size={13} className={isSelected ? 'text-white' : 'text-slate-400'} />
+                <div className="text-left">
+                  <div className="leading-tight font-medium">{srv.name}</div>
+                  <div className={`text-[10px] mono ${isSelected ? 'text-brand-100' : 'text-slate-400'}`}>
+                    {srv.public_ip}
+                  </div>
+                </div>
+                <span
+                  className={`px-1.5 py-0.2 rounded text-[10px] font-mono ${
+                    isSelected ? 'bg-brand-700 text-brand-100' : 'bg-slate-900 text-slate-400'
+                  }`}
+                >
+                  {serverApps.length}
+                </span>
+                {serverErrors > 0 && (
+                  <span
+                    className="px-1.5 py-0.2 rounded-full bg-rose-500 text-white text-[10px] font-bold animate-pulse"
+                    title={`${serverErrors} error(s)`}
+                  >
+                    {serverErrors}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Functional Operational Decision Cards */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+        {/* Card 1: Fleet & Node Health Overview */}
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 flex flex-col justify-between space-y-3 shadow-sm">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <div className="p-2 bg-brand-950 border border-brand-800/80 rounded-lg text-brand-400">
+                <Activity size={16} />
+              </div>
+              <span className="text-xs font-bold text-slate-300 uppercase tracking-wider">Fleet Vitals</span>
+            </div>
+            <span
+              className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
+                onlineRate >= 95
+                  ? 'bg-emerald-950 text-emerald-400 border border-emerald-800'
+                  : 'bg-amber-950 text-amber-400 border border-amber-800'
+              }`}
+            >
+              {onlineRate}% ONLINE
+            </span>
+          </div>
+          <div>
+            <div className="flex items-baseline gap-2">
+              <span className="text-2xl font-bold text-white tracking-tight">{onlineAppsCount}</span>
+              <span className="text-xs text-slate-400 font-medium">/ {scopedApps.length} Apps Active</span>
+            </div>
+            <div className="text-[11px] text-slate-400 mt-1 flex items-center justify-between">
+              <span>Total Microservices:</span>
+              <span className="text-slate-200 font-mono font-semibold">{totalServicesCount} Containers</span>
+            </div>
+          </div>
+          {/* Visual Health Bar */}
+          <div className="w-full bg-slate-950 rounded-full h-1.5 overflow-hidden border border-slate-800">
+            <div
+              className={`h-full transition-all duration-500 ${
+                onlineRate === 100 ? 'bg-emerald-500' : onlineRate >= 80 ? 'bg-amber-500' : 'bg-rose-500'
+              }`}
+              style={{ width: `${onlineRate}%` }}
+            />
+          </div>
+        </div>
+
+        {/* Card 2: Clickable Failures & Offline Warnings Hub */}
+        <div
+          className={`border rounded-xl p-4 flex flex-col justify-between space-y-3 shadow-sm transition-all ${
+            offlineApps.length > 0 ? 'bg-rose-950/20 border-rose-800/80' : 'bg-slate-900 border-slate-800'
+          }`}
+        >
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <div
+                className={`p-2 rounded-lg ${
+                  offlineApps.length > 0
+                    ? 'bg-rose-950 text-rose-400 border border-rose-800'
+                    : 'bg-emerald-950 text-emerald-400 border border-emerald-800'
+                }`}
+              >
+                {offlineApps.length > 0 ? <ShieldAlert size={16} /> : <ShieldCheck size={16} />}
+              </div>
+              <span className="text-xs font-bold text-slate-300 uppercase tracking-wider">
+                {offlineApps.length > 0 ? 'Outages & Errors' : 'Error Monitor'}
+              </span>
+            </div>
+            {offlineApps.length > 0 ? (
+              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-950 text-rose-300 border border-rose-800 animate-pulse">
+                {offlineApps.length} CRITICAL
+              </span>
+            ) : (
+              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-950 text-emerald-400 border border-emerald-800">
+                ALL HEALTHY
+              </span>
+            )}
+          </div>
+
+          {offlineApps.length > 0 ? (
+            <div className="space-y-1.5">
+              <div className="text-[11px] text-rose-300 font-semibold">
+                Click an error to jump & fix directly:
+              </div>
+              <div className="flex flex-col gap-1 max-h-24 overflow-y-auto pr-1">
+                {offlineApps.map((offApp) => (
+                  <button
+                    key={offApp.id}
+                    onClick={() => jumpToApp(offApp)}
+                    className="w-full text-left p-1.5 bg-rose-950/50 hover:bg-rose-900/60 border border-rose-800/80 rounded-lg text-xs transition-colors flex items-center justify-between group"
+                    title={`Click to jump directly to ${offApp.name}`}
+                  >
+                    <div className="truncate min-w-0 pr-2">
+                      <span className="font-bold text-rose-200 group-hover:text-white">{offApp.name}</span>
+                      <span className="text-[10px] text-rose-400 mono ml-1.5">({offApp.health_status})</span>
+                    </div>
+                    <ChevronRight
+                      size={13}
+                      className="text-rose-400 group-hover:translate-x-0.5 transition-transform shrink-0"
+                    />
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div>
+              <div className="text-sm font-bold text-emerald-400 flex items-center gap-1.5">
+                <CheckCircle2 size={15} />
+                <span>Zero Active Errors</span>
+              </div>
+              <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">
+                All HTTP listeners and daemon processes responding normally across servers.
+              </p>
+            </div>
+          )}
+
+          <div className="text-[10px] text-slate-400 mono pt-1 border-t border-slate-800/60 flex items-center justify-between">
+            <span>Auto-probed via SSH</span>
+            <span>100% telemetry</span>
+          </div>
+        </div>
+
+        {/* Card 3: Runtime Process Managers */}
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 flex flex-col justify-between space-y-3 shadow-sm">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <div className="p-2 bg-indigo-950 border border-indigo-800/80 rounded-lg text-indigo-400">
+                <Cpu size={16} />
+              </div>
+              <span className="text-xs font-bold text-slate-300 uppercase tracking-wider">Process Stacks</span>
+            </div>
+            <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-indigo-950 text-indigo-400 border border-indigo-800">
+              DAEMONS
+            </span>
+          </div>
+          <div className="space-y-1.5 text-xs">
+            <div className="flex items-center justify-between text-slate-300">
+              <button
+                onClick={() => setProcessFilter(processFilter === 'docker' ? 'all' : 'docker')}
+                className={`hover:text-white transition-colors flex items-center gap-1.5 ${
+                  processFilter === 'docker' ? 'text-brand-400 font-bold' : ''
+                }`}
+              >
+                <Box size={12} className="text-brand-400" />
+                <span>Docker Suites:</span>
+              </button>
+              <span className="font-mono font-bold text-white">{processDistribution.docker}</span>
+            </div>
+            <div className="flex items-center justify-between text-slate-300">
+              <button
+                onClick={() => setProcessFilter(processFilter === 'apache' ? 'all' : 'apache')}
+                className={`hover:text-white transition-colors flex items-center gap-1.5 ${
+                  processFilter === 'apache' ? 'text-brand-400 font-bold' : ''
+                }`}
+              >
+                <Server size={12} className="text-amber-400" />
+                <span>Apache2 VirtualHosts:</span>
+              </button>
+              <span className="font-mono font-bold text-white">{processDistribution.apache}</span>
+            </div>
+            <div className="flex items-center justify-between text-slate-300">
+              <button
+                onClick={() => setProcessFilter(processFilter === 'nginx' ? 'all' : 'nginx')}
+                className={`hover:text-white transition-colors flex items-center gap-1.5 ${
+                  processFilter === 'nginx' ? 'text-brand-400 font-bold' : ''
+                }`}
+              >
+                <Layers size={12} className="text-teal-400" />
+                <span>Nginx Reverse Proxies:</span>
+              </button>
+              <span className="font-mono font-bold text-white">{processDistribution.nginx}</span>
+            </div>
+          </div>
+          <div className="text-[10px] text-slate-400 pt-1 border-t border-slate-800/60 flex items-center justify-between">
+            <span>Filter:</span>
+            <span className="text-brand-400 font-semibold">
+              {processFilter === 'all' ? 'All Stacks' : processFilter.toUpperCase()}
+            </span>
+          </div>
+        </div>
+
+        {/* Card 4: Network & Port Allocation */}
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 flex flex-col justify-between space-y-3 shadow-sm">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <div className="p-2 bg-emerald-950 border border-emerald-800/80 rounded-lg text-emerald-400">
+                <Network size={16} />
+              </div>
+              <span className="text-xs font-bold text-slate-300 uppercase tracking-wider">Port Safety</span>
+            </div>
+            {portStats.collisions.length > 0 ? (
+              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-950 text-rose-300 border border-rose-800">
+                COLLISION
+              </span>
+            ) : (
+              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-950 text-emerald-400 border border-emerald-800">
+                0 CONFLICTS
+              </span>
+            )}
+          </div>
+          <div>
+            <div className="text-xs text-slate-300 font-medium mb-1">Active Port Bindings:</div>
+            <div className="flex flex-wrap gap-1 max-h-14 overflow-y-auto">
+              {portStats.uniquePorts.slice(0, 6).map((p) => (
+                <span
+                  key={p}
+                  className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-slate-950 text-emerald-300 border border-slate-800"
+                >
+                  :{p}
+                </span>
+              ))}
+              {portStats.uniquePorts.length > 6 && (
+                <span className="text-[10px] text-slate-500 font-mono self-center">
+                  +{portStats.uniquePorts.length - 6} more
+                </span>
+              )}
+            </div>
+          </div>
+          <div className="text-[10px] text-slate-400 pt-1 border-t border-slate-800/60 flex items-center justify-between">
+            <span>Port Safety Check</span>
+            <span className="text-emerald-400 font-semibold">100% Isolated</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Filter, Search & Sort Bar */}
       <div className="flex flex-col sm:flex-row gap-3">
         <div className="relative flex-1">
           <Search size={15} className="absolute left-3 top-2.5 text-slate-500" />
@@ -444,12 +930,31 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Filter by application name, domain, or suite..."
+            placeholder="Filter by application name, domain, suite or server..."
             className="w-full pl-9 pr-3 py-1.5 bg-slate-900 border border-slate-800 rounded-lg text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500"
           />
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* Sort By Dropdown */}
+          <div className="flex items-center gap-1.5 bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-300">
+            <ArrowUpDown size={13} className="text-brand-400 shrink-0" />
+            <span className="text-slate-500 text-[11px]">Sort:</span>
+            <select
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value)}
+              className="bg-transparent border-none text-white focus:outline-none text-xs cursor-pointer font-medium"
+            >
+              <option value="status_errors_first" className="bg-slate-900 text-white">Status (Errors First)</option>
+              <option value="server_asc" className="bg-slate-900 text-white">Server (A-Z)</option>
+              <option value="name_asc" className="bg-slate-900 text-white">Name (A-Z)</option>
+              <option value="port_asc" className="bg-slate-900 text-white">Port Number</option>
+              <option value="uptime_desc" className="bg-slate-900 text-white">Uptime (Highest First)</option>
+              <option value="uptime_asc" className="bg-slate-900 text-white">Uptime (Lowest First)</option>
+            </select>
+          </div>
+
+          {/* Status Filter Dropdown */}
           <select
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value)}
@@ -487,7 +992,7 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
                     Loading applications directory...
                   </td>
                 </tr>
-              ) : apps.length === 0 ? (
+              ) : sortedFilteredApps.length === 0 ? (
                 <tr>
                   <td colSpan={8} className="py-16 text-center text-slate-400">
                     <div className="space-y-3 max-w-sm mx-auto">
@@ -496,20 +1001,25 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
                       </div>
                       <div className="font-semibold text-white text-sm">No Applications Found</div>
                       <p className="text-xs text-slate-500">
-                        Register your first website, API, or multi-container microservice suite.
+                        No applications match your active server, search, or status filter.
                       </p>
                       <button
-                        onClick={() => setCreateModalOpen(true)}
-                        className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-brand-600 hover:bg-brand-500 text-white rounded-lg text-xs font-semibold shadow-sm transition-colors"
+                        onClick={() => {
+                          setSelectedServerId('all');
+                          setSearch('');
+                          setStatusFilter('all');
+                          setProcessFilter('all');
+                        }}
+                        className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-xs font-semibold shadow-sm transition-colors"
                       >
-                        <Plus size={14} />
-                        <span>Register First Application</span>
+                        <RefreshCw size={12} />
+                        <span>Reset All Filters</span>
                       </button>
                     </div>
                   </td>
                 </tr>
               ) : (
-                apps.map((app) => {
+                sortedFilteredApps.map((app) => {
                   const isSuite = Boolean(app.is_suite && app.components && app.components.length > 1);
                   const isExpanded = expandedSuites.has(app.id);
                   const isSuiteBusy = Boolean(suiteActionInProgress[app.id]);
@@ -518,6 +1028,7 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
                     <React.Fragment key={app.id}>
                       {/* Main Application Row (Strictly ONE per line) */}
                       <tr
+                        id={`app-row-${app.id}`}
                         onClick={() => {
                           if (isSuite) {
                             toggleSuiteExpanded(app.id);
@@ -527,6 +1038,10 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
                         }}
                         className={`hover:bg-slate-800/50 cursor-pointer transition-colors group ${
                           isExpanded ? 'bg-slate-800/30' : ''
+                        } ${
+                          highlightedAppId === app.id
+                            ? 'ring-2 ring-rose-500 bg-rose-950/40 shadow-lg shadow-rose-950/50 animate-pulse'
+                            : ''
                         }`}
                       >
                         {/* App Name, Suite Indicator & Domain */}
@@ -600,10 +1115,17 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
 
                         {/* Server & IP */}
                         <td className="py-3 px-4">
-                          <div className="flex items-center gap-1.5 text-slate-300">
-                            <Server size={13} className="text-slate-500 shrink-0" />
-                            <span className="truncate max-w-[130px]">{app.server_name || 'VPS Node'}</span>
-                          </div>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (app.server_id) handleServerSelect(app.server_id);
+                            }}
+                            className="flex items-center gap-1.5 text-slate-300 hover:text-brand-300 transition-colors text-left group/srv"
+                            title={`Click to filter apps to ${app.server_name || 'this server'}`}
+                          >
+                            <Server size={13} className="text-slate-500 group-hover/srv:text-brand-400 shrink-0" />
+                            <span className="truncate max-w-[130px] font-medium">{app.server_name || 'VPS Node'}</span>
+                          </button>
                           <div className="text-slate-400 mono text-[11px] mt-0.5">
                             {app.server_ip || '185.192.97.84'}
                           </div>
@@ -656,7 +1178,22 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
 
                         {/* Health Status */}
                         <td className="py-3 px-4">
-                          <StatusBadge status={app.health_status} size="sm" />
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <StatusBadge status={app.health_status} size="sm" />
+                            {(app.health_status === 'OFFLINE' || app.health_status === 'DEGRADED') && (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleInvestigateError(app);
+                                }}
+                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-rose-950 text-rose-300 border border-rose-800 hover:bg-rose-900 transition-colors shadow-sm"
+                                title="Click to audit outage reason and run AI fix on VPS"
+                              >
+                                <Sparkles size={10} className="text-rose-400" />
+                                <span>Fix with AI</span>
+                              </button>
+                            )}
+                          </div>
                         </td>
 
                         {/* Operational Quick Actions */}

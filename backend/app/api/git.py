@@ -337,9 +337,15 @@ async def scan_all_git_repos_endpoint(
         "root", "var", "opt", "main", "master", "code", "service"
     }
 
+    repos_by_ip: Dict[str, List[Dict[str, Any]]] = {}
+
     for s in servers:
-        discovered_repos = scan_all_remote_git_repos(s)
-        total_scanned += len(discovered_repos)
+        if s.public_ip in repos_by_ip:
+            discovered_repos = repos_by_ip[s.public_ip]
+        else:
+            discovered_repos = scan_all_remote_git_repos(s)
+            repos_by_ip[s.public_ip] = discovered_repos
+            total_scanned += len(discovered_repos)
 
         apps_res = await db.execute(
             select(Application).where(Application.server_id == s.id, Application.deleted_at == None)

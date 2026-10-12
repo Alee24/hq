@@ -240,6 +240,11 @@ async def scan_and_import_server_websites(
                     ssl_status="VALID" if site.get("ssl_enabled") else "NONE",
                     http_status=200,
                     uptime_percent=99.98,
+                    current_commit=site.get("current_commit"),
+                    git_branch=site.get("git_branch"),
+                    repo_url=site.get("repo_url"),
+                    current_version=site.get("version") or "v1.0.0",
+                    latest_repo_commit=site.get("current_commit"),
                     description=f"Auto-discovered from {srv.name} ({site.get('config_file', 'VPS scan')})"
                 )
                 db.add(new_app)
@@ -252,6 +257,16 @@ async def scan_and_import_server_websites(
                     existing_app.root_path = site.get("root_path")
                 if site.get("port"):
                     existing_app.port = site.get("port")
+                if site.get("current_commit"):
+                    existing_app.current_commit = site.get("current_commit")
+                    if not existing_app.latest_repo_commit:
+                        existing_app.latest_repo_commit = site.get("current_commit")
+                if site.get("git_branch"):
+                    existing_app.git_branch = site.get("git_branch")
+                if site.get("repo_url"):
+                    existing_app.repo_url = site.get("repo_url")
+                if site.get("version"):
+                    existing_app.current_version = site.get("version")
                 target_app_id = existing_app.id
                 imported_apps.append(existing_app)
 

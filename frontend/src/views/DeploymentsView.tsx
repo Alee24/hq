@@ -11,7 +11,12 @@ import {
   Clock,
   ShieldAlert,
   Filter,
-  Search
+  Search,
+  ArrowRight,
+  Server,
+  Box,
+  Layers,
+  Sparkles
 } from 'lucide-react';
 import { api } from '../api/client';
 import { DeploymentItem, Application } from '../types';
@@ -95,7 +100,7 @@ export const DeploymentsView: React.FC = () => {
     e.preventDefault();
     setDeploying(true);
     setLiveLogs([]);
-    setCurrentStepTitle('Initiating 13-step pipeline...');
+    setCurrentStepTitle('Connecting to VPS & pulling latest Git code...');
     try {
       await api.triggerDeployment({
         application_id: selectedAppId,
@@ -145,10 +150,11 @@ export const DeploymentsView: React.FC = () => {
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-2 border-b border-slate-800">
         <div>
           <h1 className="text-2xl font-bold text-white tracking-tight flex items-center gap-2">
-            Automated Deployment Pipelines
+            <Rocket className="text-brand-400" size={24} />
+            <span>Git Deployments & Automated Releases</span>
           </h1>
           <p className="text-xs text-slate-400 mt-1">
-            Controlled 13-step zero-downtime container swaps, automated backups, health validation, and instant rollbacks.
+            Automated Git deployments made simple: Pull newest commits from GitHub, rebuild Docker containers or reload web services, and verify live HTTP health with 1-click rollbacks.
           </p>
         </div>
 
@@ -156,6 +162,7 @@ export const DeploymentsView: React.FC = () => {
           <button
             onClick={() => loadData()}
             className="p-2 bg-slate-900 hover:bg-slate-800 border border-slate-800 rounded-lg text-slate-300 hover:text-white transition-colors"
+            title="Refresh deployment logs"
           >
             <RefreshCw size={14} />
           </button>
@@ -165,8 +172,71 @@ export const DeploymentsView: React.FC = () => {
             className="flex items-center gap-1.5 px-3.5 py-1.5 bg-brand-600 hover:bg-brand-500 text-white rounded-lg text-xs font-semibold shadow-sm transition-colors"
           >
             <Plus size={14} />
-            <span>Launch Deployment</span>
+            <span>Pull & Deploy Git Release</span>
           </button>
+        </div>
+      </div>
+
+      {/* Visual 4-Step Pipeline Infographic (Explaining what a deployment pipeline actually does) */}
+      <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-4 shadow-sm space-y-3">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2.5 border-b border-slate-800/80">
+          <div className="flex items-center gap-2">
+            <Sparkles size={15} className="text-brand-400" />
+            <span className="text-xs font-bold text-white uppercase tracking-wider">How the Release Pipeline Works:</span>
+          </div>
+          <span className="text-[11px] text-slate-400">
+            Automates the manual terminal SSH steps from Git pull to live reload
+          </span>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+          {/* Step 1 */}
+          <div className="p-3 bg-slate-950 border border-slate-800/90 rounded-lg space-y-1.5 relative group hover:border-brand-500/50 transition-colors">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-bold text-brand-400 uppercase tracking-wider">Step 1</span>
+              <GitBranch size={13} className="text-brand-400" />
+            </div>
+            <div className="text-xs font-bold text-white">1. Remote Git Fetch</div>
+            <p className="text-[11px] text-slate-400 leading-relaxed">
+              Connects to GitHub / GitLab over SSH and checks for the newest commit hash on the release branch.
+            </p>
+          </div>
+
+          {/* Step 2 */}
+          <div className="p-3 bg-slate-950 border border-slate-800/90 rounded-lg space-y-1.5 relative group hover:border-emerald-500/50 transition-colors">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-bold text-emerald-400 uppercase tracking-wider">Step 2</span>
+              <Server size={13} className="text-emerald-400" />
+            </div>
+            <div className="text-xs font-bold text-white">2. Code Pull via SSH</div>
+            <p className="text-[11px] text-slate-400 leading-relaxed">
+              Downloads the updated code files into the application directory (<code className="text-emerald-300 mono text-[10px]">/var/www/...</code>) as root.
+            </p>
+          </div>
+
+          {/* Step 3 */}
+          <div className="p-3 bg-slate-950 border border-slate-800/90 rounded-lg space-y-1.5 relative group hover:border-cyan-500/50 transition-colors">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-bold text-cyan-400 uppercase tracking-wider">Step 3</span>
+              <Box size={13} className="text-cyan-400" />
+            </div>
+            <div className="text-xs font-bold text-white">3. Rebuild / Reload</div>
+            <p className="text-[11px] text-slate-400 leading-relaxed">
+              Rebuilds Docker containers (<code className="text-cyan-300 mono text-[10px]">docker compose up -d</code>) or reloads Apache/Nginx with zero downtime.
+            </p>
+          </div>
+
+          {/* Step 4 */}
+          <div className="p-3 bg-slate-950 border border-slate-800/90 rounded-lg space-y-1.5 relative group hover:border-purple-500/50 transition-colors">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-bold text-purple-400 uppercase tracking-wider">Step 4</span>
+              <CheckCircle2 size={13} className="text-purple-400" />
+            </div>
+            <div className="text-xs font-bold text-white">4. Health Verification</div>
+            <p className="text-[11px] text-slate-400 leading-relaxed">
+              Sends an HTTP probe to confirm port responds 200 OK. If failed, allows 1-click rollback to previous commit.
+            </p>
+          </div>
         </div>
       </div>
 
@@ -332,8 +402,8 @@ export const DeploymentsView: React.FC = () => {
       <ModalShell
         isOpen={triggerModalOpen}
         onClose={() => setTriggerModalOpen(false)}
-        title="Launch Deployment Pipeline"
-        description="Trigger zero-downtime 13-step pipeline with automated health verification."
+        title="Pull & Deploy Git Release"
+        description="Pulls the latest code from Git origin and rebuilds containers or reloads web services on your VPS."
         icon={Rocket}
         size="md"
         footer={
@@ -347,7 +417,7 @@ export const DeploymentsView: React.FC = () => {
               form="deploy-form"
               isLoading={deploying}
             >
-              Execute 13-Step Pipeline
+              🚀 Pull Code & Deploy to VPS
             </Button>
           </>
         }
