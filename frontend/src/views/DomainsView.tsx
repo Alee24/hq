@@ -1512,6 +1512,15 @@ This will permanently:
         isOpen={auditModalOpen}
         onClose={() => setAuditModalOpen(false)}
         executionData={auditExecutionData}
+        onRunFix={async (fixCommand) => {
+          const srvId = auditExecutionData?.server_id || selectedServerId;
+          if (srvId && srvId !== 'all') {
+            const res = await api.executeTerminalCommand(srvId, fixCommand);
+            await loadData();
+            return res;
+          }
+        }}
+        onSuccess={loadData}
       />
     </div>
   );

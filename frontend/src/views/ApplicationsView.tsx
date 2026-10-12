@@ -140,9 +140,47 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
     }, 6000);
   };
 
-  const handleInvestigateError = (app: Application) => {
+  const handleInvestigateError = async (app: Application) => {
+    const rawTarget = (app.service_name || app.name || '').replace(/["']/g, '');
+    const cleanDocker = rawTarget.replace(/\s+/g, '-').toLowerCase();
+    const pm = (app.process_manager || '').toLowerCase();
+
+    let probeCmd = '';
+    if (app.is_suite || pm.includes('docker') || pm.includes('container') || app.app_type === 'Docker Container') {
+      probeCmd = `(docker ps -a --filter "name=${cleanDocker}" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" 2>&1 && docker logs --tail 40 "${cleanDocker}" 2>&1) || (docker ps -a --no-trunc | head -n 30)`;
+    } else if (pm.includes('apache')) {
+      probeCmd = `apache2ctl configtest 2>&1; systemctl status apache2 --no-pager -l 2>&1 | tail -n 25; tail -n 25 /var/log/apache2/error.log 2>/dev/null`;
+    } else if (pm.includes('nginx')) {
+      probeCmd = `nginx -t 2>&1; systemctl status nginx --no-pager -l 2>&1 | tail -n 25; tail -n 25 /var/log/nginx/error.log 2>/dev/null`;
+    } else {
+      probeCmd = `systemctl status "${rawTarget}" --no-pager -l 2>&1 | tail -n 25; ss -tulpn | grep ":${app.port || 80}" || true`;
+    }
+
+    if (app.server_id) {
+      try {
+        const probeRes = await api.executeTerminalCommand(app.server_id, probeCmd);
+        const exitCode = probeRes.exit_code !== undefined ? probeRes.exit_code : (probeRes.stderr ? 1 : 0);
+        setAuditExecutionData({
+          command: probeCmd,
+          stdout: probeRes.stdout || '',
+          stderr: probeRes.stderr || (exitCode !== 0 ? `Probe process exited with code ${exitCode}` : ''),
+          exit_code: exitCode,
+          duration_ms: probeRes.duration_ms || 120,
+          server_id: app.server_id,
+          server_name: app.server_name,
+          server_ip: app.server_ip,
+          context_type: 'APP_HEALTH_FAILURE',
+          title: `Investigate Outage: ${app.name}`
+        });
+        setAuditModalOpen(true);
+        return;
+      } catch (err: any) {
+        console.error('Probe execution failed:', err);
+      }
+    }
+
     setAuditExecutionData({
-      command: `systemctl status ${app.service_name || app.name} || docker logs --tail 50 ${app.name}`,
+      command: probeCmd,
       stdout: '',
       stderr: `[SERVICE_OUTAGE_DETECTED]\nApplication: ${app.name}\nStatus: ${app.health_status}\nServer: ${app.server_name || 'VPS'} (${app.server_ip || 'Node'})\nProcess/Port: ${app.port || 'N/A'}\nDocRoot: ${app.root_path || 'N/A'}\nVirtualHost/Domain: ${app.domain || 'N/A'}\nError: Host process or container listener failed healthcheck probe.`,
       exit_code: 1,
@@ -303,12 +341,13 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
     try {
       const res = await api.executeAppAction(app.id, action);
       await loadData();
+      const exitCode = res.exit_code !== undefined ? res.exit_code : (res.success ? 0 : 1);
       setAuditExecutionData({
-        command: `systemctl ${action} ${app.service_name || app.name}`,
-        stdout: res.message || `Service '${app.service_name || app.name}' ${action} executed successfully`,
-        stderr: '',
-        exit_code: 0,
-        duration_ms: 120,
+        command: res.command || `systemctl ${action} "${app.service_name || app.name}"`,
+        stdout: res.stdout || res.message || `Service '${app.service_name || app.name}' ${action} executed successfully`,
+        stderr: res.stderr || '',
+        exit_code: exitCode,
+        duration_ms: res.duration_ms || 120,
         server_id: app.server_id,
         server_name: app.server_name,
         server_ip: app.server_ip,
@@ -318,7 +357,7 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
       setAuditModalOpen(true);
     } catch (err: any) {
       setAuditExecutionData({
-        command: `systemctl ${action} ${app.service_name || app.name}`,
+        command: `systemctl ${action} "${app.service_name || app.name}"`,
         stdout: '',
         stderr: err.message || `Failed to execute ${action} on ${app.name}`,
         exit_code: 1,
@@ -343,12 +382,13 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
     try {
       const res = await api.executeAppAction(targetApp.id, pendingAction);
       await loadData();
+      const exitCode = res.exit_code !== undefined ? res.exit_code : (res.success ? 0 : 1);
       setAuditExecutionData({
-        command: `systemctl ${pendingAction} ${targetApp.service_name || targetApp.name}`,
-        stdout: res.message || `Service '${targetApp.service_name || targetApp.name}' ${pendingAction} executed`,
-        stderr: '',
-        exit_code: 0,
-        duration_ms: 120,
+        command: res.command || `systemctl ${pendingAction} "${targetApp.service_name || targetApp.name}"`,
+        stdout: res.stdout || res.message || `Service '${targetApp.service_name || targetApp.name}' ${pendingAction} executed`,
+        stderr: res.stderr || '',
+        exit_code: exitCode,
+        duration_ms: res.duration_ms || 120,
         server_id: targetApp.server_id,
         server_name: targetApp.server_name,
         server_ip: targetApp.server_ip,
@@ -358,7 +398,7 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
       setAuditModalOpen(true);
     } catch (err: any) {
       setAuditExecutionData({
-        command: `systemctl ${pendingAction} ${targetApp.service_name || targetApp.name}`,
+        command: `systemctl ${pendingAction} "${targetApp.service_name || targetApp.name}"`,
         stdout: '',
         stderr: err.message || `Failed to execute ${pendingAction} on ${targetApp.name}`,
         exit_code: 1,
@@ -1591,6 +1631,14 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
         isOpen={auditModalOpen}
         onClose={() => setAuditModalOpen(false)}
         executionData={auditExecutionData}
+        onRunFix={async (fixCommand) => {
+          if (auditExecutionData?.server_id) {
+            const res = await api.executeTerminalCommand(auditExecutionData.server_id, fixCommand);
+            await loadData();
+            return res;
+          }
+        }}
+        onSuccess={loadData}
       />
     </div>
   );

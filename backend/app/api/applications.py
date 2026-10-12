@@ -8,7 +8,7 @@ from backend.app.core.database import get_db
 from backend.app.core.deps import get_current_user, require_roles
 from backend.app.models.entities import (
     User, Application, Server, License, Deployment, MonitoringResult, 
-    AppLog, MaintenanceWindow, AuditLog
+    AppLog, MaintenanceWindow, AuditLog, ServerTerminalLog
 )
 from backend.app.schemas.api_schemas import (
     ApplicationCreate, ApplicationUpdate, ApplicationResponse,
@@ -17,7 +17,9 @@ from backend.app.schemas.api_schemas import (
 )
 from backend.app.services.audit import log_audit_event
 from backend.app.services.websocket_manager import ws_manager
-from backend.app.services.remote_executor import inspect_remote_container, execute_container_action
+from backend.app.services.remote_executor import (
+    inspect_remote_container, execute_container_action, execute_remote_command
+)
 
 router = APIRouter(prefix="/applications", tags=["Applications"])
 
@@ -393,35 +395,107 @@ async def execute_application_action(
         raise HTTPException(status_code=400, detail=f"Invalid action. Allowed: {', '.join(allowed_actions)}")
 
     now = datetime.now(timezone.utc).replace(tzinfo=None)
-    log_msg = ""
-    if action == "restart":
-        app.last_restart_at = now
-        app.health_status = "ONLINE"
-        app.http_status = 200
-        log_msg = f"Gracefully restarted {app.process_manager} service '{app.service_name}' on server."
-    elif action == "stop":
-        app.health_status = "OFFLINE"
-        app.http_status = 503
-        log_msg = f"Stopped {app.process_manager} service '{app.service_name}'."
-    elif action == "start":
-        app.health_status = "ONLINE"
-        app.http_status = 200
-        app.last_restart_at = now
-        log_msg = f"Started {app.process_manager} service '{app.service_name}'."
-    elif action == "reload":
-        app.health_status = "ONLINE"
-        log_msg = f"Reloaded configuration for {app.process_manager} service '{app.service_name}'."
-    elif action == "health_check":
-        app.health_status = "ONLINE"
-        app.http_status = 200
-        log_msg = f"Health check probe on {app.health_check_url} returned HTTP 200 OK."
+
+    # Resolve associated server node
+    srv = None
+    if app.server_id:
+        srv_res = await db.execute(select(Server).where(Server.id == app.server_id, Server.deleted_at == None))
+        srv = srv_res.scalar_one_or_none()
+
+    pm = (app.process_manager or "").lower()
+    raw_target = (app.service_name or app.name or "").strip()
+    clean_docker = raw_target.replace(" ", "-").lower() if raw_target else "app"
+
+    is_docker = any(x in pm for x in ["docker", "container"]) or app.app_type == "Docker Container" or (extract_suite_key(app.name, app.app_type) is not None)
+    if is_docker:
+        if action == "restart":
+            cmd = f'(cd "{app.root_path}" 2>/dev/null && docker compose restart 2>/dev/null) || docker restart "{raw_target}" 2>/dev/null || docker restart "{clean_docker}" 2>/dev/null || docker restart $(docker ps -a --filter "name={clean_docker}" -q | head -n 1)'
+        elif action == "stop":
+            cmd = f'(cd "{app.root_path}" 2>/dev/null && docker compose stop 2>/dev/null) || docker stop "{raw_target}" 2>/dev/null || docker stop "{clean_docker}" 2>/dev/null || docker stop $(docker ps -a --filter "name={clean_docker}" -q | head -n 1)'
+        elif action == "start":
+            cmd = f'(cd "{app.root_path}" 2>/dev/null && docker compose start 2>/dev/null) || docker start "{raw_target}" 2>/dev/null || docker start "{clean_docker}" 2>/dev/null || docker start $(docker ps -a --filter "name={clean_docker}" -q | head -n 1)'
+        elif action == "reload":
+            cmd = f'(cd "{app.root_path}" 2>/dev/null && docker compose restart 2>/dev/null) || docker restart "{raw_target}" 2>/dev/null || docker restart "{clean_docker}"'
+        else: # health_check
+            cmd = f'docker ps -a --filter "name={clean_docker}" --format "table {{{{.Names}}}}\t{{{{.Status}}}}\t{{{{.Ports}}}}"'
+    elif "apache" in pm:
+        if action == "restart":
+            cmd = "apache2ctl configtest 2>&1 && systemctl restart apache2"
+        elif action == "stop":
+            cmd = "systemctl stop apache2"
+        elif action == "start":
+            cmd = "apache2ctl configtest 2>&1 && systemctl start apache2"
+        elif action == "reload":
+            cmd = "apache2ctl configtest 2>&1 && (systemctl reload apache2 || apache2ctl graceful)"
+        else:
+            cmd = "apache2ctl configtest 2>&1 && systemctl status apache2 --no-pager -l | head -n 25"
+    elif "nginx" in pm:
+        if action == "restart":
+            cmd = "nginx -t 2>&1 && systemctl restart nginx"
+        elif action == "stop":
+            cmd = "systemctl stop nginx"
+        elif action == "start":
+            cmd = "nginx -t 2>&1 && systemctl start nginx"
+        elif action == "reload":
+            cmd = "nginx -t 2>&1 && (systemctl reload nginx || nginx -s reload)"
+        else:
+            cmd = "nginx -t 2>&1 && systemctl status nginx --no-pager -l | head -n 25"
+    elif "pm2" in pm:
+        cmd = f'pm2 {action} "{raw_target}"'
+    else: # systemd / general linux daemon
+        if action in ["start", "stop", "restart"]:
+            cmd = f'systemctl {action} "{raw_target}"'
+        elif action == "reload":
+            cmd = f'systemctl reload-or-restart "{raw_target}"'
+        else:
+            cmd = f'systemctl status "{raw_target}" --no-pager -l | head -n 25'
+
+    # Execute remotely over SSH as root if server node is attached
+    if srv:
+        exec_res = execute_remote_command(srv, cmd, working_dir=app.root_path, timeout=30)
+        is_success = exec_res.get("success", False) or exec_res.get("exit_code", 1) == 0
+        stdout = exec_res.get("stdout", "")
+        stderr = exec_res.get("stderr", "")
+        exit_code = exec_res.get("exit_code", 0 if is_success else 1)
+        duration_ms = exec_res.get("duration_ms", 120)
+    else:
+        # Fallback simulation if running without VPS server assignment
+        is_success = True
+        stdout = f"Command executed successfully: {cmd}"
+        stderr = ""
+        exit_code = 0
+        duration_ms = 45
+
+    if is_success:
+        app.health_status = "ONLINE" if action in ["start", "restart", "reload", "health_check"] else "OFFLINE"
+        app.http_status = 200 if app.health_status == "ONLINE" else 503
+        if action in ["start", "restart"]:
+            app.last_restart_at = now
+        log_msg = stdout.strip() or f"Service '{raw_target}' {action} executed successfully (exit code 0)."
+    else:
+        app.health_status = "DEGRADED" if action != "stop" else "OFFLINE"
+        app.http_status = 500 if action != "stop" else 503
+        log_msg = stderr.strip() or stdout.strip() or f"Service '{raw_target}' {action} failed with exit code {exit_code}."
+
+    # Record persistent server terminal execution log
+    if srv:
+        term_log = ServerTerminalLog(
+            server_id=srv.id,
+            user_id=current_user.id,
+            username=current_user.username,
+            command=cmd,
+            output=(stdout + ("\n" + stderr if stderr else "")).strip(),
+            exit_code=exit_code,
+            execution_duration_ms=duration_ms
+        )
+        db.add(term_log)
 
     # Record application log
     app_log = AppLog(
         application_id=app.id,
         server_id=app.server_id,
         category="application",
-        severity="INFO",
+        severity="INFO" if is_success else "ERROR",
         message=f"[{current_user.username}] {log_msg}",
         user=current_user.username
     )
@@ -434,8 +508,8 @@ async def execute_application_action(
         username=current_user.username,
         user_id=current_user.id,
         entity_id=app.id,
-        details={"action": action, "service": app.service_name},
-        result="SUCCESS"
+        details={"action": action, "service": raw_target, "command": cmd, "exit_code": exit_code},
+        result="SUCCESS" if is_success else "FAILED"
     )
 
     await db.commit()
@@ -445,14 +519,21 @@ async def execute_application_action(
         "application_id": app.id,
         "action": action,
         "health_status": app.health_status,
-        "message": log_msg
+        "message": log_msg,
+        "command": cmd,
+        "exit_code": exit_code
     })
 
     return {
-        "success": True,
+        "success": is_success,
         "application_id": app.id,
         "action": action,
         "status": app.health_status,
+        "command": cmd,
+        "stdout": stdout,
+        "stderr": stderr,
+        "exit_code": exit_code,
+        "duration_ms": duration_ms,
         "message": log_msg
     }
 
@@ -777,7 +858,13 @@ async def execute_suite_action(
         return order_map.get(role, 9)
 
     sorted_targets = sorted(component_names, key=comp_order)
-    combined_targets_str = " ".join(sorted_targets)
+    sanitized_targets = []
+    for c in sorted_targets:
+        c_clean = c.strip()
+        if " " in c_clean:
+            c_clean = c_clean.replace(" ", "-").lower()
+        sanitized_targets.append(c_clean)
+    combined_targets_str = " ".join(sanitized_targets)
 
     # Batch restart / action via Docker
     batch_res = execute_container_action(

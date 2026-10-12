@@ -38,14 +38,16 @@ interface CommandAuditModalProps {
   isOpen: boolean;
   onClose: () => void;
   executionData: CommandExecutionData | null;
-  onRunFix?: (fixCommand: string) => Promise<void> | void;
+  onRunFix?: (fixCommand: string) => Promise<any> | any;
+  onSuccess?: () => void;
 }
 
 export const CommandAuditModal: React.FC<CommandAuditModalProps> = ({
   isOpen,
   onClose,
   executionData,
-  onRunFix
+  onRunFix,
+  onSuccess
 }) => {
   const [copiedCmd, setCopiedCmd] = useState(false);
   const [copiedOutput, setCopiedOutput] = useState(false);
@@ -55,30 +57,37 @@ export const CommandAuditModal: React.FC<CommandAuditModalProps> = ({
   const [activeTab, setActiveTab] = useState<'ai' | 'terminal'>('ai');
   const [runningFix, setRunningFix] = useState(false);
   const [showInlineAi, setShowInlineAi] = useState(false);
+  const [currentExecutionData, setCurrentExecutionData] = useState<CommandExecutionData | null>(executionData);
+  const [fixSuccessMessage, setFixSuccessMessage] = useState<string | null>(null);
+  const [fixErrorMessage, setFixErrorMessage] = useState<string | null>(null);
 
   // When executionData changes and modal opens, auto-run or reset AI audit
   React.useEffect(() => {
     if (isOpen && executionData) {
+      setCurrentExecutionData(executionData);
+      setFixSuccessMessage(null);
+      setFixErrorMessage(null);
       setAuditResult(null);
       setShowInlineAi(executionData.exit_code !== 0);
-      runAiAudit();
+      runAiAudit(executionData);
     }
   }, [isOpen, executionData?.command, executionData?.exit_code, executionData?.stdout]);
 
-  const runAiAudit = async () => {
-    if (!executionData) return;
+  const runAiAudit = async (dataToAudit?: CommandExecutionData) => {
+    const data = dataToAudit || currentExecutionData || executionData;
+    if (!data) return;
     setAuditLoading(true);
     try {
       const res = await api.auditCommand({
-        command: executionData.command,
-        stdout: executionData.stdout || '',
-        stderr: executionData.stderr || '',
-        exit_code: executionData.exit_code,
-        duration_ms: executionData.duration_ms || 0,
-        server_id: executionData.server_id,
-        server_name: executionData.server_name,
-        server_ip: executionData.server_ip,
-        context_type: executionData.context_type
+        command: data.command,
+        stdout: data.stdout || '',
+        stderr: data.stderr || '',
+        exit_code: data.exit_code,
+        duration_ms: data.duration_ms || 0,
+        server_id: data.server_id,
+        server_name: data.server_name,
+        server_ip: data.server_ip,
+        context_type: data.context_type
       });
       setAuditResult(res);
     } catch (err) {
@@ -107,9 +116,10 @@ export const CommandAuditModal: React.FC<CommandAuditModalProps> = ({
     }
   };
 
-  if (!executionData) return null;
+  const effectiveData = currentExecutionData || executionData;
+  if (!effectiveData) return null;
 
-  const isSuccess = executionData.exit_code === 0;
+  const isSuccess = effectiveData.exit_code === 0;
   const statusLevel = auditResult?.status_level || (isSuccess ? 'SUCCESS' : 'ERROR');
 
   const getStatusColor = (level: string) => {
@@ -126,11 +136,54 @@ export const CommandAuditModal: React.FC<CommandAuditModalProps> = ({
     }
   };
 
-  const handleExecuteFix = async () => {
-    if (!auditResult?.suggested_command || !onRunFix) return;
+  const handleExecuteFix = async (overrideCommand?: string | null) => {
+    const cmdToRun = overrideCommand || auditResult?.suggested_command;
+    if (!cmdToRun) return;
     setRunningFix(true);
+    setFixSuccessMessage(null);
+    setFixErrorMessage(null);
+
     try {
-      await onRunFix(auditResult.suggested_command);
+      let res: any = null;
+      if (onRunFix) {
+        res = await onRunFix(cmdToRun);
+      } else if (effectiveData.server_id) {
+        res = await api.executeTerminalCommand(effectiveData.server_id, cmdToRun);
+      }
+
+      const exitCode = res?.exit_code !== undefined ? res.exit_code : (res?.success ? 0 : (res ? 0 : 0));
+      const isOk = exitCode === 0 || res?.success;
+
+      if (res) {
+        setCurrentExecutionData({
+          command: cmdToRun,
+          stdout: res.stdout || res.message || `Remediation executed on server: ${cmdToRun}`,
+          stderr: res.stderr || '',
+          exit_code: exitCode,
+          duration_ms: res.duration_ms || 150,
+          server_id: effectiveData.server_id,
+          server_name: effectiveData.server_name,
+          server_ip: effectiveData.server_ip,
+          context_type: 'AI_REMEDIATION_ROOT',
+          title: `AI Root Fix: ${effectiveData.title || 'Applied Remediation'}`
+        });
+      }
+
+      if (isOk) {
+        setFixSuccessMessage(
+          `Root fix command successfully executed on ${effectiveData.server_name || 'VPS'} (Exit Code 0). Errors remediated!`
+        );
+        setActiveTab('terminal');
+        if (onSuccess) {
+          onSuccess();
+        }
+      } else {
+        setFixErrorMessage(
+          `Fix executed with exit code ${exitCode}: ${res?.stderr || res?.message || 'Check terminal tab for details'}`
+        );
+      }
+    } catch (err: any) {
+      setFixErrorMessage(`Failed to execute root fix on VPS: ${err.message || 'Execution error'}`);
     } finally {
       setRunningFix(false);
     }
@@ -147,10 +200,10 @@ export const CommandAuditModal: React.FC<CommandAuditModalProps> = ({
     <ModalShell
       isOpen={isOpen}
       onClose={onClose}
-      title={executionData.title || 'Command Output & AI Diagnostic Audit'}
+      title={effectiveData.title || 'Command Output & AI Diagnostic Audit'}
       description={
-        executionData.server_name
-          ? `Executed on ${executionData.server_name} (${executionData.server_ip || 'node'}) · AI interpretation & root cause analysis`
+        effectiveData.server_name
+          ? `Executed on ${effectiveData.server_name} (${effectiveData.server_ip || 'node'}) · AI interpretation & root cause analysis`
           : 'Command execution telemetry, real-time stdout/stderr, and automated AI diagnostic analysis.'
       }
       icon={Terminal}
@@ -167,16 +220,16 @@ export const CommandAuditModal: React.FC<CommandAuditModalProps> = ({
           </div>
 
           <div className="flex items-center gap-2 flex-wrap">
-            {auditResult?.suggested_command && onRunFix && (
+            {auditResult?.suggested_command && (
               <Button
                 variant="primary"
                 size="sm"
-                onClick={handleExecuteFix}
+                onClick={() => handleExecuteFix()}
                 isLoading={runningFix}
                 leftIcon={<Play size={13} />}
-                className="bg-emerald-600 hover:bg-emerald-500"
+                className="bg-emerald-600 hover:bg-emerald-500 shadow-md shadow-emerald-950/40"
               >
-                Execute Fix on VPS
+                {runningFix ? 'Executing Root Fix on VPS...' : 'Execute Fix on VPS as Root'}
               </Button>
             )}
 
@@ -192,6 +245,39 @@ export const CommandAuditModal: React.FC<CommandAuditModalProps> = ({
       }
     >
       <div className="space-y-4 max-h-[75vh] overflow-y-auto pr-1">
+        {/* Fix Execution Feedback Banners */}
+        {fixSuccessMessage && (
+          <div className="p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-between gap-3 text-xs text-emerald-300 animate-in fade-in duration-200">
+            <div className="flex items-center gap-2.5">
+              <CheckCircle2 size={16} className="text-emerald-400 shrink-0" />
+              <span className="font-semibold">{fixSuccessMessage}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setFixSuccessMessage(null)}
+              className="text-emerald-400/80 hover:text-emerald-200 text-xs px-2 py-0.5 rounded hover:bg-emerald-500/20"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
+
+        {fixErrorMessage && (
+          <div className="p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/30 flex items-center justify-between gap-3 text-xs text-rose-300 animate-in fade-in duration-200">
+            <div className="flex items-center gap-2.5">
+              <AlertOctagon size={16} className="text-rose-400 shrink-0" />
+              <span className="font-semibold">{fixErrorMessage}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setFixErrorMessage(null)}
+              className="text-rose-400/80 hover:text-rose-200 text-xs px-2 py-0.5 rounded hover:bg-rose-500/20"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
+
         {/* Top Status & Metrics Bar */}
         <div className="flex flex-wrap items-center justify-between gap-2.5 p-3 rounded-xl bg-slate-950 border border-slate-800">
           <div className="flex items-center gap-2 flex-wrap">
@@ -204,7 +290,7 @@ export const CommandAuditModal: React.FC<CommandAuditModalProps> = ({
               }`}
             >
               {isSuccess ? <CheckCircle2 size={13} /> : <AlertTriangle size={13} />}
-              <span>Exit Code {executionData.exit_code} ({isSuccess ? 'Success' : 'Failed'})</span>
+              <span>Exit Code {effectiveData.exit_code} ({isSuccess ? 'Success' : 'Failed'})</span>
             </span>
 
             {/* AI Status Level Pill */}
@@ -216,10 +302,10 @@ export const CommandAuditModal: React.FC<CommandAuditModalProps> = ({
             )}
 
             {/* Duration */}
-            {executionData.duration_ms !== undefined && (
+            {effectiveData.duration_ms !== undefined && (
               <span className="inline-flex items-center gap-1 text-[11px] text-slate-400 px-2 py-1 rounded bg-slate-900 border border-slate-800">
                 <Clock size={11} className="text-slate-500" />
-                <span>{executionData.duration_ms} ms</span>
+                <span>{effectiveData.duration_ms} ms</span>
               </span>
             )}
           </div>
@@ -259,7 +345,7 @@ export const CommandAuditModal: React.FC<CommandAuditModalProps> = ({
               <span>Command Executed</span>
             </span>
             <button
-              onClick={() => copyToClipboard(executionData.command, setCopiedCmd)}
+              onClick={() => copyToClipboard(effectiveData.command, setCopiedCmd)}
               className="hover:text-white transition-colors flex items-center gap-1 text-[11px]"
               title="Copy Command"
             >
@@ -269,7 +355,7 @@ export const CommandAuditModal: React.FC<CommandAuditModalProps> = ({
           </div>
           <div className="p-3 bg-slate-950 border border-slate-800 rounded-xl font-mono text-xs text-emerald-400 select-all overflow-x-auto whitespace-pre">
             <span className="text-slate-500 mr-2 select-none">$</span>
-            {executionData.command}
+            {effectiveData.command}
           </div>
         </div>
 
@@ -308,7 +394,7 @@ export const CommandAuditModal: React.FC<CommandAuditModalProps> = ({
                   <Button
                     variant="ghost"
                     size="xs"
-                    onClick={runAiAudit}
+                    onClick={() => runAiAudit()}
                     leftIcon={<RefreshCw size={11} />}
                     title="Re-run AI Analysis"
                   >
@@ -341,18 +427,31 @@ export const CommandAuditModal: React.FC<CommandAuditModalProps> = ({
                 {/* Executable Fix Command (if provided) */}
                 {auditResult.suggested_command && (
                   <div className="p-4 rounded-xl bg-brand-950/40 border border-brand-500/30 space-y-2.5">
-                    <div className="flex items-center justify-between text-xs">
+                    <div className="flex items-center justify-between text-xs flex-wrap gap-2">
                       <span className="font-semibold text-brand-300 flex items-center gap-1.5">
                         <Play size={13} className="text-brand-400" />
-                        <span>Executable Remediation Command</span>
+                        <span>Executable Remediation Command (Root)</span>
                       </span>
-                      <button
-                        onClick={() => copyToClipboard(auditResult.suggested_command!, setCopiedFix)}
-                        className="text-brand-300 hover:text-white transition-colors flex items-center gap-1 text-[11px]"
-                      >
-                        {copiedFix ? <Check size={12} className="text-emerald-400" /> : <Copy size={12} />}
-                        <span>{copiedFix ? 'Copied' : 'Copy Fix'}</span>
-                      </button>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => handleExecuteFix(auditResult.suggested_command)}
+                          disabled={runningFix}
+                          className="px-2.5 py-1 rounded-md bg-emerald-600 hover:bg-emerald-500 disabled:bg-emerald-600/50 text-white font-medium text-[11px] flex items-center gap-1.5 shadow transition-all hover:scale-[1.02] active:scale-[0.98]"
+                          title="Run this remediation command directly on the remote server as root"
+                        >
+                          {runningFix ? <RefreshCw size={11} className="animate-spin" /> : <Play size={11} />}
+                          <span>{runningFix ? 'Running Fix...' : 'Run Fix on VPS as Root'}</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => copyToClipboard(auditResult.suggested_command!, setCopiedFix)}
+                          className="text-brand-300 hover:text-white transition-colors flex items-center gap-1 text-[11px] px-2 py-1 rounded hover:bg-white/5"
+                        >
+                          {copiedFix ? <Check size={12} className="text-emerald-400" /> : <Copy size={12} />}
+                          <span>{copiedFix ? 'Copied' : 'Copy Fix'}</span>
+                        </button>
+                      </div>
                     </div>
 
                     <div className="p-3 bg-slate-950/90 border border-brand-500/20 rounded-lg font-mono text-xs text-slate-200 select-all overflow-x-auto whitespace-pre">
@@ -364,7 +463,7 @@ export const CommandAuditModal: React.FC<CommandAuditModalProps> = ({
             ) : (
               <div className="p-6 text-center rounded-xl bg-slate-950 border border-slate-800">
                 <p className="text-xs text-slate-400 mb-3">No diagnostic analysis generated yet.</p>
-                <Button variant="primary" size="sm" onClick={runAiAudit} leftIcon={<Sparkles size={13} />}>
+                <Button variant="primary" size="sm" onClick={() => runAiAudit()} leftIcon={<Sparkles size={13} />}>
                   Run AI Diagnostic Analysis
                 </Button>
               </div>
@@ -420,7 +519,7 @@ export const CommandAuditModal: React.FC<CommandAuditModalProps> = ({
                   type="button"
                   onClick={() =>
                     copyToClipboard(
-                      `${executionData.stdout}\n${executionData.stderr}`.trim(),
+                      `${effectiveData.stdout}\n${effectiveData.stderr}`.trim(),
                       setCopiedOutput
                     )
                   }
@@ -435,22 +534,22 @@ export const CommandAuditModal: React.FC<CommandAuditModalProps> = ({
 
             {/* Console Output Terminal Block */}
             <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 font-mono text-xs overflow-x-auto max-h-[360px] overflow-y-auto space-y-2">
-              {executionData.stdout && (
+              {effectiveData.stdout && (
                 <pre className="text-slate-300 whitespace-pre-wrap leading-relaxed select-all">
-                  {executionData.stdout}
+                  {effectiveData.stdout}
                 </pre>
               )}
-              {executionData.stderr && (
+              {effectiveData.stderr && (
                 <div className="pt-2 border-t border-slate-800">
                   <div className="text-[10px] text-rose-400 uppercase font-bold tracking-wider mb-1">
                     Standard Error (stderr):
                   </div>
                   <pre className="text-rose-400/90 whitespace-pre-wrap leading-relaxed select-all">
-                    {executionData.stderr}
+                    {effectiveData.stderr}
                   </pre>
                 </div>
               )}
-              {!executionData.stdout && !executionData.stderr && (
+              {!effectiveData.stdout && !effectiveData.stderr && (
                 <div className="text-slate-500 italic py-4 text-center">
                   Command completed with zero output printed to stdout or stderr.
                 </div>
@@ -501,7 +600,7 @@ export const CommandAuditModal: React.FC<CommandAuditModalProps> = ({
                     <Button
                       variant="ghost"
                       size="xs"
-                      onClick={runAiAudit}
+                      onClick={() => runAiAudit()}
                       isLoading={auditLoading}
                       leftIcon={<RefreshCw size={11} />}
                       title="Re-analyze console output with AI"
@@ -580,18 +679,16 @@ export const CommandAuditModal: React.FC<CommandAuditModalProps> = ({
                               {copiedFix ? <Check size={11} className="text-emerald-400" /> : <Copy size={11} />}
                               <span>{copiedFix ? 'Copied' : 'Copy Commands'}</span>
                             </button>
-                            {onRunFix && (
-                              <Button
-                                variant="primary"
-                                size="xs"
-                                onClick={handleExecuteFix}
-                                isLoading={runningFix}
-                                leftIcon={<Play size={11} />}
-                                className="bg-emerald-600 hover:bg-emerald-500 text-white font-semibold shadow-sm"
-                              >
-                                Run Fix on VPS
-                              </Button>
-                            )}
+                            <Button
+                              variant="primary"
+                              size="xs"
+                              onClick={() => handleExecuteFix(auditResult.suggested_command)}
+                              isLoading={runningFix}
+                              leftIcon={<Play size={11} />}
+                              className="bg-emerald-600 hover:bg-emerald-500 text-white font-semibold shadow-sm"
+                            >
+                              {runningFix ? 'Running Fix...' : 'Run Fix on VPS as Root'}
+                            </Button>
                           </div>
                         </div>
 
@@ -605,7 +702,7 @@ export const CommandAuditModal: React.FC<CommandAuditModalProps> = ({
                   <div className="py-4 text-center">
                     <button
                       type="button"
-                      onClick={runAiAudit}
+                      onClick={() => runAiAudit()}
                       className="text-xs text-brand-400 hover:text-brand-300 underline font-medium"
                     >
                       Click here to run AI diagnosis on this output

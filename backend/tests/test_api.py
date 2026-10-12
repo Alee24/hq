@@ -366,7 +366,7 @@ async def test_server_processes_and_website_auto_discovery():
         assert isinstance(scan_data["websites"], list)
 
 @pytest.mark.asyncio
-async def test_application_docker_inspection_and_actions():
+async def test_application_docker_inspection_and_actions(monkeypatch):
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         token = await get_admin_token(ac)
@@ -414,6 +414,48 @@ async def test_application_docker_inspection_and_actions():
         }, headers=headers)
         assert prune_res.status_code == 200
         assert "exit_code" in prune_res.json()
+
+        # 5. Execute application lifecycle root action (restart)
+        monkeypatch.setattr(
+            "backend.app.api.applications.execute_remote_command",
+            lambda srv, cmd, working_dir=None, timeout=30: {
+                "success": True,
+                "command": cmd,
+                "stdout": "Container somesha-web restarted successfully",
+                "stderr": "",
+                "exit_code": 0,
+                "duration_ms": 110
+            }
+        )
+        app_act_res = await ac.post(f"/api/applications/{app_id}/action", json={
+            "action": "restart"
+        }, headers=headers)
+        assert app_act_res.status_code == 200
+        app_act_data = app_act_res.json()
+        assert app_act_data["action"] == "restart"
+        assert "command" in app_act_data
+        assert "docker restart" in app_act_data["command"]
+        assert app_act_data["exit_code"] == 0
+        assert app_act_data["status"] == "ONLINE"
+
+        # 6. Execute application lifecycle root action (stop)
+        stop_res = await ac.post(f"/api/applications/{app_id}/action", json={
+            "action": "stop"
+        }, headers=headers)
+        assert stop_res.status_code == 200
+        stop_data = stop_res.json()
+        assert stop_data["status"] == "OFFLINE"
+        assert "docker stop" in stop_data["command"]
+
+        # 7. Execute suite action with spaces in container names
+        suite_act_res = await ac.post(f"/api/applications/{app_id}/suite/action", json={
+            "action": "restart",
+            "component_names": ["Central Command Center Suite", "somesha-web"]
+        }, headers=headers)
+        assert suite_act_res.status_code == 200
+        suite_data = suite_act_res.json()
+        assert "results" in suite_data
+        assert len(suite_data["results"]) == 2
 
 
 @pytest.mark.asyncio

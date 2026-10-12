@@ -985,8 +985,19 @@ def execute_container_action(
     restart, stop, start, pause, unpause, prune_containers, prune_images, exec_cmd, update_memory, update_restart.
     """
     params = params or {}
-    target = container_name_or_id.strip()
+    raw_target = container_name_or_id.strip()
     action = action.lower().strip()
+
+    # Safely handle container names with spaces or multiple space-separated targets
+    if " " in raw_target:
+        parts = raw_target.split()
+        if all(re.match(r'^[a-zA-Z0-9_.-]+$', p) for p in parts):
+            target = " ".join(parts)
+        else:
+            clean_token = raw_target.replace(" ", "-").lower()
+            target = f'"{raw_target}" || docker restart "{clean_token}"' if action == "restart" else f'"{raw_target}"'
+    else:
+        target = raw_target
 
     cmd_map = {
         "restart": f"docker restart {target}",
