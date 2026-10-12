@@ -2454,9 +2454,9 @@ else:
 
         if compose_candidate:
             cmd_display = f"git -C {target_dir} pull origin {target_branch} && cd {compose_dir} && docker compose build --no-cache && docker compose up -d && docker image prune -f"
-            out_log.append(f"\n--- [HQ Docker Rebuild & Swap Pipeline] ---")
+            out_log.append("--- [HQ Docker Rebuild & Swap Pipeline] ---")
             out_log.append(f"Directory: {compose_dir}")
-            out_log.append("Command: docker compose build --no-cache && docker compose up -d && docker image prune -f\n")
+            out_log.append("Command: docker compose build --no-cache && docker compose up -d && docker image prune -f")
 
             deploy_sh = f'''
 cd "{compose_dir}" && \\
@@ -2483,15 +2483,15 @@ $DC up -d && \\
                     out_log.append(p_dep.stdout.strip())
                 if p_dep.stderr.strip():
                     out_log.append(p_dep.stderr.strip())
-                out_log.append("\n[HQ Success] Code pulled and Docker Compose containers rebuilt and deployed successfully.")
+                out_log.append("[HQ Success] Code pulled and Docker Compose containers rebuilt and deployed successfully.")
         else:
             cmd_display = f"git -C {target_dir} pull origin {target_branch} && systemctl reload apache2 / nginx"
-            out_log.append(f"\n--- [HQ Native Web Service Pipeline] ---")
+            out_log.append("--- [HQ Native Web Service Pipeline] ---")
             out_log.append(f"Directory: {target_dir}")
             subprocess.run("apache2ctl configtest >/dev/null 2>&1 && systemctl reload apache2 >/dev/null 2>&1 || nginx -t >/dev/null 2>&1 && systemctl reload nginx >/dev/null 2>&1 || true", shell=True, executable='/bin/bash', capture_output=True, text=True, timeout=20)
             if app_service:
                 subprocess.run(f"systemctl restart {app_service} >/dev/null 2>&1 || true", shell=True, executable='/bin/bash', timeout=15)
-            out_log.append("\n[HQ Success] Code pulled from remote origin. Web server daemons refreshed with zero downtime.")
+            out_log.append("[HQ Success] Code pulled from remote origin. Web server daemons refreshed with zero downtime.")
 
     elif act in ['fetch', 'sync']:
         cmd_display = f"git -C {target_dir} fetch origin --prune && git -C {target_dir} remote -v && git -C {target_dir} branch -vv"
@@ -2507,7 +2507,7 @@ $DC up -d && \\
         cmd_display = f"git -C {target_dir} status -sb"
         p = subprocess.run(['git', '-C', target_dir, 'status', '-sb'], capture_output=True, text=True, timeout=8)
         exit_code = p.returncode
-        out_log.append(p.stdout.strip() or f"On branch {target_branch}\\nWorking tree clean")
+        out_log.append(p.stdout.strip() or f"On branch {target_branch} - Working tree clean")
         if p.stderr.strip():
             err_log.append(p.stderr.strip())
 
@@ -2616,10 +2616,11 @@ print(json.dumps({
             pass
 
     fallback_dir = getattr(app, "root_path", None) or f"/var/www/{(app.name or 'app').lower()}"
+    fallback_branch = branch or getattr(app, "git_branch", None) or "main"
     fallback_cmd = (
-        f"git -C {fallback_dir} pull origin main && cd {fallback_dir} && docker compose build --no-cache && docker compose up -d && docker image prune -f"
+        f"git -C {fallback_dir} pull origin {fallback_branch} && cd {fallback_dir} && docker compose build --no-cache && docker compose up -d && docker image prune -f"
         if act in ['pull_deploy', 'pull_and_deploy', 'deploy_docker']
-        else f"git -C {fallback_dir} {act}"
+        else f"git -C {fallback_dir} {act} origin {fallback_branch}" if act in ['pull', 'fetch'] else f"git -C {fallback_dir} {act}"
     )
     return {
         "success": res.get("success", False),
