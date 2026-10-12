@@ -27,8 +27,11 @@ services:
       - SECRET_KEY=${SECRET_KEY:-command-center-super-secure-production-secret-key-389104810283}
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-commandcenter}:${POSTGRES_PASSWORD:-ChangeMeSecurePass123}@postgres:5432/${POSTGRES_DB:-commandcenter}
       - REDIS_URL=redis://redis:6379/0
-      - ACCESS_TOKEN_EXPIRE_MINUTES=1440
+      - ACCESS_TOKEN_EXPIRE_MINUTES=525600
       - SEED_DEMO_DATA=false
+    volumes:
+      - hq_backend_data:/app/data
+      - hq_backups_store:/app/backups_store
     depends_on:
       postgres:
         condition: service_healthy
@@ -96,3 +99,5 @@ networks:
 volumes:
   postgres_data:
   redis_data:
+  hq_backend_data:
+  hq_backups_store:

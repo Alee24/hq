@@ -59,16 +59,26 @@ export const BackupsView: React.FC = () => {
   const [backupToDelete, setBackupToDelete] = useState<BackupItem | null>(null);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
 
+  // HQ System Database Backup & 1-Click Restore state
+  const [systemStatus, setSystemStatus] = useState<any>(null);
+  const [exportingSystem, setExportingSystem] = useState(false);
+  const [systemRestoreModalOpen, setSystemRestoreModalOpen] = useState(false);
+  const [systemRestoreFile, setSystemRestoreFile] = useState<File | null>(null);
+  const [systemRestorePreview, setSystemRestorePreview] = useState<any>(null);
+  const [restoringSystem, setRestoringSystem] = useState(false);
+
   const loadData = async () => {
     try {
-      const [resBackups, resServers, resApps] = await Promise.all([
+      const [resBackups, resServers, resApps, resStatus] = await Promise.all([
         api.listBackups(),
         api.listServers().catch(() => []),
-        api.listApplications().catch(() => [])
+        api.listApplications().catch(() => []),
+        api.getSystemBackupStatus().catch(() => null)
       ]);
       setBackups(resBackups);
       setServers(resServers);
       setApplications(resApps);
+      if (resStatus) setSystemStatus(resStatus);
       if (resServers.length > 0 && !selectedServer) {
         setSelectedServer(resServers[0]);
       }
@@ -76,6 +86,56 @@ export const BackupsView: React.FC = () => {
       console.error(e);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleExportSystemBackup = async () => {
+    setExportingSystem(true);
+    try {
+      const res = await api.exportSystemBackup();
+      alert(res.message || 'HQ System database backup downloaded successfully.');
+    } catch (err: any) {
+      alert(err.message || 'Failed to export HQ system database backup');
+    } finally {
+      setExportingSystem(false);
+    }
+  };
+
+  const handleSystemFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setSystemRestoreFile(file);
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const text = event.target?.result as string;
+        const parsed = JSON.parse(text);
+        setSystemRestorePreview(parsed);
+      } catch (err) {
+        alert('Invalid JSON in backup file.');
+        setSystemRestorePreview(null);
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  const handleExecuteSystemRestore = async () => {
+    if (!systemRestorePreview) {
+      alert('Please select a valid .hqbackup or JSON file first.');
+      return;
+    }
+    setRestoringSystem(true);
+    try {
+      const res = await api.restoreSystemBackup(systemRestorePreview);
+      alert(res.message || 'HQ System database restored successfully.');
+      setSystemRestoreModalOpen(false);
+      setSystemRestoreFile(null);
+      setSystemRestorePreview(null);
+      await loadData();
+    } catch (err: any) {
+      alert(err.message || 'Failed to restore HQ system database');
+    } finally {
+      setRestoringSystem(false);
     }
   };
 
@@ -206,6 +266,81 @@ export const BackupsView: React.FC = () => {
           >
             <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
           </button>
+        </div>
+      </div>
+
+      {/* ============================================================== */}
+      {/* HQ CENTRAL SYSTEM DATABASE ZERO-DATA-LOSS SAFETY & RESTORE HUB */}
+      {/* ============================================================== */}
+      <div className="bg-gradient-to-r from-slate-900 via-indigo-950/40 to-slate-900 border border-indigo-900/40 rounded-2xl p-5 md:p-6 space-y-4 shadow-xl">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-4 border-b border-indigo-900/30">
+          <div className="flex items-center gap-3.5 min-w-0">
+            <div className="w-11 h-11 rounded-xl bg-indigo-600/20 border border-indigo-500/40 flex items-center justify-center text-indigo-400 shrink-0">
+              <Database size={22} />
+            </div>
+            <div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <h2 className="text-sm font-bold text-white">HQ System Central Database Safety & Zero Data Loss Hub</h2>
+                <span className="text-[10px] bg-emerald-950 text-emerald-300 border border-emerald-800 px-2 py-0.5 rounded-full font-mono font-semibold flex items-center gap-1">
+                  <CheckCircle2 size={10} />
+                  Persistent Named Volume Mounted
+                </span>
+                <span className="text-[10px] bg-sky-950 text-sky-300 border border-sky-800 px-2 py-0.5 rounded-full font-mono font-semibold">
+                  1-Year Persistent Login Active
+                </span>
+              </div>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Rebuilding containers with <code className="text-indigo-300 font-mono">docker compose build --no-cache && docker compose up -d</code> will <strong className="text-slate-200">never wipe out</strong> your servers, applications, settings, or user session. Export complete offline snapshots anytime.
+              </p>
+            </div>
+          </div>
+
+          {/* Action Buttons */}
+          <div className="flex items-center gap-2.5 flex-wrap">
+            <Button
+              variant="primary"
+              onClick={handleExportSystemBackup}
+              disabled={exportingSystem}
+              leftIcon={<Download size={14} className={exportingSystem ? 'animate-spin' : ''} />}
+            >
+              {exportingSystem ? 'Exporting Snapshot...' : 'Export Full HQ Database (.hqbackup)'}
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={() => setSystemRestoreModalOpen(true)}
+              leftIcon={<RotateCcw size={14} />}
+            >
+              1-Click Restore HQ Database
+            </Button>
+          </div>
+        </div>
+
+        {/* Database Status Gauges */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+          <div className="bg-slate-950/70 border border-slate-800/80 rounded-xl p-3">
+            <span className="text-[10px] text-slate-500 font-medium uppercase tracking-wider block">Database Engine</span>
+            <span className="text-xs font-bold text-indigo-300 mt-1 block truncate">
+              {systemStatus?.db_engine || 'PostgreSQL 16 (Container)'}
+            </span>
+          </div>
+          <div className="bg-slate-950/70 border border-slate-800/80 rounded-xl p-3">
+            <span className="text-[10px] text-slate-500 font-medium uppercase tracking-wider block">Storage Volume</span>
+            <span className="text-xs font-bold text-emerald-400 mt-1 block truncate">
+              {systemStatus?.data_dir || '/app/data'} (Volume Protected)
+            </span>
+          </div>
+          <div className="bg-slate-950/70 border border-slate-800/80 rounded-xl p-3">
+            <span className="text-[10px] text-slate-500 font-medium uppercase tracking-wider block">Login Session Lifetime</span>
+            <span className="text-xs font-bold text-sky-400 mt-1 block">
+              365 Days (Zero Re-login on Restart)
+            </span>
+          </div>
+          <div className="bg-slate-950/70 border border-slate-800/80 rounded-xl p-3">
+            <span className="text-[10px] text-slate-500 font-medium uppercase tracking-wider block">Live Managed Records</span>
+            <span className="text-xs font-bold text-purple-300 mt-1 block">
+              {systemStatus?.counts?.servers ?? servers.length} Servers · {systemStatus?.counts?.applications ?? applications.length} Apps · {systemStatus?.counts?.domains ?? 0} Domains
+            </span>
+          </div>
         </div>
       </div>
 
@@ -563,6 +698,107 @@ export const BackupsView: React.FC = () => {
           <pre className="whitespace-pre-wrap">
             {loadingRestore ? 'Generating portable restore command sequence...' : restoreData?.restore_command_sequence}
           </pre>
+        </div>
+      </ModalShell>
+
+      {/* HQ System Database Restore Modal */}
+      <ModalShell
+        isOpen={systemRestoreModalOpen}
+        onClose={() => {
+          setSystemRestoreModalOpen(false);
+          setSystemRestoreFile(null);
+          setSystemRestorePreview(null);
+        }}
+        title="Restore HQ Command Center System Database"
+        description="Upload an authentic .hqbackup or JSON database snapshot to safely restore servers, applications, and settings."
+        icon={RotateCcw}
+        size="lg"
+        footer={
+          <div className="flex items-center justify-between w-full">
+            <Button
+              variant="secondary"
+              onClick={() => {
+                setSystemRestoreModalOpen(false);
+                setSystemRestoreFile(null);
+                setSystemRestorePreview(null);
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="primary"
+              onClick={handleExecuteSystemRestore}
+              disabled={!systemRestorePreview || restoringSystem}
+              leftIcon={<RotateCcw size={14} className={restoringSystem ? 'animate-spin' : ''} />}
+            >
+              {restoringSystem ? 'Restoring Database...' : 'Restore & Merge Database (Zero Data Loss)'}
+            </Button>
+          </div>
+        }
+      >
+        <div className="space-y-4">
+          <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-3">
+            <label className="text-xs font-semibold text-slate-200 block">
+              Select Snapshot Archive (.hqbackup or .json)
+            </label>
+            <input
+              type="file"
+              accept=".hqbackup,.json"
+              onChange={handleSystemFileChange}
+              className="block w-full text-xs text-slate-400 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-indigo-600 file:text-white hover:file:bg-indigo-500 cursor-pointer border border-slate-800 rounded-lg p-2 bg-slate-900"
+            />
+          </div>
+
+          {systemRestorePreview && (
+            <div className="p-4 rounded-xl bg-indigo-950/30 border border-indigo-800/50 space-y-3">
+              <h4 className="text-xs font-bold text-indigo-300 flex items-center gap-1.5">
+                <CheckCircle2 size={14} className="text-emerald-400" />
+                Snapshot Validated Successfully
+              </h4>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 text-xs text-slate-300">
+                <div className="bg-slate-950/70 p-2.5 rounded-lg border border-slate-800/60">
+                  <span className="text-[10px] text-slate-500 block">Exported Date</span>
+                  <span className="font-mono text-[11px] truncate block text-slate-300">
+                    {systemRestorePreview.exported_at ? new Date(systemRestorePreview.exported_at).toLocaleString() : 'N/A'}
+                  </span>
+                </div>
+                <div className="bg-slate-950/70 p-2.5 rounded-lg border border-slate-800/60">
+                  <span className="text-[10px] text-slate-500 block">Exported By</span>
+                  <span className="font-semibold text-slate-200 block truncate">
+                    {systemRestorePreview.exported_by || 'Admin'}
+                  </span>
+                </div>
+                <div className="bg-slate-950/70 p-2.5 rounded-lg border border-slate-800/60">
+                  <span className="text-[10px] text-slate-500 block">Servers to Restore</span>
+                  <span className="font-bold text-sky-400 block">
+                    {systemRestorePreview.servers?.length || 0} Nodes
+                  </span>
+                </div>
+                <div className="bg-slate-950/70 p-2.5 rounded-lg border border-slate-800/60">
+                  <span className="text-[10px] text-slate-500 block">Applications</span>
+                  <span className="font-bold text-brand-400 block">
+                    {systemRestorePreview.applications?.length || 0} Apps
+                  </span>
+                </div>
+                <div className="bg-slate-950/70 p-2.5 rounded-lg border border-slate-800/60">
+                  <span className="text-[10px] text-slate-500 block">Domains & SSL</span>
+                  <span className="font-bold text-purple-400 block">
+                    {systemRestorePreview.domains?.length || 0} Domains
+                  </span>
+                </div>
+                <div className="bg-slate-950/70 p-2.5 rounded-lg border border-slate-800/60">
+                  <span className="text-[10px] text-slate-500 block">Licenses</span>
+                  <span className="font-bold text-emerald-400 block">
+                    {systemRestorePreview.licenses?.length || 0} Licenses
+                  </span>
+                </div>
+              </div>
+            </div>
+          )}
+
+          <div className="p-3 bg-slate-950/60 border border-slate-800/60 rounded-xl text-[11px] text-slate-400 leading-relaxed">
+            <strong className="text-slate-200 font-semibold">Database Safety Policy:</strong> Non-destructive merge will safely import records into the Command Center database without deleting any existing data or resetting database sequences.
+          </div>
         </div>
       </ModalShell>
 

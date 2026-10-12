@@ -49,11 +49,26 @@ async def get_current_user_optional(
         return None
 
     user_id = payload.get("sub")
-    if not user_id:
+    username = payload.get("username")
+    if not user_id and not username:
         return None
 
-    result = await db.execute(select(User).where(User.id == user_id, User.is_active == True))
+    # Resilient resolution: Find user by ID, username, or email
+    stmt = select(User).where(
+        ((User.id == user_id) | (User.username == username) | (User.email == user_id)) & (User.is_active == True)
+    )
+    result = await db.execute(stmt)
     user = result.scalar_one_or_none()
+
+    # Failsafe for Super Admin across database rebuilds / reseeds:
+    # If the token was signed with the valid SECRET_KEY and belongs to the admin, resolve to the active Super Admin
+    if not user and (
+        username in [settings.ADMIN_USERNAME, "mettoalex", "admin"] or 
+        user_id in [settings.ADMIN_USERNAME, settings.ADMIN_EMAIL, "mettoalex", "admin"]
+    ):
+        super_res = await db.execute(select(User).where(User.role == "SUPER_ADMIN", User.is_active == True))
+        user = super_res.scalar_one_or_none()
+
     return user
 
 async def get_current_user(

@@ -1342,4 +1342,50 @@ async def test_ai_autofix_endpoints():
             assert b_data["total_attempted"] == 2
             assert b_data["total_successful"] == 2
 
+@pytest.mark.asyncio
+async def test_system_database_export_restore_and_persistent_auth():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        token = await get_admin_token(ac)
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # 1. Test GET /api/backups/system/status
+        status_res = await ac.get("/api/backups/system/status", headers=headers)
+        assert status_res.status_code == 200
+        status_data = status_res.json()
+        assert "db_engine" in status_data
+        assert "persistent_storage_active" in status_data
+        assert "counts" in status_data
+        assert status_data["session_retention_days"] == 365
+
+        # 2. Test POST /api/backups/system/export
+        export_res = await ac.post("/api/backups/system/export", headers=headers)
+        assert export_res.status_code == 200
+        assert "hq_system_backup" in export_res.headers.get("content-disposition", "")
+        export_json = export_res.json()
+        assert export_json["hq_backup_version"] == "1.0"
+        assert "servers" in export_json
+        assert "applications" in export_json
+        assert "domains" in export_json
+
+        # 3. Test POST /api/backups/system/restore
+        restore_res = await ac.post("/api/backups/system/restore", json=export_json, headers=headers)
+        assert restore_res.status_code == 200
+        restore_data = restore_res.json()
+        assert restore_data["success"] is True
+        assert "restored_counts" in restore_data
+        assert restore_data["restored_counts"]["servers"] >= 0
+
+        # 4. Test Resilient Persistent Token Auth (e.g. after container rebuild / UUID shift)
+        # Create a token containing only username
+        from backend.app.core.security import create_access_token
+        rebuild_token = create_access_token(data={"sub": "synthetic-new-rebuild-uuid", "username": settings.ADMIN_USERNAME, "role": "SUPER_ADMIN"})
+        rebuild_headers = {"Authorization": f"Bearer {rebuild_token}"}
+        
+        me_res = await ac.get("/api/auth/me", headers=rebuild_headers)
+        assert me_res.status_code == 200
+        me_data = me_res.json()
+        assert me_data["username"] == settings.ADMIN_USERNAME
+        assert me_data["role"] == "SUPER_ADMIN"
+
+
 

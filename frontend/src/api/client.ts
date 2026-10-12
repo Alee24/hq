@@ -129,7 +129,7 @@ export interface CommandAuditResponse {
 
 
 class ApiClient {
-  private getToken(): string | null {
+  public getToken(): string | null {
     return localStorage.getItem('cc_auth_token');
   }
 
@@ -157,8 +157,11 @@ class ApiClient {
       headers,
     });
 
-    if (response.status === 401) {
+    if (response.status === 401 && endpoint === '/auth/me') {
       this.setToken(null);
+      try {
+        localStorage.removeItem('cc_user');
+      } catch {}
       // Trigger re-auth event if needed
       window.dispatchEvent(new Event('cc_unauthorized'));
     }
@@ -202,6 +205,10 @@ class ApiClient {
 
   logout() {
     this.setToken(null);
+    try {
+      localStorage.removeItem('cc_user');
+    } catch {}
+    window.dispatchEvent(new Event('cc_unauthorized'));
   }
 
   // ==========================================
@@ -1244,6 +1251,65 @@ class ApiClient {
       restore_command_sequence: string;
       instructions: string;
     }>(`/backups/portable-restore-script/${serverId}`);
+  }
+
+  async getSystemBackupStatus() {
+    return this.request<{
+      db_engine: string;
+      database_url_masked: string;
+      persistent_storage_active: boolean;
+      data_dir: string;
+      counts: {
+        servers: number;
+        applications: number;
+        domains: number;
+        licenses: number;
+        users: number;
+        backups: number;
+      };
+      session_retention_days: number;
+    }>('/backups/system/status');
+  }
+
+  async exportSystemBackup() {
+    const token = this.getToken();
+    const url = `/api/backups/system/export${token ? `?token=${encodeURIComponent(token)}` : ''}`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Failed to export system backup' }));
+      throw new Error(err.detail || 'Failed to export system backup');
+    }
+    const blob = await res.blob();
+    const objectUrl = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = objectUrl;
+    const now = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    a.download = `hq-system-backup-${now}.hqbackup`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.URL.revokeObjectURL(objectUrl);
+    return { success: true, message: 'HQ System Database Backup downloaded successfully.' };
+  }
+
+  async restoreSystemBackup(backupData: any) {
+    return this.request<{
+      success: boolean;
+      message: string;
+      restored_counts: {
+        servers: number;
+        applications: number;
+        domains: number;
+        licenses: number;
+        alert_rules: number;
+      };
+    }>('/backups/system/restore', {
+      method: 'POST',
+      body: JSON.stringify(backupData),
+    });
   }
 
   async listAlerts(resolved?: boolean, severity?: string) {

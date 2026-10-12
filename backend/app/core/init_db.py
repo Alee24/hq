@@ -222,7 +222,7 @@ async def init_db(seed_demo: bool = False):
 
     # Attempt database connection and schema setup
     connected = False
-    max_retries = 6
+    max_retries = 30
     for attempt in range(1, max_retries + 1):
         try:
             from backend.app.core.database import engine as current_eng
@@ -254,10 +254,14 @@ async def init_db(seed_demo: bool = False):
                         pass
 
             if attempt == max_retries:
-                # If PostgreSQL is still unreachable, fall back to SQLite to guarantee uptime
+                # If PostgreSQL is still unreachable after 30 retries (60s), fall back to persistent SQLite to guarantee uptime
                 if "postgres" in settings.DATABASE_URL:
-                    print("[DB INIT NOTICE]: PostgreSQL unavailable after retries. Engaging high-availability SQLite engine...", flush=True)
-                    sqlite_url = "sqlite+aiosqlite:///./command_center.db"
+                    import os
+                    data_dir = getattr(settings, "DATA_DIR", "/app/data" if os.path.exists("/app") else "./data")
+                    os.makedirs(data_dir, exist_ok=True)
+                    sqlite_path = os.path.join(data_dir, "command_center.db").replace("\\", "/")
+                    sqlite_url = f"sqlite+aiosqlite:///{sqlite_path}"
+                    print(f"[DB INIT NOTICE]: PostgreSQL unavailable after {max_retries} retries. Engaging persistent SQLite engine at {sqlite_url}...", flush=True)
                     sq_eng = update_db_engine(sqlite_url)
                     async with sq_eng.begin() as sconn:
                         await sconn.run_sync(Base.metadata.create_all)

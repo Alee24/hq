@@ -27,6 +27,16 @@ def sanitize_datetimes_before_flush(session, flush_context, instances):
 connect_args = {}
 if "sqlite" in settings.DATABASE_URL:
     connect_args = {"check_same_thread": False}
+    try:
+        import os, re
+        match = re.search(r"sqlite(?:\+aiosqlite)?:///(.*)", settings.DATABASE_URL)
+        if match:
+            db_file = match.group(1)
+            dir_name = os.path.dirname(db_file)
+            if dir_name:
+                os.makedirs(dir_name, exist_ok=True)
+    except Exception:
+        pass
 
 engine = create_async_engine(
     settings.DATABASE_URL,

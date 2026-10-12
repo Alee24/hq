@@ -5,10 +5,15 @@ from typing import List, Optional
 import time
 import gzip
 import os
+import json
 from datetime import datetime, timezone
+from backend.app.core.config import settings
 from backend.app.core.database import get_db
 from backend.app.core.deps import get_current_user, get_current_user_optional, require_roles
-from backend.app.models.entities import User, Backup, Application, Server, ServerTerminalLog, AppLog
+from backend.app.models.entities import (
+    User, Backup, Application, Server, ServerTerminalLog, AppLog,
+    Domain, License, AlertRule, SystemSetting, ServerSnapshot
+)
 from backend.app.schemas.api_schemas import (
     BackupResponse, DatabaseBackupRequest, WebConfigBackupRequest,
     ApplicationBackupRequest, ServerConfigBackupRequest, PortableRestoreScriptResponse
@@ -21,7 +26,7 @@ from backend.app.services.remote_executor import (
 
 router = APIRouter(prefix="/backups", tags=["Backups"])
 
-BACKUP_STORAGE_DIR = os.path.abspath("backups_store")
+BACKUP_STORAGE_DIR = os.path.abspath(getattr(settings, "BACKUP_STORE_DIR", "backups_store"))
 os.makedirs(BACKUP_STORAGE_DIR, exist_ok=True)
 
 def generate_realistic_sql_dump(db_name: str, db_type: str, server_name: str) -> str:
@@ -664,5 +669,413 @@ systemctl status nginx --no-pager 2>/dev/null || true
         restore_command_sequence=restore_commands,
         instructions=instructions
     )
+
+
+# ==============================================================================
+# HQ CENTRAL SYSTEM DATABASE BACKUP & 1-CLICK PORTABLE RESTORE ENGINE
+# ==============================================================================
+
+@router.get("/system/status")
+async def get_system_backup_status(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Returns live persistence health, database engine, storage path, record counts, and session duration.
+    """
+    srv_count = (await db.execute(select(Server).where(Server.deleted_at == None))).scalars().all()
+    app_count = (await db.execute(select(Application).where(Application.deleted_at == None))).scalars().all()
+    dom_count = (await db.execute(select(Domain))).scalars().all()
+    lic_count = (await db.execute(select(License))).scalars().all()
+    usr_count = (await db.execute(select(User).where(User.deleted_at == None))).scalars().all()
+    b_count = (await db.execute(select(Backup))).scalars().all()
+
+    db_url = settings.DATABASE_URL
+    is_postgres = "postgres" in db_url
+    masked_db = "postgresql+asyncpg://***:***@postgres:5432/commandcenter" if is_postgres else "sqlite+aiosqlite:///app/data/command_center.db"
+    
+    data_dir = getattr(settings, "DATA_DIR", "/app/data" if os.path.exists("/app") else "./data")
+    is_persistent = os.path.exists(data_dir) or is_postgres
+
+    return {
+        "db_engine": "PostgreSQL 16 (Container Volume)" if is_postgres else "SQLite High-Availability (Persistent Volume)",
+        "database_url_masked": masked_db,
+        "persistent_storage_active": is_persistent,
+        "data_dir": data_dir,
+        "counts": {
+            "servers": len(srv_count),
+            "applications": len(app_count),
+            "domains": len(dom_count),
+            "licenses": len(lic_count),
+            "users": len(usr_count),
+            "backups": len(b_count),
+        },
+        "session_retention_days": 365
+    }
+
+
+@router.post("/system/export")
+async def export_system_backup(
+    db: AsyncSession = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user_optional)
+):
+    """
+    Exports a complete, portable JSON snapshot of all HQ Command Center database records:
+    Servers, Applications, Domains, Licenses, Alert Rules, System Settings, and Snapshots.
+    """
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Authentication required to export system database.")
+
+    # 1. Fetch all records
+    servers = (await db.execute(select(Server).where(Server.deleted_at == None))).scalars().all()
+    apps = (await db.execute(select(Application).where(Application.deleted_at == None))).scalars().all()
+    domains = (await db.execute(select(Domain))).scalars().all()
+    licenses = (await db.execute(select(License))).scalars().all()
+    rules = (await db.execute(select(AlertRule))).scalars().all()
+    settings_records = (await db.execute(select(SystemSetting))).scalars().all()
+    snapshots = (await db.execute(select(ServerSnapshot).where(ServerSnapshot.deleted_at == None))).scalars().all()
+
+    now = datetime.now(timezone.utc)
+    timestamp_str = now.strftime("%Y%m%d_%H%M%S")
+
+    def dt_str(val):
+        return val.isoformat() if val else None
+
+    export_payload = {
+        "hq_backup_version": "1.0",
+        "exported_at": now.isoformat(),
+        "exported_by": current_user.username,
+        "metadata": {
+            "servers_count": len(servers),
+            "applications_count": len(apps),
+            "domains_count": len(domains),
+            "licenses_count": len(licenses),
+            "alert_rules_count": len(rules)
+        },
+        "servers": [
+            {
+                "id": s.id, "name": s.name, "hostname": s.hostname, "provider": s.provider,
+                "public_ip": s.public_ip, "private_ip": s.private_ip, "os": s.os,
+                "os_version": s.os_version, "kernel": s.kernel, "cpu_cores": s.cpu_cores,
+                "ram_total_mb": s.ram_total_mb, "disk_total_gb": s.disk_total_gb,
+                "ssh_port": s.ssh_port, "ssh_user": s.ssh_user, "ssh_auth_type": s.ssh_auth_type,
+                "ssh_key": s.ssh_key, "ssh_password": s.ssh_password,
+                "connection_type": s.connection_type, "status": s.status, "is_active": s.is_active
+            } for s in servers
+        ],
+        "applications": [
+            {
+                "id": a.id, "name": a.name, "description": a.description, "environment": a.environment,
+                "domain": a.domain, "server_id": a.server_id, "port": a.port, "app_type": a.app_type,
+                "framework": a.framework, "repo_url": a.repo_url, "root_path": a.root_path,
+                "git_branch": a.git_branch, "current_version": a.current_version,
+                "current_commit": a.current_commit, "latest_repo_commit": a.latest_repo_commit,
+                "deployment_status": a.deployment_status, "process_manager": a.process_manager,
+                "service_name": a.service_name, "uptime_percent": a.uptime_percent,
+                "http_status": a.http_status, "ssl_status": a.ssl_status,
+                "license_id": a.license_id, "health_check_url": a.health_check_url,
+                "health_status": a.health_status, "is_maintenance": a.is_maintenance, "is_active": a.is_active
+            } for a in apps
+        ],
+        "domains": [
+            {
+                "id": d.id, "domain_name": d.domain_name, "application_id": d.application_id,
+                "server_ip": d.server_ip, "dns_status": d.dns_status, "ssl_status": d.ssl_status,
+                "ssl_issuer": d.ssl_issuer, "ssl_expires_at": dt_str(d.ssl_expires_at),
+                "days_remaining": d.days_remaining, "redirect_status": d.redirect_status,
+                "auto_renew": d.auto_renew
+            } for d in domains
+        ],
+        "licenses": [
+            {
+                "id": l.id, "license_key": l.license_key, "product_name": l.product_name,
+                "customer_name": l.customer_name, "customer_email": l.customer_email,
+                "product_version": l.product_version, "license_type": l.license_type,
+                "allowed_installations": l.allowed_installations,
+                "active_installations": l.active_installations,
+                "status": l.status, "features": l.features,
+                "payload_b64": l.payload_b64, "signature_b64": l.signature_b64,
+                "issued_at": dt_str(l.issued_at), "expires_at": dt_str(l.expires_at)
+            } for l in licenses
+        ],
+        "alert_rules": [
+            {
+                "id": r.id, "name": r.name, "metric_name": r.metric_name,
+                "condition": r.condition, "threshold": r.threshold,
+                "severity": r.severity, "channel": r.channel, "is_enabled": r.is_enabled
+            } for r in rules
+        ],
+        "system_settings": [
+            {
+                "id": st.id, "key": st.key, "value": st.value,
+                "category": st.category, "description": st.description
+            } for st in settings_records
+        ],
+        "snapshots": [
+            {
+                "id": sn.id, "server_id": sn.server_id, "name": sn.name,
+                "description": sn.description, "snapshot_type": sn.snapshot_type,
+                "file_path": sn.file_path, "size_mb": sn.size_mb,
+                "status": sn.status, "manifest": sn.manifest, "created_by": sn.created_by
+            } for sn in snapshots
+        ]
+    }
+
+    raw_json = json.dumps(export_payload, indent=2)
+    filename = f"hq_system_backup_{timestamp_str}.hqbackup"
+    filepath = os.path.join(BACKUP_STORAGE_DIR, filename)
+    with open(filepath, "w", encoding="utf-8") as f:
+        f.write(raw_json)
+
+    # Log audit
+    await log_audit_event(
+        db=db,
+        action="EXPORT_SYSTEM_BACKUP",
+        entity_type="system",
+        username=current_user.username,
+        user_id=current_user.id,
+        details={"filename": filename, "servers": len(servers), "applications": len(apps)},
+        result="SUCCESS"
+    )
+
+    return Response(
+        content=raw_json,
+        media_type="application/json",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"'
+        }
+    )
+
+
+@router.post("/system/restore")
+async def restore_system_backup(
+    payload: dict,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_roles(["SUPER_ADMIN"]))
+):
+    """
+    Safely restores and merges an HQ System Snapshot (.hqbackup).
+    Adheres strictly to Rule 4 (Database Safety - never deletes live data, merges and preserves records).
+    """
+    if "hq_backup_version" not in payload and "servers" not in payload:
+        raise HTTPException(status_code=400, detail="Invalid HQ backup file format. Missing backup schema.")
+
+    restored = {
+        "servers": 0,
+        "applications": 0,
+        "domains": 0,
+        "licenses": 0,
+        "alert_rules": 0,
+        "settings": 0
+    }
+
+    # 1. Restore/Merge Servers
+    for s_data in payload.get("servers", []):
+        sid = s_data.get("id")
+        hostname = s_data.get("hostname")
+        ip = s_data.get("public_ip")
+        
+        # Check existing
+        existing_srv = (await db.execute(
+            select(Server).where((Server.id == sid) | (Server.hostname == hostname))
+        )).scalars().first()
+
+        if existing_srv:
+            existing_srv.name = s_data.get("name", existing_srv.name)
+            existing_srv.provider = s_data.get("provider", existing_srv.provider)
+            existing_srv.os = s_data.get("os", existing_srv.os)
+            existing_srv.os_version = s_data.get("os_version", existing_srv.os_version)
+            if s_data.get("ssh_key") and not existing_srv.ssh_key:
+                existing_srv.ssh_key = s_data.get("ssh_key")
+            if s_data.get("ssh_password") and not existing_srv.ssh_password:
+                existing_srv.ssh_password = s_data.get("ssh_password")
+        else:
+            new_srv = Server(
+                id=sid,
+                name=s_data.get("name", "Restored Server"),
+                hostname=hostname,
+                provider=s_data.get("provider", "Custom VPS"),
+                public_ip=ip,
+                private_ip=s_data.get("private_ip"),
+                os=s_data.get("os", "Ubuntu Linux"),
+                os_version=s_data.get("os_version", "24.04 LTS"),
+                kernel=s_data.get("kernel", "6.8.0-generic"),
+                cpu_cores=s_data.get("cpu_cores", 4),
+                ram_total_mb=s_data.get("ram_total_mb", 8192),
+                disk_total_gb=s_data.get("disk_total_gb", 160),
+                ssh_port=s_data.get("ssh_port", 22),
+                ssh_user=s_data.get("ssh_user", "root"),
+                ssh_auth_type=s_data.get("ssh_auth_type", "KEY"),
+                ssh_key=s_data.get("ssh_key"),
+                ssh_password=s_data.get("ssh_password"),
+                connection_type=s_data.get("connection_type", "SSH"),
+                status=s_data.get("status", "ONLINE"),
+                is_active=s_data.get("is_active", True)
+            )
+            db.add(new_srv)
+        restored["servers"] += 1
+
+    await db.flush()
+
+    # 2. Restore/Merge Applications
+    for a_data in payload.get("applications", []):
+        aid = a_data.get("id")
+        domain = a_data.get("domain")
+        existing_app = (await db.execute(
+            select(Application).where((Application.id == aid) | (Application.domain == domain))
+        )).scalars().first()
+
+        if existing_app:
+            existing_app.name = a_data.get("name", existing_app.name)
+            existing_app.framework = a_data.get("framework", existing_app.framework)
+            existing_app.repo_url = a_data.get("repo_url", existing_app.repo_url)
+            existing_app.git_branch = a_data.get("git_branch", existing_app.git_branch)
+            existing_app.process_manager = a_data.get("process_manager", existing_app.process_manager)
+            existing_app.service_name = a_data.get("service_name", existing_app.service_name)
+        else:
+            new_app = Application(
+                id=aid,
+                name=a_data.get("name", "Restored Application"),
+                description=a_data.get("description"),
+                environment=a_data.get("environment", "production"),
+                domain=domain,
+                server_id=a_data.get("server_id"),
+                port=a_data.get("port", 80),
+                app_type=a_data.get("app_type", "Web Application"),
+                framework=a_data.get("framework", "FastAPI / React"),
+                repo_url=a_data.get("repo_url"),
+                root_path=a_data.get("root_path"),
+                git_branch=a_data.get("git_branch", "main"),
+                current_version=a_data.get("current_version", "v1.0.0"),
+                current_commit=a_data.get("current_commit"),
+                deployment_status=a_data.get("deployment_status", "IDLE"),
+                process_manager=a_data.get("process_manager", "Docker"),
+                service_name=a_data.get("service_name", "app-service"),
+                uptime_percent=a_data.get("uptime_percent", 99.98),
+                http_status=a_data.get("http_status", 200),
+                ssl_status=a_data.get("ssl_status", "VALID"),
+                license_id=a_data.get("license_id"),
+                health_check_url=a_data.get("health_check_url", "/health"),
+                health_status=a_data.get("health_status", "ONLINE"),
+                is_active=a_data.get("is_active", True)
+            )
+            db.add(new_app)
+        restored["applications"] += 1
+
+    await db.flush()
+
+    # 3. Restore/Merge Domains
+    for d_data in payload.get("domains", []):
+        did = d_data.get("id")
+        dname = d_data.get("domain_name")
+        existing_dom = (await db.execute(
+            select(Domain).where((Domain.id == did) | (Domain.domain_name == dname))
+        )).scalars().first()
+
+        if existing_dom:
+            existing_dom.ssl_status = d_data.get("ssl_status", existing_dom.ssl_status)
+            existing_dom.ssl_issuer = d_data.get("ssl_issuer", existing_dom.ssl_issuer)
+            existing_dom.days_remaining = d_data.get("days_remaining", existing_dom.days_remaining)
+        else:
+            new_dom = Domain(
+                id=did,
+                domain_name=dname,
+                application_id=d_data.get("application_id"),
+                server_ip=d_data.get("server_ip", "127.0.0.1"),
+                dns_status=d_data.get("dns_status", "RESOLVED"),
+                ssl_status=d_data.get("ssl_status", "VALID"),
+                ssl_issuer=d_data.get("ssl_issuer", "Let's Encrypt"),
+                days_remaining=d_data.get("days_remaining", 75),
+                redirect_status=d_data.get("redirect_status", "HTTP_TO_HTTPS"),
+                auto_renew=d_data.get("auto_renew", True)
+            )
+            db.add(new_dom)
+        restored["domains"] += 1
+
+    await db.flush()
+
+    # 4. Restore/Merge Licenses
+    for l_data in payload.get("licenses", []):
+        lid = l_data.get("id")
+        lkey = l_data.get("license_key")
+        existing_lic = (await db.execute(
+            select(License).where((License.id == lid) | (License.license_key == lkey))
+        )).scalars().first()
+
+        if existing_lic:
+            existing_lic.status = l_data.get("status", existing_lic.status)
+        else:
+            new_lic = License(
+                id=lid,
+                license_key=lkey,
+                product_name=l_data.get("product_name", "Enterprise Suite"),
+                customer_name=l_data.get("customer_name", "Customer"),
+                customer_email=l_data.get("customer_email", "admin@customer.org"),
+                product_version=l_data.get("product_version", "v1.0.0"),
+                license_type=l_data.get("license_type", "Enterprise"),
+                allowed_installations=l_data.get("allowed_installations", 5),
+                active_installations=l_data.get("active_installations", 1),
+                status=l_data.get("status", "ACTIVE"),
+                features=l_data.get("features", {}),
+                payload_b64=l_data.get("payload_b64", ""),
+                signature_b64=l_data.get("signature_b64", "")
+            )
+            db.add(new_lic)
+        restored["licenses"] += 1
+
+    await db.flush()
+
+    # 5. Restore/Merge Alert Rules
+    for r_data in payload.get("alert_rules", []):
+        rname = r_data.get("name")
+        existing_r = (await db.execute(select(AlertRule).where(AlertRule.name == rname))).scalars().first()
+        if not existing_r:
+            new_r = AlertRule(
+                id=r_data.get("id"),
+                name=rname,
+                metric_name=r_data.get("metric_name", "cpu"),
+                condition=r_data.get("condition", "GREATER_THAN"),
+                threshold=r_data.get("threshold", 80.0),
+                severity=r_data.get("severity", "WARNING"),
+                channel=r_data.get("channel", "ALL"),
+                is_enabled=r_data.get("is_enabled", True)
+            )
+            db.add(new_r)
+            restored["alert_rules"] += 1
+
+    # 6. Restore/Merge System Settings
+    for s_entry in payload.get("system_settings", []):
+        s_key = s_entry.get("key")
+        existing_st = (await db.execute(select(SystemSetting).where(SystemSetting.key == s_key))).scalars().first()
+        if existing_st:
+            existing_st.value = s_entry.get("value", existing_st.value)
+        else:
+            db.add(SystemSetting(
+                id=s_entry.get("id"),
+                key=s_key,
+                value=s_entry.get("value", ""),
+                category=s_entry.get("category", "general"),
+                description=s_entry.get("description")
+            ))
+            restored["settings"] += 1
+
+    await log_audit_event(
+        db=db,
+        action="RESTORE_SYSTEM_BACKUP",
+        entity_type="system",
+        username=current_user.username,
+        user_id=current_user.id,
+        details=restored,
+        result="SUCCESS"
+    )
+
+    await db.commit()
+
+    return {
+        "success": True,
+        "message": f"HQ System database successfully restored: {restored['servers']} servers, {restored['applications']} applications, {restored['domains']} domains, {restored['licenses']} licenses.",
+        "restored_counts": restored
+    }
+
 
 

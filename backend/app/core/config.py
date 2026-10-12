@@ -10,8 +10,12 @@ class Settings(BaseSettings):
     # Security
     SECRET_KEY: str = "command-center-super-secure-production-secret-key-389104810283"
     ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 # 24 hours
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 525600 # 365 days (1 full year persistent session)
     
+    # Persistent Data & Storage
+    DATA_DIR: str = os.getenv("DATA_DIR", "/app/data" if os.path.exists("/app") else "./data")
+    BACKUP_STORE_DIR: str = os.getenv("BACKUP_STORE_DIR", "/app/backups_store" if os.path.exists("/app") else "./backups_store")
+
     # Database
     DATABASE_URL: str = "sqlite+aiosqlite:///./command_center.db"
     
