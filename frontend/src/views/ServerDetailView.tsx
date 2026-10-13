@@ -717,7 +717,7 @@ export const ServerDetailView: React.FC<ServerDetailViewProps> = ({
   };
 
   return (
-    <div className="p-6 max-w-7xl mx-auto space-y-6">
+    <div className="p-4 sm:p-6 max-w-7xl mx-auto space-y-6 w-full max-w-full overflow-x-hidden">
       {/* Toast Alert */}
       {toastMessage && (
         <div

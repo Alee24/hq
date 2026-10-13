@@ -27,6 +27,7 @@ import { ApiKeysView } from './views/ApiKeysView';
 import { AuditLogView } from './views/AuditLogView';
 import { SystemHealthView } from './views/SystemHealthView';
 import { SystemSettingsView } from './views/SystemSettingsView';
+import { EmailNotificationsView } from './views/EmailNotificationsView';
 
 export const MainAppShell: React.FC = () => {
   const { user, loading } = useAuth();
@@ -182,6 +183,8 @@ export const MainAppShell: React.FC = () => {
           {currentView === 'system-health' && <SystemHealthView />}
 
           {currentView === 'settings' && <SystemSettingsView />}
+
+          {currentView === 'email-notifications' && <EmailNotificationsView />}
         </main>
       </div>
 

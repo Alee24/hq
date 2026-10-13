@@ -1548,3 +1548,88 @@ async def test_comprehensive_dashboard_overview_insights():
         assert isinstance(body["app_insights"], list)
         assert "domain_insights" in body
         assert isinstance(body["domain_insights"], list)
+
+
+@pytest.mark.asyncio
+async def test_smtp_and_email_notifications():
+    from unittest.mock import patch
+    from backend.app.services.email_service import (
+        notify_login_event,
+        notify_outage_event,
+        notify_ssl_expiry_event,
+        notify_dns_mismatch_event
+    )
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        token = await get_admin_token(ac)
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # 1. GET initial SMTP config
+        get_res = await ac.get("/api/notifications/smtp", headers=headers)
+        assert get_res.status_code == 200
+        get_data = get_res.json()
+        assert "host" in get_data
+        assert "port" in get_data
+        assert "is_enabled" in get_data
+        assert "recipients" in get_data
+
+        # 2. POST save new SMTP config
+        save_payload = {
+            "host": "smtp.mailgun.org",
+            "port": 587,
+            "username": "postmaster@hq.kkdes.co.ke",
+            "password": "MockPassword123!",
+            "sender_email": "alerts@hq.kkdes.co.ke",
+            "sender_name": "HQ Monitoring Gateway",
+            "encryption": "STARTTLS",
+            "is_enabled": True,
+            "notify_on_login": True,
+            "notify_on_outage": True,
+            "notify_on_ssl_expiry": True,
+            "notify_on_dns_mismatch": True,
+            "notify_on_failed_deployment": True,
+            "notify_on_critical_alert": True,
+            "recipients": ["admin@kkdes.co.ke", "ops@kkdes.co.ke"]
+        }
+        post_res = await ac.post("/api/notifications/smtp", json=save_payload, headers=headers)
+        assert post_res.status_code == 200
+        assert post_res.json()["success"] is True
+
+        # Verify saved config reflects in GET
+        verify_res = await ac.get("/api/notifications/smtp", headers=headers)
+        assert verify_res.status_code == 200
+        v_data = verify_res.json()
+        assert v_data["configured"] is True
+        assert v_data["host"] == "smtp.mailgun.org"
+        assert v_data["sender_email"] == "alerts@hq.kkdes.co.ke"
+        assert v_data["has_password"] is True
+        assert "admin@kkdes.co.ke" in v_data["recipients"]
+
+        # 3. Test SMTP Test Email Endpoint with mocked dispatch
+        with patch("backend.app.api.notifications.send_email_async") as mock_send:
+            mock_send.return_value = {
+                "success": True,
+                "duration_ms": 45,
+                "message": "Email dispatched successfully"
+            }
+            test_res = await ac.post("/api/notifications/smtp/test", json={
+                "recipient": "admin@kkdes.co.ke"
+            }, headers=headers)
+            assert test_res.status_code == 200
+            t_body = test_res.json()
+            assert t_body["success"] is True
+            assert t_body["duration_ms"] == 45
+
+        # 4. GET Notification Logs
+        logs_res = await ac.get("/api/notifications/logs?limit=20", headers=headers)
+        assert logs_res.status_code == 200
+        assert isinstance(logs_res.json(), list)
+
+        # 5. Verify High-Level Notification Trigger Helpers Execute Cleanly
+        with patch("backend.app.services.email_service.send_email_async") as mock_event_send:
+            mock_event_send.return_value = {"success": True, "duration_ms": 30}
+            await notify_login_event("admin", "192.168.1.100", "Mozilla/5.0")
+            await notify_outage_event("Smart Campus", "smartcampus.example.com", "VPS-01", "185.192.97.84", "OFFLINE", "HTTP 502")
+            await notify_ssl_expiry_event("hq.kkdes.co.ke", 14, "Let's Encrypt", "185.192.97.84")
+            await notify_dns_mismatch_event("domain.com", "185.192.97.84", "104.21.45.12")
+            assert mock_event_send.call_count >= 1

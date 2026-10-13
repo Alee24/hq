@@ -24,7 +24,7 @@ export const SystemHealthView: React.FC = () => {
   }, []);
 
   return (
-    <div className="p-6 md:p-8 space-y-6 max-w-7xl mx-auto">
+    <div className="p-4 sm:p-6 md:p-8 space-y-6 max-w-7xl mx-auto w-full max-w-full overflow-x-hidden">
       {/* Header Bar */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-2 border-b border-slate-800">
         <div>

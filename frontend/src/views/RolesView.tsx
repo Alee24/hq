@@ -28,7 +28,7 @@ export const RolesView: React.FC = () => {
   ];
 
   return (
-    <div className="p-6 md:p-8 space-y-6 max-w-7xl mx-auto">
+    <div className="p-4 sm:p-6 md:p-8 space-y-6 max-w-7xl mx-auto w-full max-w-full overflow-x-hidden">
       {/* Header Bar */}
       <div className="pb-2 border-b border-slate-800">
         <h1 className="text-2xl font-bold text-white tracking-tight flex items-center gap-2">

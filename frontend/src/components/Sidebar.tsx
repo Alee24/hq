@@ -18,6 +18,7 @@ import {
   Settings,
   ClipboardList,
   HeartPulse,
+  Mail,
   X
 } from 'lucide-react';
 
@@ -46,6 +47,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { id: 'backups', label: 'Backups', icon: Archive },
     { id: 'licenses', label: 'Licenses', icon: Key },
     { id: 'alerts', label: 'Alerts', icon: Bell },
+    { id: 'email-notifications', label: 'Email & SMTP Alerts', icon: Mail },
     { id: 'topology', label: 'Infrastructure Map', icon: Network },
   ];
 
@@ -55,6 +57,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { id: 'api-keys', label: 'API Keys', icon: KeyRound },
     { id: 'system-health', label: 'System Health', icon: HeartPulse },
     { id: 'audit', label: 'Audit Log', icon: ClipboardList },
+    { id: 'email-notifications', label: 'Email Notifications (SMTP)', icon: Mail },
     { id: 'settings', label: 'System Settings', icon: Settings },
   ];
 

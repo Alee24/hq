@@ -11,7 +11,8 @@ import {
   Shield,
   Activity,
   Layers,
-  Sparkles
+  Sparkles,
+  Mail
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useEnvironment } from '../context/EnvironmentContext';
@@ -176,6 +177,21 @@ export const TopBar: React.FC<TopBarProps> = ({
                   </div>
                 )}
               </div>
+              <div className="pt-2 border-t border-slate-800 mt-2">
+                <button
+                  onClick={() => {
+                    setNotificationsOpen(false);
+                    onNavigate('email-notifications');
+                  }}
+                  className="w-full flex items-center justify-between text-[11px] text-brand-400 hover:text-brand-300 transition-colors py-0.5"
+                >
+                  <span className="flex items-center gap-1.5">
+                    <Mail size={12} />
+                    <span>Email & SMTP Gateway</span>
+                  </span>
+                  <span className="text-[10px] text-slate-500 font-mono">Configure →</span>
+                </button>
+              </div>
             </div>
           )}
         </div>
@@ -230,6 +246,17 @@ export const TopBar: React.FC<TopBarProps> = ({
               >
                 <Shield size={14} className="text-slate-400" />
                 <span>Permissions & RBAC</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  setUserDropdownOpen(false);
+                  onNavigate('email-notifications');
+                }}
+                className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-slate-300 hover:text-white hover:bg-slate-800 rounded-lg transition-colors text-left"
+              >
+                <Mail size={14} className="text-slate-400" />
+                <span>Email & Alerts (SMTP)</span>
               </button>
 
               <div className="my-1 border-t border-slate-800" />

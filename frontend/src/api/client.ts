@@ -127,6 +127,68 @@ export interface CommandAuditResponse {
   execution_time_ms: number;
 }
 
+export interface SmtpConfigResponse {
+  configured: boolean;
+  id?: string;
+  host: string;
+  port: number;
+  username: string;
+  has_password?: boolean;
+  sender_email: string;
+  sender_name: string;
+  encryption: string;
+  is_enabled: boolean;
+  notify_on_login: boolean;
+  notify_on_outage: boolean;
+  notify_on_ssl_expiry: boolean;
+  notify_on_dns_mismatch: boolean;
+  notify_on_failed_deployment: boolean;
+  notify_on_critical_alert: boolean;
+  recipients: string[];
+  last_tested_at: string | null;
+  last_test_status: string | null;
+  last_test_error: string | null;
+}
+
+export interface SmtpConfigSaveRequest {
+  host: string;
+  port: number;
+  username: string;
+  password?: string;
+  sender_email: string;
+  sender_name: string;
+  encryption: string;
+  is_enabled: boolean;
+  notify_on_login: boolean;
+  notify_on_outage: boolean;
+  notify_on_ssl_expiry: boolean;
+  notify_on_dns_mismatch: boolean;
+  notify_on_failed_deployment: boolean;
+  notify_on_critical_alert: boolean;
+  recipients: string[];
+}
+
+export interface SmtpTestRequest {
+  recipient: string;
+  host?: string;
+  port?: number;
+  username?: string;
+  password?: string;
+  sender_email?: string;
+  sender_name?: string;
+  encryption?: string;
+}
+
+export interface NotificationLogItem {
+  id: string;
+  event_type: string;
+  recipient: string;
+  subject: string;
+  status: string;
+  error_message?: string | null;
+  created_at: string;
+}
+
 
 class ApiClient {
   public getToken(): string | null {
@@ -1503,6 +1565,40 @@ class ApiClient {
 
   async getSystemHealth() {
     return this.request<any>('/system-health');
+  }
+
+  // ==========================================
+  // Email Notifications & SMTP Setup
+  // ==========================================
+  async getSmtpConfig() {
+    return this.request<SmtpConfigResponse>('/notifications/smtp');
+  }
+
+  async saveSmtpConfig(data: SmtpConfigSaveRequest) {
+    return this.request<{
+      success: boolean;
+      message: string;
+      id?: string;
+      is_enabled: boolean;
+    }>('/notifications/smtp', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async testSmtpConnection(data: SmtpTestRequest) {
+    return this.request<{
+      success: boolean;
+      message: string;
+      duration_ms: number;
+    }>('/notifications/smtp/test', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async getNotificationLogs(limit: number = 50) {
+    return this.request<NotificationLogItem[]>(`/notifications/logs?limit=${limit}`);
   }
 }
 

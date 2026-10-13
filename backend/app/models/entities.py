@@ -405,3 +405,41 @@ class ServerSnapshot(Base):
 
     server = relationship("Server", back_populates="snapshots")
 
+
+class SmtpSetting(Base):
+    __tablename__ = "smtp_settings"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    host = Column(String(255), nullable=False, default="")
+    port = Column(Integer, nullable=False, default=587)
+    username = Column(String(255), nullable=False, default="")
+    password_hash = Column(String(500), nullable=False, default="")
+    sender_email = Column(String(255), nullable=False, default="")
+    sender_name = Column(String(100), nullable=False, default="Command Center HQ")
+    encryption = Column(String(20), nullable=False, default="STARTTLS")  # STARTTLS, SSL, TLS, NONE
+    is_enabled = Column(Boolean, default=False)
+    notify_on_login = Column(Boolean, default=True)
+    notify_on_outage = Column(Boolean, default=True)
+    notify_on_ssl_expiry = Column(Boolean, default=True)
+    notify_on_dns_mismatch = Column(Boolean, default=True)
+    notify_on_failed_deployment = Column(Boolean, default=True)
+    notify_on_critical_alert = Column(Boolean, default=True)
+    recipients = Column(JSON, default=list)  # list of email addresses
+    last_tested_at = Column(DateTime, nullable=True)
+    last_test_status = Column(String(50), nullable=True)  # SUCCESS, FAILED
+    last_test_error = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=utcnow)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class NotificationLog(Base):
+    __tablename__ = "notification_logs"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    event_type = Column(String(50), nullable=False, index=True)  # LOGIN, OUTAGE, SSL_EXPIRY, DNS_MISMATCH, DEPLOYMENT_FAILURE, TEST, SYSTEM_ALERT
+    recipient = Column(String(255), nullable=False, index=True)
+    subject = Column(String(255), nullable=False)
+    status = Column(String(20), default="SENT", index=True)  # SENT, FAILED
+    error_message = Column(Text, nullable=True)
+    metadata_json = Column(JSON, default=dict)
+    created_at = Column(DateTime, default=utcnow, index=True)

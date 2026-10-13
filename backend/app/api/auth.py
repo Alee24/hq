@@ -1,7 +1,7 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from datetime import timedelta
+from datetime import datetime, timezone, timedelta
 from backend.app.core.config import settings
 from backend.app.core.database import get_db
 from backend.app.core.security import verify_password, hash_password, create_access_token
@@ -9,11 +9,12 @@ from backend.app.models.entities import User
 from backend.app.schemas.api_schemas import UserLogin, UserRegister, UserResponse, TokenResponse
 from backend.app.core.deps import get_current_user
 from backend.app.services.audit import log_audit_event
+from backend.app.services.email_service import notify_login_event
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 @router.post("/login", response_model=TokenResponse)
-async def login(login_data: UserLogin, db: AsyncSession = Depends(get_db)):
+async def login(login_data: UserLogin, request: Request, db: AsyncSession = Depends(get_db)):
     ident = login_data.username_or_email.strip()
     # Find user by username or email (case-insensitive)
     stmt = select(User).where(
@@ -55,15 +56,32 @@ async def login(login_data: UserLogin, db: AsyncSession = Depends(get_db)):
     # Issue access token
     access_token = create_access_token(data={"sub": user.id, "role": user.role, "username": user.username})
 
+    client_ip = request.client.host if request.client else "127.0.0.1"
+    forwarded_for = request.headers.get("x-forwarded-for")
+    if forwarded_for:
+        client_ip = forwarded_for.split(",")[0].strip()
+    user_agent = request.headers.get("user-agent", "Web Browser")
+
     await log_audit_event(
         db=db,
         action="USER_LOGIN",
         entity_type="user",
         username=user.username,
         user_id=user.id,
-        details={"login_identifier": login_data.username_or_email},
+        ip_address=client_ip,
+        details={"login_identifier": login_data.username_or_email, "user_agent": user_agent},
         result="SUCCESS"
     )
+
+    # Trigger async login security alert notification email
+    try:
+        await notify_login_event(
+            username=user.username,
+            ip_address=client_ip,
+            user_agent=user_agent
+        )
+    except Exception as e:
+        print(f"[LOGIN NOTIFICATION NOTICE]: {e}", flush=True)
 
     return TokenResponse(
         access_token=access_token,

@@ -190,7 +190,7 @@ export const ApiKeysView: React.FC = () => {
   };
 
   return (
-    <div className="p-6 md:p-8 space-y-6 max-w-7xl mx-auto">
+    <div className="p-4 sm:p-6 md:p-8 space-y-6 max-w-7xl mx-auto w-full max-w-full overflow-x-hidden">
       {/* Toast Alert */}
       {toast && (
         <div className={`fixed top-5 right-5 z-50 px-4 py-3 rounded-xl border text-xs font-semibold shadow-2xl flex items-center gap-2.5 animate-in slide-in-from-top-2 duration-200 ${

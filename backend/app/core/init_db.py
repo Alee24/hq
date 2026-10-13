@@ -164,6 +164,49 @@ async def apply_schema_migrations():
             await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_server_snapshots_status ON server_snapshots(status)"))
             await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_server_snapshots_created_at ON server_snapshots(created_at)"))
 
+            # Create smtp_settings and notification_logs tables if not exists
+            await conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS smtp_settings (
+                    id VARCHAR(36) PRIMARY KEY,
+                    host VARCHAR(255) NOT NULL DEFAULT '',
+                    port INTEGER NOT NULL DEFAULT 587,
+                    username VARCHAR(255) NOT NULL DEFAULT '',
+                    password_hash VARCHAR(500) NOT NULL DEFAULT '',
+                    sender_email VARCHAR(255) NOT NULL DEFAULT '',
+                    sender_name VARCHAR(100) NOT NULL DEFAULT 'Command Center HQ',
+                    encryption VARCHAR(20) NOT NULL DEFAULT 'STARTTLS',
+                    is_enabled BOOLEAN DEFAULT FALSE,
+                    notify_on_login BOOLEAN DEFAULT TRUE,
+                    notify_on_outage BOOLEAN DEFAULT TRUE,
+                    notify_on_ssl_expiry BOOLEAN DEFAULT TRUE,
+                    notify_on_dns_mismatch BOOLEAN DEFAULT TRUE,
+                    notify_on_failed_deployment BOOLEAN DEFAULT TRUE,
+                    notify_on_critical_alert BOOLEAN DEFAULT TRUE,
+                    recipients JSONB DEFAULT '[]',
+                    last_tested_at TIMESTAMP WITHOUT TIME ZONE,
+                    last_test_status VARCHAR(50),
+                    last_test_error TEXT,
+                    created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT (NOW() AT TIME ZONE 'UTC'),
+                    updated_at TIMESTAMP WITHOUT TIME ZONE DEFAULT (NOW() AT TIME ZONE 'UTC')
+                )
+            """))
+
+            await conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS notification_logs (
+                    id VARCHAR(36) PRIMARY KEY,
+                    event_type VARCHAR(50) NOT NULL,
+                    recipient VARCHAR(255) NOT NULL,
+                    subject VARCHAR(255) NOT NULL,
+                    status VARCHAR(20) DEFAULT 'SENT',
+                    error_message TEXT,
+                    metadata_json JSONB DEFAULT '{}',
+                    created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT (NOW() AT TIME ZONE 'UTC')
+                )
+            """))
+            await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_notification_logs_event_type ON notification_logs(event_type)"))
+            await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_notification_logs_recipient ON notification_logs(recipient)"))
+            await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_notification_logs_created_at ON notification_logs(created_at)"))
+
             # Clean up bogus auto-discovered Apache comment artifacts
             await conn.execute(text("DELETE FROM domains WHERE domain_name IN ('#', 'directive', 'www.example.com')"))
             await conn.execute(text("DELETE FROM applications WHERE name IN ('#', 'directive', 'www.example.com') OR domain IN ('#', 'directive', 'www.example.com')"))
@@ -207,6 +250,49 @@ async def apply_schema_migrations():
                     )
                 """))
                 await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_server_snapshots_server_id ON server_snapshots(server_id)"))
+
+                # Create smtp_settings and notification_logs tables for SQLite
+                await conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS smtp_settings (
+                        id VARCHAR(36) PRIMARY KEY,
+                        host VARCHAR(255) NOT NULL DEFAULT '',
+                        port INTEGER NOT NULL DEFAULT 587,
+                        username VARCHAR(255) NOT NULL DEFAULT '',
+                        password_hash VARCHAR(500) NOT NULL DEFAULT '',
+                        sender_email VARCHAR(255) NOT NULL DEFAULT '',
+                        sender_name VARCHAR(100) NOT NULL DEFAULT 'Command Center HQ',
+                        encryption VARCHAR(20) NOT NULL DEFAULT 'STARTTLS',
+                        is_enabled BOOLEAN DEFAULT 0,
+                        notify_on_login BOOLEAN DEFAULT 1,
+                        notify_on_outage BOOLEAN DEFAULT 1,
+                        notify_on_ssl_expiry BOOLEAN DEFAULT 1,
+                        notify_on_dns_mismatch BOOLEAN DEFAULT 1,
+                        notify_on_failed_deployment BOOLEAN DEFAULT 1,
+                        notify_on_critical_alert BOOLEAN DEFAULT 1,
+                        recipients JSON DEFAULT '[]',
+                        last_tested_at DATETIME,
+                        last_test_status VARCHAR(50),
+                        last_test_error TEXT,
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    )
+                """))
+
+                await conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS notification_logs (
+                        id VARCHAR(36) PRIMARY KEY,
+                        event_type VARCHAR(50) NOT NULL,
+                        recipient VARCHAR(255) NOT NULL,
+                        subject VARCHAR(255) NOT NULL,
+                        status VARCHAR(20) DEFAULT 'SENT',
+                        error_message TEXT,
+                        metadata_json JSON DEFAULT '{}',
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    )
+                """))
+                await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_notification_logs_event_type ON notification_logs(event_type)"))
+                await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_notification_logs_recipient ON notification_logs(recipient)"))
+                await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_notification_logs_created_at ON notification_logs(created_at)"))
 
                 # Clean up bogus auto-discovered Apache comment artifacts
                 await conn.execute(text("DELETE FROM domains WHERE domain_name IN ('#', 'directive', 'www.example.com')"))

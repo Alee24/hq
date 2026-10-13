@@ -12,6 +12,7 @@ from backend.app.models.entities import (
     MonitoringResult, Alert, AlertRule, Domain
 )
 from backend.app.services.websocket_manager import ws_manager
+from backend.app.services.email_service import notify_outage_event
 
 async def check_ssl_expiry(domain: str, port: int = 443) -> tuple[bool, int, str]:
     """Inspects SSL certificate directly via TLS handshake socket."""
@@ -71,6 +72,7 @@ async def execute_monitoring_cycle():
             if elapsed_ms < 1.0:
                 elapsed_ms = 45.0 + (hash(app.name) % 80)
 
+            was_online = app.health_status == "ONLINE"
             app.http_status = status_code
             if not is_up:
                 app.health_status = "OFFLINE"
@@ -84,6 +86,18 @@ async def execute_monitoring_cycle():
                     message=f"Application {app.name} is offline. Target {target_url} returned code {status_code}."
                 )
                 db.add(alert)
+                if was_online:
+                    try:
+                        asyncio.create_task(notify_outage_event(
+                            app_name=app.name,
+                            domain=app.domain,
+                            server_name="VPS Node",
+                            server_ip="Host",
+                            health_status="OFFLINE",
+                            error_summary=error_message or f"HTTP status code {status_code}"
+                        ))
+                    except Exception:
+                        pass
             elif app.health_status != "MAINTENANCE":
                 app.health_status = "ONLINE"
 

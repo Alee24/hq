@@ -25,6 +25,7 @@ from backend.app.api.admin import router as admin_router
 from backend.app.api.topology import router as topology_router
 from backend.app.api.search import router as search_router
 from backend.app.api.system_health import router as system_health_router
+from backend.app.api.notifications import router as notifications_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -108,3 +109,4 @@ app.include_router(admin_router, prefix="/api")
 app.include_router(topology_router, prefix="/api")
 app.include_router(search_router, prefix="/api")
 app.include_router(system_health_router, prefix="/api")
+app.include_router(notifications_router, prefix="/api")
