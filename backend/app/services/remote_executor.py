@@ -470,7 +470,45 @@ import os, glob, re, subprocess, json
 def clean_domain(d):
     return d.strip().lower().rstrip(';').strip('"').strip("'")
 
-items = []
+STOP_DIRS = {
+    '/', '/var', '/var/www', '/var/www/html', '/var/www/vhosts',
+    '/home', '/root', '/opt', '/usr', '/etc', '/var/lib', '/srv', '/tmp',
+    '/usr/share/nginx', '/usr/share/nginx/html'
+}
+SUBDIR_NAMES = {
+    'public', 'public_html', 'html', 'dist', 'build', 'web', 'www',
+    'current', 'release', 'releases', 'frontend', 'backend', 'client',
+    'server', 'api', 'app', 'src', 'out', 'static', 'httpdocs', 'htdocs'
+}
+
+def is_stop_dir(p):
+    if not p or p in STOP_DIRS:
+        return True
+    if re.match(r'^/home/[^/]+$', p):
+        return True
+    return False
+
+def find_git_upwards(start_path):
+    if not start_path or not os.path.exists(start_path):
+        return None
+    curr = os.path.abspath(start_path).rstrip('/')
+    if is_stop_dir(curr):
+        return None
+    for step in range(3):
+        if is_stop_dir(curr):
+            break
+        if os.path.isdir(os.path.join(curr, '.git')) or os.path.isfile(os.path.join(curr, '.git')):
+            return curr
+        bname = os.path.basename(curr).lower()
+        parent = os.path.dirname(curr)
+        if parent == curr or is_stop_dir(parent):
+            break
+        if bname not in SUBDIR_NAMES:
+            break
+        curr = parent
+    return None
+
+raw_vhosts = []
 
 # 1. Apache2 VirtualHosts
 for p in set(glob.glob('/etc/apache2/sites-enabled/*.conf') + glob.glob('/etc/apache2/sites-available/*.conf')):
@@ -490,14 +528,18 @@ for p in set(glob.glob('/etc/apache2/sites-enabled/*.conf') + glob.glob('/etc/ap
                 continue
             
             dr_m = re.search(r'DocumentRoot\\s+([^\\s\\r\\n]+)', clean_vh, re.I)
-            dr = dr_m.group(1).strip().strip('"').strip("'") if dr_m else None
+            dr = dr_m.group(1).strip().strip('"').strip("'").rstrip('/') if dr_m else None
             
-            pp_m = re.search(r'ProxyPass\\s+[^\\s]+\\s+([^\\s\\r\\n]+)', clean_vh, re.I)
+            pp_m = re.search(r'(?:ProxyPass|ProxyPassMatch)\\s+[^\\s]+\\s+([^\\s\\r\\n]+)', clean_vh, re.I)
             pp = pp_m.group(1).strip() if pp_m else None
+            if not pp:
+                rw_m = re.search(r'RewriteRule\\s+[^\\s]+\\s+(https?://(?:127\\.0\\.0\\.1|localhost|0\\.0\\.0\\.0):\\d+[^\\s]*)\\s+\\[[^\\]]*P', clean_vh, re.I)
+                if rw_m:
+                    pp = rw_m.group(1).strip()
             
             ssl = 'SSLCertificateFile' in clean_vh or '443' in clean_vh or 'Include /etc/letsencrypt' in clean_vh
             
-            items.append({
+            raw_vhosts.append({
                 'name': sn,
                 'domain': sn,
                 'web_server': 'Apache2',
@@ -532,7 +574,7 @@ for p in set(glob.glob('/etc/nginx/sites-enabled/*') + glob.glob('/etc/nginx/con
                 continue
                 
             r_m = re.search(r'root\\s+([^;]+);', clean_sb, re.I)
-            dr = r_m.group(1).strip().strip('"').strip("'") if r_m else None
+            dr = r_m.group(1).strip().strip('"').strip("'").rstrip('/') if r_m else None
             
             pp_m = re.search(r'proxy_pass\\s+([^;]+);', clean_sb, re.I)
             pp = pp_m.group(1).strip() if pp_m else None
@@ -546,7 +588,7 @@ for p in set(glob.glob('/etc/nginx/sites-enabled/*') + glob.glob('/etc/nginx/con
                     pass
                     
             for sn in names:
-                items.append({
+                raw_vhosts.append({
                     'name': sn,
                     'domain': sn,
                     'web_server': 'Nginx',
@@ -563,6 +605,27 @@ for p in set(glob.glob('/etc/nginx/sites-enabled/*') + glob.glob('/etc/nginx/con
     except Exception:
         pass
 
+# Merge duplicate vhosts (e.g. :80 and :443 blocks for the same domain)
+merged_vhosts = {}
+for vh in raw_vhosts:
+    dom = vh['domain']
+    if dom not in merged_vhosts:
+        merged_vhosts[dom] = vh
+    else:
+        ex = merged_vhosts[dom]
+        if vh.get('ssl_enabled'):
+            ex['ssl_enabled'] = True
+            if ex.get('port') == 80:
+                ex['port'] = vh.get('port') or 443
+            ex['config_file'] = vh.get('config_file') or ex.get('config_file')
+        if vh.get('root_path') and (not ex.get('root_path') or ex.get('root_path') in STOP_DIRS):
+            ex['root_path'] = vh['root_path']
+        if vh.get('proxy_pass') and not ex.get('proxy_pass'):
+            ex['proxy_pass'] = vh['proxy_pass']
+
+items = list(merged_vhosts.values())
+container_by_port = {}
+
 # 3. Docker Containers
 try:
     p = subprocess.run(['docker', 'ps', '-a', '--format', '{{json .}}'], capture_output=True, text=True, timeout=8)
@@ -574,9 +637,11 @@ try:
             image = c.get('Image', '')
             state = c.get('State', 'running')
             port_val = 80
-            m = re.search(r'0\\.0\\.0\\.0:(\\d+)->', ports)
-            if m:
-                port_val = int(m.group(1))
+            for pm in re.finditer(r'(?:0\\.0\\.0\\.0|127\\.0\\.0\\.1|:::?):(\\d+)->', ports):
+                pnum = int(pm.group(1))
+                container_by_port[pnum] = c_name
+                if port_val == 80:
+                    port_val = pnum
             items.append({
                 'name': c_name,
                 'domain': f'{c_name}.local',
@@ -596,53 +661,78 @@ try:
 except Exception:
     pass
 
-# 4. Enrich discovered items with live Git repository metadata if available
+def get_container_git_dir(cname):
+    try:
+        p_insp = subprocess.run(['docker', 'inspect', cname], capture_output=True, text=True, timeout=3)
+        if p_insp.returncode == 0 and p_insp.stdout.strip():
+            cdata = json.loads(p_insp.stdout)[0]
+            wdir = (cdata.get('Config', {}).get('Labels', {}) or {}).get('com.docker.compose.project.working_dir', '')
+            if wdir and os.path.exists(wdir):
+                gd = find_git_upwards(wdir)
+                if gd:
+                    return gd, wdir
+            for m in cdata.get('Mounts', []) or []:
+                src = m.get('Source', '')
+                if src and (src.startswith('/var/www/') or src.startswith('/home/') or src.startswith('/opt/') or src.startswith('/root/')):
+                    gd = find_git_upwards(src)
+                    if gd:
+                        return gd, src
+    except Exception:
+        pass
+    return None, None
+
+# 4. Enrich discovered items with live Git repository metadata strictly per site
 for it in items:
     rp = it.get('root_path') or ''
     c_name = it.get('name') or ''
+    pp = it.get('proxy_pass') or ''
     git_dir = None
     
-    if rp and os.path.exists(rp):
-        curr = os.path.abspath(rp)
-        for _ in range(4):
-            if os.path.isdir(os.path.join(curr, '.git')):
-                git_dir = curr
-                break
-            parent = os.path.dirname(curr)
-            if parent == curr:
-                break
-            curr = parent
+    if rp and not rp.startswith('/var/lib/docker') and os.path.exists(rp):
+        git_dir = find_git_upwards(rp)
             
     if not git_dir and it.get('is_container'):
-        try:
-            p_insp = subprocess.run(['docker', 'inspect', c_name], capture_output=True, text=True, timeout=3)
-            if p_insp.returncode == 0:
-                cdata = json.loads(p_insp.stdout)[0]
-                wdir = cdata.get('Config', {}).get('Labels', {}).get('com.docker.compose.project.working_dir', '')
-                if wdir and os.path.isdir(os.path.join(wdir, '.git')):
-                    git_dir = wdir
-                    it['root_path'] = wdir
-        except Exception:
-            pass
+        gd, wdir = get_container_git_dir(c_name)
+        if gd:
+            git_dir = gd
+            it['root_path'] = gd
+        elif wdir:
+            it['root_path'] = wdir
+
+    if not git_dir and not it.get('is_container') and pp:
+        pm = re.search(r':(\\d+)', pp)
+        if pm:
+            pnum = int(pm.group(1))
+            if pnum in container_by_port:
+                gd, wdir = get_container_git_dir(container_by_port[pnum])
+                if gd:
+                    git_dir = gd
+                    it['root_path'] = gd
 
     if git_dir:
         try:
             it['is_git_repo'] = True
+            it['root_path'] = git_dir
             subprocess.run(['git', 'config', '--global', '--add', 'safe.directory', git_dir], capture_output=True)
             p_h = subprocess.run(['git', '-C', git_dir, 'rev-parse', 'HEAD'], capture_output=True, text=True, timeout=3)
-            if p_h.returncode == 0:
+            if p_h.returncode == 0 and p_h.stdout.strip():
                 it['current_commit'] = p_h.stdout.strip()
             p_b = subprocess.run(['git', '-C', git_dir, 'rev-parse', '--abbrev-ref', 'HEAD'], capture_output=True, text=True, timeout=3)
-            if p_b.returncode == 0:
+            if p_b.returncode == 0 and p_b.stdout.strip():
                 it['git_branch'] = p_b.stdout.strip()
             p_u = subprocess.run(['git', '-C', git_dir, 'remote', 'get-url', 'origin'], capture_output=True, text=True, timeout=3)
-            if p_u.returncode == 0:
+            if p_u.returncode == 0 and p_u.stdout.strip():
                 it['repo_url'] = p_u.stdout.strip()
             p_v = subprocess.run(['git', '-C', git_dir, 'describe', '--tags', '--always'], capture_output=True, text=True, timeout=3)
-            if p_v.returncode == 0:
+            if p_v.returncode == 0 and p_v.stdout.strip():
                 it['version'] = p_v.stdout.strip()
         except Exception:
             pass
+    else:
+        it['is_git_repo'] = False
+        it['current_commit'] = None
+        it['git_branch'] = None
+        it['repo_url'] = None
 
 print(json.dumps(items))
 """
@@ -1826,124 +1916,260 @@ GENERIC_WORDS = {
     'backend', 'frontend', 'app', 'web', 'api', 'dist', 'public', 'src',
     'html', 'server', 'client', 'db', 'redis', 'postgres', 'mysql', 'local',
     'co', 'ke', 'com', 'org', 'net', 'www', 'africa', 'cloud', 'portal',
-    'lms', 'mms', 'cps', '1', '2', 'v1', 'v2', 'v3', 'main', 'master', 'prod'
+    'lms', 'mms', 'cps', '1', '2', 'v1', 'v2', 'v3', 'main', 'master', 'prod',
+    'suite', 'service', 'container', 'site', 'default', 'admin', 'dev', 'staging'
 }
 
-STOP_DIRS = {'/', '/var', '/var/www', '/var/www/html', '/home', '/root', '/opt', '/usr', '/etc', '/var/lib'}
+STOP_DIRS = {
+    '/', '/var', '/var/www', '/var/www/html', '/var/www/vhosts',
+    '/home', '/root', '/opt', '/usr', '/etc', '/var/lib', '/srv', '/tmp',
+    '/usr/share/nginx', '/usr/share/nginx/html'
+}
+
+SUBDIR_NAMES = {
+    'public', 'public_html', 'html', 'dist', 'build', 'web', 'www',
+    'current', 'release', 'releases', 'frontend', 'backend', 'client',
+    'server', 'api', 'app', 'src', 'out', 'static', 'httpdocs', 'htdocs'
+}
+
+def is_stop_dir(p):
+    if not p or p in STOP_DIRS:
+        return True
+    if re.match(r'^/home/[^/]+$', p):
+        return True
+    return False
 
 def find_git_upwards(start_path):
     if not start_path or not os.path.exists(start_path):
         return None
-    curr = os.path.abspath(start_path)
-    for _ in range(4):
-        if curr in STOP_DIRS:
+    curr = os.path.abspath(start_path).rstrip('/')
+    if is_stop_dir(curr):
+        return None
+    for step in range(3):
+        if is_stop_dir(curr):
             break
-        if os.path.isdir(os.path.join(curr, '.git')):
+        if os.path.isdir(os.path.join(curr, '.git')) or os.path.isfile(os.path.join(curr, '.git')):
             return curr
+        bname = os.path.basename(curr).lower()
         parent = os.path.dirname(curr)
-        if parent == curr:
+        if parent == curr or is_stop_dir(parent):
+            break
+        if bname not in SUBDIR_NAMES:
             break
         curr = parent
     return None
 
-raw_parts = re.split(r'[.\\-_\\s/]+', f"{clean_name} {clean_dom}")
-specific_tokens = []
-for p in raw_parts:
-    if p and len(p) >= 2 and p not in GENERIC_WORDS and p not in specific_tokens:
-        specific_tokens.append(p)
+def strip_tld(dom):
+    if not dom or '.' not in dom or dom.endswith('.local'):
+        return dom
+    multi_tlds = ['.co.ke', '.or.ke', '.ac.ke', '.go.ke', '.me.ke', '.co.uk', '.org.uk', '.com.au', '.co.za', '.co.tz', '.co.ug']
+    for mt in multi_tlds:
+        if dom.endswith(mt):
+            return dom[:-len(mt)]
+    return dom.rsplit('.', 1)[0]
 
-git_candidates = []
-doc_root = app_root if (app_root and not app_root.startswith('/var/lib/docker')) else ''
+is_docker_app = bool(
+    (app_root and app_root.startswith('/var/lib/docker'))
+    or clean_dom.endswith('.local')
+    or 'docker' in app_pm.lower()
+)
 
-# 1. If app is a Docker container or root_path is in /var/lib/docker, inspect container working_dir / mounts
-if (app_root and app_root.startswith('/var/lib/docker')) or clean_dom.endswith('.local') or app_pm.lower() == 'docker':
-    for cname in [app_name, app_service, clean_name]:
-        if not cname:
+def build_allowed_names(a_name, a_dom, a_srv, is_docker=False):
+    names = set()
+    c_n = (a_name or '').strip().lower()
+    c_d = (a_dom or '').strip().lower()
+    c_s = (a_srv or '').strip().lower()
+    if c_d.startswith('www.'):
+        c_d = c_d[4:]
+    if c_n.startswith('www.'):
+        c_n = c_n[4:]
+
+    for raw in [c_d, c_n, c_s]:
+        if not raw:
             continue
-        try:
-            p_insp = subprocess.run(['docker', 'inspect', cname], capture_output=True, text=True, timeout=4)
-            if p_insp.returncode == 0 and p_insp.stdout.strip():
-                cdata = json.loads(p_insp.stdout)[0]
-                labels = cdata.get('Config', {}).get('Labels', {}) or {}
-                wdir = labels.get('com.docker.compose.project.working_dir', '')
-                if wdir and os.path.exists(wdir):
-                    doc_root = wdir
-                    g_cand = find_git_upwards(wdir)
+        if raw.startswith('apache2-'):
+            raw = raw[8:]
+        elif raw.startswith('nginx-'):
+            raw = raw[6:]
+        if raw.endswith('.local'):
+            raw = raw[:-6]
+        if not raw or raw in GENERIC_WORDS:
+            continue
+        names.add(raw)
+        names.add(raw.replace('.', '-'))
+        names.add(raw.replace('.', '_'))
+
+        if '.' in raw:
+            no_tld = strip_tld(raw)
+            if no_tld and no_tld not in GENERIC_WORDS and len(no_tld) >= 3:
+                names.add(no_tld)
+                names.add(no_tld.replace('.', '-'))
+                names.add(no_tld.replace('.', '_'))
+                parts = no_tld.split('.')
+                if len(parts) == 2 and parts[0] not in GENERIC_WORDS and len(parts[0]) >= 3:
+                    names.add(parts[0])
+
+        if is_docker or '.' not in raw:
+            cleaned = re.sub(r'(?:[\\s\\-_]+(?:suite|backend|frontend|api|web|server|client|worker|db|redis|postgres|service|app|container|1|2))+$', '', raw)
+            if cleaned and cleaned not in GENERIC_WORDS and len(cleaned) >= 3:
+                names.add(cleaned)
+                names.add(cleaned.replace(' ', '-'))
+                names.add(cleaned.replace(' ', '_'))
+                names.add(cleaned.replace(' ', ''))
+                first_w = cleaned.split()[0] if ' ' in cleaned else ''
+                if first_w and first_w not in GENERIC_WORDS and len(first_w) >= 4:
+                    names.add(first_w)
+            no_ver = re.sub(r'[\\-_]v\\d+$', '', raw)
+            if no_ver and no_ver not in GENERIC_WORDS and len(no_ver) >= 3:
+                names.add(no_ver)
+    return names
+
+allowed_names = build_allowed_names(app_name, app_domain, app_service, is_docker=is_docker_app)
+git_candidates = []
+doc_root = ''
+vhost_doc_roots = []
+vhost_proxy_ports = []
+
+def inspect_container_for_git(cname):
+    if not cname:
+        return None, None
+    try:
+        p_insp = subprocess.run(['docker', 'inspect', cname], capture_output=True, text=True, timeout=4)
+        if p_insp.returncode == 0 and p_insp.stdout.strip():
+            cdata = json.loads(p_insp.stdout)[0]
+            labels = cdata.get('Config', {}).get('Labels', {}) or {}
+            wdir = labels.get('com.docker.compose.project.working_dir', '')
+            if wdir and os.path.exists(wdir):
+                g_cand = find_git_upwards(wdir)
+                if g_cand:
+                    return g_cand, wdir
+            for m in cdata.get('Mounts', []) or []:
+                src = m.get('Source', '')
+                if src and (src.startswith('/var/www/') or src.startswith('/home/') or src.startswith('/opt/') or src.startswith('/root/')):
+                    g_cand = find_git_upwards(src)
                     if g_cand:
-                        git_candidates.append(g_cand)
-                        break
-                for m in cdata.get('Mounts', []) or []:
-                    src = m.get('Source', '')
-                    if src and (src.startswith('/var/www/') or src.startswith('/home/') or src.startswith('/opt/')):
-                        g_cand = find_git_upwards(src)
-                        if g_cand:
-                            doc_root = doc_root or src
-                            git_candidates.append(g_cand)
-                            break
-                if git_candidates:
-                    break
-        except Exception:
-            pass
+                        return g_cand, src
+            if wdir and os.path.exists(wdir):
+                return None, wdir
+    except Exception:
+        pass
+    return None, None
 
-# 2. Check configured app_root if it is a normal filesystem directory
-if not git_candidates and doc_root and os.path.exists(doc_root):
-    g_cand = find_git_upwards(doc_root)
-    if g_cand:
-        git_candidates.append(g_cand)
-
-# 3. Check Apache / Nginx configuration for DocumentRoot matching domain or name
-if not doc_root or not git_candidates:
+# 1. Check live Apache / Nginx VirtualHost configuration FIRST for domain / web apps
+if not is_docker_app or ('.' in clean_dom and not clean_dom.endswith('.local')):
     conf_files = (
         glob.glob('/etc/apache2/sites-enabled/*.conf') +
         glob.glob('/etc/apache2/sites-available/*.conf') +
         glob.glob('/etc/nginx/sites-enabled/*') +
         glob.glob('/etc/nginx/conf.d/*.conf')
     )
+    target_doms = {clean_dom, clean_name}
+    if clean_dom and not clean_dom.startswith('www.'):
+        target_doms.add(f"www.{clean_dom}")
     for f in conf_files:
         try:
             with open(f, 'r', errors='ignore') as fp:
                 c = fp.read()
             vhosts = re.findall(r'<VirtualHost[^>]*>(.*?)</VirtualHost>', c, re.DOTALL | re.I)
-            blocks = vhosts if vhosts else [c]
+            blocks = vhosts if vhosts else re.findall(r'server\\s*{(.*?)}', c, re.DOTALL | re.I) or [c]
             for vh in blocks:
                 lines = [l.strip() for l in vh.splitlines() if l.strip() and not l.strip().startswith('#')]
                 clean_vh = '\\n'.join(lines)
-                sn_m = re.search(r'(?:ServerName|server_name)\\s+([^\\s;]+)', clean_vh, re.I)
-                if sn_m:
-                    s_cand = sn_m.group(1).strip().lower().rstrip(';')
-                    if s_cand in [clean_name, clean_dom] or f"www.{s_cand}" in [clean_name, clean_dom]:
-                        dr_m = re.search(r'(?:DocumentRoot|root)\\s+([^\\s;\\r\\n]+)', clean_vh, re.I)
-                        if dr_m:
-                            found_dr = dr_m.group(1).strip().strip('"').strip("'")
-                            if not doc_root:
-                                doc_root = found_dr
-                            g_cand = find_git_upwards(found_dr)
-                            if g_cand and g_cand not in git_candidates:
-                                git_candidates.append(g_cand)
-                                break
-            if git_candidates:
-                break
+                vh_domains = set()
+                for m in re.finditer(r'^\\s*(?:ServerName|ServerAlias)\\s+(.+)$', clean_vh, re.I | re.M):
+                    for tok in m.group(1).split():
+                        vh_domains.add(tok.strip().lower().rstrip(';').strip('"').strip("'"))
+                for m in re.finditer(r'^\\s*server_name\\s+([^;]+);', clean_vh, re.I | re.M):
+                    for tok in m.group(1).split():
+                        vh_domains.add(tok.strip().lower().rstrip(';').strip('"').strip("'"))
+                if vh_domains.intersection(target_doms):
+                    dr_m = re.search(r'^\\s*(?:DocumentRoot|root)\\s+([^\\s;\\r\\n]+)', clean_vh, re.I | re.M)
+                    if dr_m:
+                        found_dr = dr_m.group(1).strip().strip('"').strip("'").rstrip('/')
+                        if found_dr and not is_stop_dir(found_dr) and found_dr not in vhost_doc_roots:
+                            vhost_doc_roots.append(found_dr)
+                    for pm in re.finditer(r'(?:ProxyPass|ProxyPassMatch|RewriteRule|proxy_pass)\\b[^\\r\\n;]*?https?://(?:127\\.0\\.0\\.1|localhost|0\\.0\\.0\\.0|\\[::1\\]):(\\d+)', clean_vh, re.I):
+                        pnum = int(pm.group(1))
+                        if pnum not in vhost_proxy_ports:
+                            vhost_proxy_ports.append(pnum)
         except Exception:
             pass
 
-# 4. Check exact directories under /var/www, /home, /opt using non-generic tokens
-if not git_candidates:
-    for base in ['/var/www', '/var/www/html', '/home', '/opt']:
-        for n in [clean_dom, clean_name] + specific_tokens:
-            if n and n not in GENERIC_WORDS:
-                for d in [os.path.join(base, n), os.path.join(base, n, n)]:
-                    if os.path.isdir(os.path.join(d, '.git')):
-                        git_candidates.append(d)
+    for dr in vhost_doc_roots:
+        if not doc_root:
+            doc_root = dr
+        g_cand = find_git_upwards(dr)
+        if g_cand and g_cand not in git_candidates:
+            git_candidates.append(g_cand)
 
-# 5. Scoped search across git repos ONLY matching specific non-generic tokens
-if not git_candidates and specific_tokens:
-    for base in ['/var/www', '/home']:
+    if not git_candidates and vhost_proxy_ports:
+        try:
+            p_ps = subprocess.run(['docker', 'ps', '-a', '--format', '{{json .}}'], capture_output=True, text=True, timeout=4)
+            for line in p_ps.stdout.strip().splitlines():
+                if not line.strip():
+                    continue
+                cobj = json.loads(line)
+                c_ports = cobj.get('Ports', '')
+                c_n = cobj.get('Names', '').lstrip('/')
+                for pnum in vhost_proxy_ports:
+                    if f":{pnum}->" in c_ports:
+                        g_cand, wdir = inspect_container_for_git(c_n)
+                        if wdir and not doc_root:
+                            doc_root = wdir
+                        if g_cand and g_cand not in git_candidates:
+                            git_candidates.append(g_cand)
+        except Exception:
+            pass
+
+# 2. If app is a Docker container or suite, inspect container working_dir / mounts
+if not git_candidates and is_docker_app:
+    cand_cnames = [app_service, app_name, clean_name]
+    if clean_dom.endswith('.local'):
+        cand_cnames.append(clean_dom[:-6])
+    for cname in cand_cnames:
+        g_cand, wdir = inspect_container_for_git(cname)
+        if wdir and not doc_root:
+            doc_root = wdir
+        if g_cand:
+            git_candidates.append(g_cand)
+            break
+    if not git_candidates:
+        try:
+            p_ps = subprocess.run(['docker', 'ps', '-a', '--format', '{{.Names}}'], capture_output=True, text=True, timeout=4)
+            for live_c in p_ps.stdout.strip().splitlines():
+                lc = live_c.strip().lower()
+                if lc in allowed_names or any(lc.startswith(f"{an}_") or lc.startswith(f"{an}-") for an in allowed_names if len(an) >= 4):
+                    g_cand, wdir = inspect_container_for_git(live_c.strip())
+                    if wdir and not doc_root:
+                        doc_root = wdir
+                    if g_cand:
+                        git_candidates.append(g_cand)
+                        break
+        except Exception:
+            pass
+
+# 3. Check configured app_root ONLY if no vhost_doc_roots overrode it AND app_root belongs to this app
+if not git_candidates and not vhost_doc_roots and app_root and not app_root.startswith('/var/lib/docker') and os.path.exists(app_root):
+    ar_clean = os.path.abspath(app_root).rstrip('/')
+    ar_base = os.path.basename(ar_clean).lower()
+    ar_parent = os.path.basename(os.path.dirname(ar_clean)).lower()
+    if ar_base in allowed_names or (ar_base in SUBDIR_NAMES and ar_parent in allowed_names):
+        doc_root = doc_root or ar_clean
+        g_cand = find_git_upwards(ar_clean)
+        if g_cand:
+            git_candidates.append(g_cand)
+
+# 4. Check exact directory names on disk ONLY if no explicit VirtualHost DocumentRoot without .git already resolved this site
+if not git_candidates and not vhost_doc_roots and allowed_names:
+    for base in ['/var/www', '/var/www/html', '/home', '/root', '/opt', '/srv']:
+        if not os.path.isdir(base):
+            continue
         for g in glob.glob(os.path.join(base, '*', '.git')) + glob.glob(os.path.join(base, '*', '*', '.git')):
             d = os.path.dirname(g)
-            b = os.path.basename(d).lower()
-            if b in GENERIC_WORDS:
+            if is_stop_dir(d):
                 continue
-            if b in [clean_name, clean_dom] or b in specific_tokens or any(len(t) >= 4 and (t in b or b in t) for t in specific_tokens):
+            b = os.path.basename(d).lower()
+            if b in allowed_names:
                 git_candidates.append(d)
 
 target_dir = git_candidates[0] if git_candidates else (doc_root or f"/var/www/{clean_dom or clean_name}")
@@ -2238,6 +2464,92 @@ print(json.dumps(res))
     }
 
 
+_GENERIC_GIT_WORDS = {
+    "backend", "frontend", "app", "web", "api", "dist", "public", "src",
+    "html", "server", "client", "db", "redis", "postgres", "mysql", "local",
+    "co", "ke", "com", "org", "net", "www", "africa", "cloud", "portal",
+    "lms", "mms", "cps", "1", "2", "v1", "v2", "v3", "main", "master", "prod",
+    "suite", "service", "container", "site", "default", "admin", "dev", "staging"
+}
+
+
+def _strip_domain_tld(dom: str) -> str:
+    if not dom or "." not in dom or dom.endswith(".local"):
+        return dom
+    multi_tlds = [
+        ".co.ke", ".or.ke", ".ac.ke", ".go.ke", ".me.ke",
+        ".co.uk", ".org.uk", ".com.au", ".co.za", ".co.tz", ".co.ug"
+    ]
+    for mt in multi_tlds:
+        if dom.endswith(mt):
+            return dom[:-len(mt)]
+    return dom.rsplit(".", 1)[0]
+
+
+def build_allowed_names_for_app(
+    app_name: Optional[str],
+    app_domain: Optional[str],
+    app_service: Optional[str],
+    is_docker: bool = False
+) -> set[str]:
+    """
+    Computes the strict set of exact folder/repository names allowed to match a given application or website.
+    Eliminates substring hijacking (e.g. 'afera' matching 'aferainnov.africa' or 'lms.aferaacademy.africa').
+    """
+    names: set[str] = set()
+    c_n = (app_name or "").strip().lower()
+    c_d = (app_domain or "").strip().lower()
+    c_s = (app_service or "").strip().lower()
+    if c_d.startswith("www."):
+        c_d = c_d[4:]
+    if c_n.startswith("www."):
+        c_n = c_n[4:]
+
+    for raw in [c_d, c_n, c_s]:
+        if not raw:
+            continue
+        if raw.startswith("apache2-"):
+            raw = raw[8:]
+        elif raw.startswith("nginx-"):
+            raw = raw[6:]
+        if raw.endswith(".local"):
+            raw = raw[:-6]
+        if not raw or raw in _GENERIC_GIT_WORDS:
+            continue
+        names.add(raw)
+        names.add(raw.replace(".", "-"))
+        names.add(raw.replace(".", "_"))
+
+        if "." in raw:
+            no_tld = _strip_domain_tld(raw)
+            if no_tld and no_tld not in _GENERIC_GIT_WORDS and len(no_tld) >= 3:
+                names.add(no_tld)
+                names.add(no_tld.replace(".", "-"))
+                names.add(no_tld.replace(".", "_"))
+                parts = no_tld.split(".")
+                if len(parts) == 2 and parts[0] not in _GENERIC_GIT_WORDS and len(parts[0]) >= 3:
+                    names.add(parts[0])
+
+        if is_docker or "." not in raw:
+            cleaned = re.sub(
+                r"(?:[\s\-_]+(?:suite|backend|frontend|api|web|server|client|worker|db|redis|postgres|service|app|container|1|2))+$",
+                "",
+                raw
+            )
+            if cleaned and cleaned not in _GENERIC_GIT_WORDS and len(cleaned) >= 3:
+                names.add(cleaned)
+                names.add(cleaned.replace(" ", "-"))
+                names.add(cleaned.replace(" ", "_"))
+                names.add(cleaned.replace(" ", ""))
+                first_w = cleaned.split()[0] if " " in cleaned else ""
+                if first_w and first_w not in _GENERIC_GIT_WORDS and len(first_w) >= 4:
+                    names.add(first_w)
+            no_ver = re.sub(r"[\-_]v\d+$", "", raw)
+            if no_ver and no_ver not in _GENERIC_GIT_WORDS and len(no_ver) >= 3:
+                names.add(no_ver)
+    return names
+
+
 def scan_all_remote_git_repos(server: Server) -> List[Dict[str, Any]]:
     """
     Batches-scans the target VPS to discover all Git repositories under /var/www, /home, /root, /opt.
@@ -2246,11 +2558,16 @@ def scan_all_remote_git_repos(server: Server) -> List[Dict[str, Any]]:
     vps_py = """
 import os, glob, subprocess, json
 
+STOP_DIRS = {'/', '/var', '/var/www', '/var/www/html', '/home', '/root', '/opt', '/usr', '/etc', '/var/lib'}
 repos = []
 all_git_dirs = []
-for base in ['/var/www', '/home', '/root', '/opt']:
+for base in ['/var/www', '/var/www/html', '/home', '/root', '/opt', '/srv']:
+    if not os.path.isdir(base):
+        continue
     for g in glob.glob(os.path.join(base, '*', '.git')) + glob.glob(os.path.join(base, '*', '*', '.git')) + glob.glob(os.path.join(base, '*', '*', '*', '.git')):
-        all_git_dirs.append(os.path.dirname(g))
+        gd = os.path.dirname(g)
+        if gd not in STOP_DIRS:
+            all_git_dirs.append(gd)
 
 for gd in set(all_git_dirs):
     try:
@@ -2300,6 +2617,7 @@ print(json.dumps(repos))
             pass
 
     return []
+
 
 
 def execute_remote_git_action(

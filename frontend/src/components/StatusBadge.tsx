@@ -66,11 +66,11 @@ export const StatusBadge: React.FC<StatusBadgeProps> = ({ status, size = 'md' })
 
   return (
     <span
-      className={`inline-flex items-center gap-1.5 font-medium rounded-full border ${bg} ${padding} transition-colors tracking-wide`}
+      className={`inline-flex items-center gap-1.5 font-medium rounded-full border whitespace-nowrap shrink-0 ${bg} ${padding} transition-colors tracking-wide`}
       role="status"
     >
       <Icon size={iconSize} className="shrink-0" aria-hidden="true" />
-      <span>{norm.replace(/_/g, ' ')}</span>
+      <span className="whitespace-nowrap">{norm.replace(/_/g, ' ')}</span>
     </span>
   );
 };

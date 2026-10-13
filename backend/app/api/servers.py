@@ -223,7 +223,7 @@ async def scan_and_import_server_websites(
                     Application.deleted_at == None
                 )
             )
-            existing_app = existing_app_res.scalar_one_or_none()
+            existing_app = existing_app_res.scalars().first()
 
             if not existing_app:
                 new_app = Application(
@@ -261,19 +261,24 @@ async def scan_and_import_server_websites(
                     existing_app.current_commit = site.get("current_commit")
                     if not existing_app.latest_repo_commit:
                         existing_app.latest_repo_commit = site.get("current_commit")
-                if site.get("git_branch"):
-                    existing_app.git_branch = site.get("git_branch")
-                if site.get("repo_url"):
-                    existing_app.repo_url = site.get("repo_url")
-                if site.get("version"):
-                    existing_app.current_version = site.get("version")
+                    if site.get("git_branch"):
+                        existing_app.git_branch = site.get("git_branch")
+                    if site.get("repo_url"):
+                        existing_app.repo_url = site.get("repo_url")
+                    if site.get("version"):
+                        existing_app.current_version = site.get("version")
+                elif site.get("is_git_repo") is False:
+                    existing_app.current_commit = None
+                    existing_app.latest_repo_commit = None
+                    existing_app.git_branch = None
+                    existing_app.repo_url = None
                 target_app_id = existing_app.id
                 imported_apps.append(existing_app)
 
             # Also check/create Domain entry
             if site_domain and "." in site_domain and not site_domain.endswith(".local"):
                 dom_res = await db.execute(select(Domain).where(Domain.domain_name == site_domain))
-                existing_dom = dom_res.scalar_one_or_none()
+                existing_dom = dom_res.scalars().first()
                 if not existing_dom:
                     new_dom = Domain(
                         domain_name=site_domain,

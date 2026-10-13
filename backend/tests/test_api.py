@@ -1394,9 +1394,10 @@ async def test_domain_dns_resolution_and_website_troubleshooting():
         token = await get_admin_token(ac)
         headers = {"Authorization": f"Bearer {token}"}
 
+        unique_domain = f"metto-dns-test-{uuid.uuid4().hex[:6]}.local"
         # 1. Register a domain with a local/test IP to verify DNS resolution fields
         dom_res = await ac.post("/api/domains", json={
-            "domain_name": "metto-dns-test.local",
+            "domain_name": unique_domain,
             "server_ip": "62.171.190.16",
             "redirect_status": "HTTP_TO_HTTPS",
             "auto_renew": True
@@ -1441,6 +1442,84 @@ async def test_domain_dns_resolution_and_website_troubleshooting():
             assert "stdout" in tb_data
             assert "summary" in tb_data
             assert "resolved_ip" in tb_data
+
+        await ac.delete(f"/api/domains/{dom_id}", headers=headers)
+
+
+@pytest.mark.asyncio
+async def test_per_site_git_resolution_no_substring_hijack():
+    """Verify that build_allowed_names_for_app and applications self-healing prevent 'afera' from hijacking unrelated 'afera*' domains."""
+    from backend.app.services.remote_executor import build_allowed_names_for_app
+
+    # 1. Verify build_allowed_names_for_app does NOT include 'afera' for 'aferainnov.africa' or 'lms.aferaacademy.africa'
+    allowed_innov = build_allowed_names_for_app("aferainnov.africa", "aferainnov.africa", "apache2", False)
+    assert "aferainnov" in allowed_innov
+    assert "afera" not in allowed_innov
+
+    allowed_lms = build_allowed_names_for_app("lms.aferaacademy.africa", "lms.aferaacademy.africa", "apache2", False)
+    assert "lms.aferaacademy" in allowed_lms
+    assert "lms-aferaacademy" in allowed_lms
+    assert "aferaacademy" not in allowed_lms
+    assert "afera" not in allowed_lms
+
+    allowed_kkdes = build_allowed_names_for_app("aferaacadmy.kkdes.co.ke", "aferaacadmy.kkdes.co.ke", "apache2", False)
+    assert "aferaacadmy" in allowed_kkdes
+    assert "afera" not in allowed_kkdes
+
+    # Docker app 'afera_web_1' should legitimately match 'afera'
+    allowed_docker = build_allowed_names_for_app("afera_web_1", "aferaacademy.africa", "docker:afera_web_1", True)
+    assert "afera" in allowed_docker
+
+    # 2. Verify GET /api/applications self-heals non-Docker domain apps whose root_path/current_commit was hijacked by 'afera'
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        token = await get_admin_token(ac)
+        headers = {"Authorization": f"Bearer {token}"}
+
+        srv_res = await ac.post("/api/servers", json={
+            "name": f"VPS-173.249.37.206-{uuid.uuid4().hex[:4]}",
+            "hostname": "vps-173-249-37-206.local",
+            "provider": "Custom VPS",
+            "public_ip": "173.249.37.206",
+            "ssh_port": 22
+        }, headers=headers)
+        assert srv_res.status_code == 200
+        srv_id = srv_res.json()["id"]
+
+        # Create a non-Docker website row that was previously hijacked by '/var/www/afera' and commit 'c0f79bd'
+        hijacked_res = await ac.post("/api/applications", json={
+            "server_id": srv_id,
+            "name": "aferainnov.africa",
+            "environment": "production",
+            "app_type": "Apache2 VirtualHost",
+            "process_manager": "Apache",
+            "root_path": "/var/www/afera",
+            "domain": "aferainnov.africa",
+            "service_name": "apache2-aferainnov.africa",
+            "git_branch": "main"
+        }, headers=headers)
+        assert hijacked_res.status_code == 200
+        hijacked_id = hijacked_res.json()["id"]
+
+        # Simulate the persisted hijacked commit in DB
+        from sqlalchemy import select as sa_select
+        async with AsyncSessionLocal() as db:
+            res_db = await db.execute(sa_select(Application).where(Application.id == hijacked_id))
+            db_app = res_db.scalar_one()
+            db_app.current_commit = "c0f79bd"
+            db_app.root_path = "/var/www/afera"
+            await db.commit()
+
+        # List applications and confirm self-healing clears the hijacked commit from aferainnov.africa
+        apps_res = await ac.get("/api/applications", headers=headers)
+        assert apps_res.status_code == 200
+        apps_list = apps_res.json()
+        healed_app = next((a for a in apps_list if a["id"] == hijacked_id), None)
+        assert healed_app is not None
+        assert healed_app["current_commit"] is None
+        assert healed_app["root_path"] == "/var/www/aferainnov.africa"
+
+        await ac.delete(f"/api/applications/{hijacked_id}", headers=headers)
+        await ac.delete(f"/api/servers/{srv_id}", headers=headers)
 
 
 

@@ -4,6 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timezone
+import os
 
 from backend.app.core.database import get_db
 from backend.app.core.deps import get_current_user, require_roles
@@ -18,7 +19,8 @@ from backend.app.schemas.api_schemas import (
 from backend.app.services.remote_executor import (
     detect_remote_application_git,
     scan_all_remote_git_repos,
-    execute_remote_git_action
+    execute_remote_git_action,
+    build_allowed_names_for_app
 )
 
 router = APIRouter(prefix="/git", tags=["Git Management"])
@@ -331,10 +333,10 @@ async def scan_all_git_repos_endpoint(
     updated_apps = 0
     updates_available_count = 0
     scan_results = []
-    generic_names = {
-        "backend", "frontend", "app", "web", "api", "server", "client",
-        "site", "src", "dist", "build", "public", "html", "www", "home",
-        "root", "var", "opt", "main", "master", "code", "service"
+    subdir_names = {
+        "public", "public_html", "html", "dist", "build", "web", "www",
+        "current", "release", "releases", "frontend", "backend", "client",
+        "server", "api", "app", "src", "out", "static", "httpdocs", "htdocs"
     }
 
     repos_by_ip: Dict[str, List[Dict[str, Any]]] = {}
@@ -353,30 +355,48 @@ async def scan_all_git_repos_endpoint(
         apps = apps_res.scalars().all()
 
         for a in apps:
-            app_clean = (a.name or "").lower().strip()
             dom_clean = (a.domain or "").lower().strip()
-            app_root = (getattr(a, "root_path", None) or "").lower().strip()
+            app_root = (getattr(a, "root_path", None) or "").lower().strip().rstrip("/")
+            is_docker = bool(
+                (app_root and app_root.startswith("/var/lib/docker"))
+                or dom_clean.endswith(".local")
+                or (a.process_manager and "docker" in a.process_manager.lower())
+                or (a.app_type and "docker" in a.app_type.lower())
+            )
+            allowed_names = build_allowed_names_for_app(
+                a.name, a.domain, getattr(a, "service_name", None), is_docker=is_docker
+            )
+
+            app_root_base = os.path.basename(app_root) if app_root else ""
+            app_root_parent = os.path.basename(os.path.dirname(app_root)) if app_root else ""
+            app_root_belongs_to_app = bool(
+                app_root
+                and not app_root.startswith("/var/lib/docker")
+                and (
+                    app_root_base in allowed_names
+                    or (app_root_base in subdir_names and app_root_parent in allowed_names)
+                )
+            )
 
             matched = None
             for r in discovered_repos:
-                r_name = r.get("name", "").lower()
-                r_dir = r.get("dir", "").lower()
+                r_name = (r.get("name") or "").lower().strip()
+                r_dir = (r.get("dir") or "").lower().strip().rstrip("/")
+                r_url = (r.get("repo_url") or "").lower().strip().rstrip("/")
+                r_url_name = os.path.basename(r_url)[:-4] if r_url.endswith(".git") else os.path.basename(r_url)
+
                 is_exact_path = bool(
-                    app_root
-                    and not app_root.startswith("/var/lib/docker")
-                    and (app_root == r_dir or app_root.startswith(r_dir + "/") or r_dir.startswith(app_root + "/"))
-                )
-                is_domain_match = bool(dom_clean and "." in dom_clean and dom_clean in r_dir)
-                is_specific_name = bool(
-                    r_name not in generic_names
-                    and len(r_name) >= 4
+                    app_root_belongs_to_app
                     and (
-                        r_name == app_clean
-                        or r_name in app_clean
-                        or (len(app_clean) >= 4 and app_clean not in generic_names and app_clean in r_name)
+                        app_root == r_dir
+                        or (app_root.startswith(r_dir + "/") and app_root_base in subdir_names)
                     )
                 )
-                if is_exact_path or is_domain_match or is_specific_name:
+                is_exact_name_match = bool(
+                    r_name in allowed_names
+                    or (r_url_name and r_url_name in allowed_names)
+                )
+                if is_exact_path or is_exact_name_match:
                     matched = r
                     break
 
@@ -409,8 +429,8 @@ async def scan_all_git_repos_endpoint(
                     "commits_behind": matched.get("commits_behind", 0),
                     "update_available": matched.get("update_available", False)
                 })
-            elif discovered_repos:
-                p = detect_remote_application_git(s, a)
+            else:
+                p = detect_remote_application_git(s, a) if discovered_repos else None
                 if p and p.get("is_git_repo"):
                     updated_apps += 1
                     if p.get("commit_hash"):
@@ -442,11 +462,16 @@ async def scan_all_git_repos_endpoint(
                         "commits_behind": p.get("commits_behind", 0),
                         "update_available": p.get("update_available", False)
                     })
-                elif p and not p.get("is_git_repo"):
-                    if p.get("doc_root"):
+                else:
+                    # Site has no Git repository: clear any previously hijacked or stale commit metadata
+                    if p and p.get("doc_root"):
                         a.root_path = p["doc_root"]
-                    elif p.get("repo_dir") and not a.root_path:
-                        a.root_path = p["repo_dir"]
+                    elif not app_root_belongs_to_app and dom_clean and not dom_clean.endswith(".local"):
+                        a.root_path = f"/var/www/{dom_clean}"
+                    a.current_commit = None
+                    a.latest_repo_commit = None
+                    a.git_branch = None
+                    a.repo_url = None
 
     await db.commit()
 
@@ -458,5 +483,6 @@ async def scan_all_git_repos_endpoint(
         message=f"Scanned {len(servers)} servers. Discovered {total_scanned} git directories, updated {updated_apps} applications ({updates_available_count} updates pending).",
         results=scan_results
     )
+
 
 

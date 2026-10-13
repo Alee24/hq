@@ -93,6 +93,8 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
   const [newEnvironment, setNewEnvironment] = useState('production');
   const [serversList, setServersList] = useState<any[]>([]);
 
+  const [syncingGit, setSyncingGit] = useState(false);
+
   const loadData = async () => {
     try {
       const res = await api.listApplications(environment);
@@ -109,8 +111,22 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
     }
   };
 
+  const handleSyncGitRepos = async (silent = false) => {
+    if (!silent) setSyncingGit(true);
+    try {
+      await api.scanAllGitRepos();
+      const res = await api.listApplications(environment);
+      setApps(res);
+    } catch (e) {
+      console.error('Git repo sync error:', e);
+    } finally {
+      if (!silent) setSyncingGit(false);
+    }
+  };
+
   useEffect(() => {
     loadData();
+    handleSyncGitRepos(true);
   }, [environment]);
 
   const handleServerSelect = (srvId: string) => {
@@ -574,49 +590,49 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
     switch (role) {
       case 'frontend':
         return (
-          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-sky-950 text-sky-300 border border-sky-800">
+          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-sky-950 text-sky-300 border border-sky-800 whitespace-nowrap shrink-0">
             🌐 {label}
           </span>
         );
       case 'backend':
         return (
-          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-purple-950 text-purple-300 border border-purple-800">
+          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-purple-950 text-purple-300 border border-purple-800 whitespace-nowrap shrink-0">
             ⚙️ {label}
           </span>
         );
       case 'database':
         return (
-          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-950 text-emerald-300 border border-emerald-800">
+          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-950 text-emerald-300 border border-emerald-800 whitespace-nowrap shrink-0">
             🗄️ {label}
           </span>
         );
       case 'cache':
         return (
-          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-950 text-amber-300 border border-amber-800">
+          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-950 text-amber-300 border border-amber-800 whitespace-nowrap shrink-0">
             ⚡ {label}
           </span>
         );
       case 'certbot':
         return (
-          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-teal-950 text-teal-300 border border-teal-800">
+          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-teal-950 text-teal-300 border border-teal-800 whitespace-nowrap shrink-0">
             🔒 {label}
           </span>
         );
       case 'agent':
         return (
-          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-indigo-950 text-indigo-300 border border-indigo-800">
+          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-indigo-950 text-indigo-300 border border-indigo-800 whitespace-nowrap shrink-0">
             📡 {label}
           </span>
         );
       case 'worker':
         return (
-          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-slate-900 text-slate-300 border border-slate-700">
+          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-slate-900 text-slate-300 border border-slate-700 whitespace-nowrap shrink-0">
             ⏳ {label}
           </span>
         );
       default:
         return (
-          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-slate-900 text-slate-300 border border-slate-800">
+          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-slate-900 text-slate-300 border border-slate-800 whitespace-nowrap shrink-0">
             📦 {label || 'Service'}
           </span>
         );
@@ -627,7 +643,7 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
     <div className="p-6 md:p-8 space-y-6 max-w-7xl mx-auto">
       {/* Header Bar */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-2 border-b border-slate-800">
-        <div>
+        <div className="min-w-0 flex-1">
           <h1 className="text-2xl font-bold text-white tracking-tight flex items-center gap-2">
             Applications Inventory
           </h1>
@@ -636,21 +652,31 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
           </p>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2.5 shrink-0 flex-wrap">
           <button
             onClick={() => loadData()}
-            className="p-2 bg-slate-900 hover:bg-slate-800 border border-slate-800 rounded-lg text-slate-300 hover:text-white transition-colors"
-            title="Refresh"
+            className="p-2 bg-slate-900 hover:bg-slate-800 border border-slate-800 rounded-lg text-slate-300 hover:text-white transition-colors whitespace-nowrap shrink-0"
+            title="Refresh Applications"
           >
             <RefreshCw size={14} />
           </button>
 
           <button
-            onClick={() => setCreateModalOpen(true)}
-            className="flex items-center gap-1.5 px-3.5 py-1.5 bg-brand-600 hover:bg-brand-500 text-white rounded-lg text-xs font-medium shadow-sm transition-colors"
+            onClick={() => handleSyncGitRepos(false)}
+            disabled={syncingGit}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-200 hover:text-white rounded-lg text-xs font-medium shadow-sm transition-colors whitespace-nowrap shrink-0 disabled:opacity-50"
+            title="Re-scan & match each site to its exact Git repository on the server"
           >
-            <Plus size={14} />
-            <span>Register Application</span>
+            <GitBranch size={13} className={syncingGit ? 'animate-spin text-brand-400 shrink-0' : 'text-brand-400 shrink-0'} />
+            <span className="whitespace-nowrap">{syncingGit ? 'Syncing Git...' : 'Sync Git Repos'}</span>
+          </button>
+
+          <button
+            onClick={() => setCreateModalOpen(true)}
+            className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-brand-600 hover:bg-brand-500 text-white rounded-lg text-xs font-medium shadow-sm transition-colors whitespace-nowrap shrink-0"
+          >
+            <Plus size={14} className="shrink-0" />
+            <span className="whitespace-nowrap">Register Application</span>
           </button>
         </div>
       </div>
@@ -659,16 +685,16 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
       <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3 shadow-sm">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-2 border-b border-slate-800/80 mb-2.5">
           <div className="flex items-center gap-2">
-            <Server size={14} className="text-brand-400" />
-            <span className="text-xs font-bold text-white uppercase tracking-wider">Select VPS Server Node:</span>
+            <Server size={14} className="text-brand-400 shrink-0" />
+            <span className="text-xs font-bold text-white uppercase tracking-wider whitespace-nowrap">Select VPS Server Node:</span>
             <span className="text-[11px] text-slate-400">Choose a node to filter applications, vitals & errors</span>
           </div>
           {selectedServerId !== 'all' && (
             <button
               onClick={() => handleServerSelect('all')}
-              className="text-[11px] font-semibold text-brand-400 hover:text-brand-300 transition-colors flex items-center gap-1 self-start sm:self-auto"
+              className="text-[11px] font-semibold text-brand-400 hover:text-brand-300 transition-colors inline-flex items-center gap-1 self-start sm:self-auto whitespace-nowrap shrink-0"
             >
-              <span>Show All Nodes</span>
+              <span className="whitespace-nowrap">Show All Nodes</span>
               <span>&times;</span>
             </button>
           )}
@@ -677,23 +703,23 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
         <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-thin">
           <button
             onClick={() => handleServerSelect('all')}
-            className={`px-3 py-2 rounded-lg text-xs font-semibold transition-all shrink-0 flex items-center gap-2 border ${
+            className={`px-3 py-2 rounded-lg text-xs font-semibold transition-all whitespace-nowrap shrink-0 flex items-center gap-2 border ${
               selectedServerId === 'all'
                 ? 'bg-brand-600 text-white border-brand-500 shadow-sm'
                 : 'bg-slate-950 text-slate-300 border-slate-800 hover:bg-slate-800 hover:text-white'
             }`}
           >
-            <Layers size={13} />
-            <span>All Servers ({serversList.length})</span>
+            <Layers size={13} className="shrink-0" />
+            <span className="whitespace-nowrap">All Servers ({serversList.length})</span>
             <span
-              className={`px-1.5 py-0.2 rounded text-[10px] font-mono ${
+              className={`px-1.5 py-0.2 rounded text-[10px] font-mono whitespace-nowrap shrink-0 ${
                 selectedServerId === 'all' ? 'bg-brand-700 text-brand-100' : 'bg-slate-900 text-slate-400'
               }`}
             >
               {apps.length} apps
             </span>
             {apps.some((a) => a.health_status === 'OFFLINE' || a.health_status === 'DEGRADED') && (
-              <span className="w-2 h-2 rounded-full bg-rose-500 animate-ping" title="Errors detected on nodes" />
+              <span className="w-2 h-2 rounded-full bg-rose-500 animate-ping shrink-0" title="Errors detected on nodes" />
             )}
           </button>
 
@@ -708,21 +734,21 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
               <button
                 key={srv.id}
                 onClick={() => handleServerSelect(srv.id)}
-                className={`px-3 py-2 rounded-lg text-xs font-semibold transition-all shrink-0 flex items-center gap-2.5 border ${
+                className={`px-3 py-2 rounded-lg text-xs font-semibold transition-all whitespace-nowrap shrink-0 flex items-center gap-2.5 border ${
                   isSelected
                     ? 'bg-brand-600 text-white border-brand-500 shadow-sm'
                     : 'bg-slate-950 text-slate-300 border-slate-800 hover:bg-slate-800 hover:text-white'
                 }`}
               >
-                <Server size={13} className={isSelected ? 'text-white' : 'text-slate-400'} />
-                <div className="text-left">
-                  <div className="leading-tight font-medium">{srv.name}</div>
-                  <div className={`text-[10px] mono ${isSelected ? 'text-brand-100' : 'text-slate-400'}`}>
+                <Server size={13} className={`shrink-0 ${isSelected ? 'text-white' : 'text-slate-400'}`} />
+                <div className="text-left whitespace-nowrap">
+                  <div className="leading-tight font-medium whitespace-nowrap">{srv.name}</div>
+                  <div className={`text-[10px] mono whitespace-nowrap ${isSelected ? 'text-brand-100' : 'text-slate-400'}`}>
                     {srv.public_ip}
                   </div>
                 </div>
                 <span
-                  className={`px-1.5 py-0.2 rounded text-[10px] font-mono ${
+                  className={`px-1.5 py-0.2 rounded text-[10px] font-mono whitespace-nowrap shrink-0 ${
                     isSelected ? 'bg-brand-700 text-brand-100' : 'bg-slate-900 text-slate-400'
                   }`}
                 >
@@ -730,7 +756,7 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
                 </span>
                 {serverErrors > 0 && (
                   <span
-                    className="px-1.5 py-0.2 rounded-full bg-rose-500 text-white text-[10px] font-bold animate-pulse"
+                    className="px-1.5 py-0.2 rounded-full bg-rose-500 text-white text-[10px] font-bold animate-pulse whitespace-nowrap shrink-0"
                     title={`${serverErrors} error(s)`}
                   >
                     {serverErrors}
@@ -746,15 +772,15 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         {/* Card 1: Fleet & Node Health Overview */}
         <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 flex flex-col justify-between space-y-3 shadow-sm">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <div className="p-2 bg-brand-950 border border-brand-800/80 rounded-lg text-brand-400">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 min-w-0">
+              <div className="p-2 bg-brand-950 border border-brand-800/80 rounded-lg text-brand-400 shrink-0">
                 <Activity size={16} />
               </div>
-              <span className="text-xs font-bold text-slate-300 uppercase tracking-wider">Fleet Vitals</span>
+              <span className="text-xs font-bold text-slate-300 uppercase tracking-wider whitespace-nowrap">Fleet Vitals</span>
             </div>
             <span
-              className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
+              className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold whitespace-nowrap shrink-0 ${
                 onlineRate >= 95
                   ? 'bg-emerald-950 text-emerald-400 border border-emerald-800'
                   : 'bg-amber-950 text-amber-400 border border-amber-800'
@@ -790,10 +816,10 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
             offlineApps.length > 0 ? 'bg-rose-950/20 border-rose-800/80' : 'bg-slate-900 border-slate-800'
           }`}
         >
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 min-w-0">
               <div
-                className={`p-2 rounded-lg ${
+                className={`p-2 rounded-lg shrink-0 ${
                   offlineApps.length > 0
                     ? 'bg-rose-950 text-rose-400 border border-rose-800'
                     : 'bg-emerald-950 text-emerald-400 border border-emerald-800'
@@ -801,16 +827,16 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
               >
                 {offlineApps.length > 0 ? <ShieldAlert size={16} /> : <ShieldCheck size={16} />}
               </div>
-              <span className="text-xs font-bold text-slate-300 uppercase tracking-wider">
+              <span className="text-xs font-bold text-slate-300 uppercase tracking-wider whitespace-nowrap">
                 {offlineApps.length > 0 ? 'Outages & Errors' : 'Error Monitor'}
               </span>
             </div>
             {offlineApps.length > 0 ? (
-              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-950 text-rose-300 border border-rose-800 animate-pulse">
+              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-950 text-rose-300 border border-rose-800 animate-pulse whitespace-nowrap shrink-0">
                 {offlineApps.length} CRITICAL
               </span>
             ) : (
-              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-950 text-emerald-400 border border-emerald-800">
+              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-950 text-emerald-400 border border-emerald-800 whitespace-nowrap shrink-0">
                 ALL HEALTHY
               </span>
             )}
@@ -861,14 +887,14 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
 
         {/* Card 3: Runtime Process Managers */}
         <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 flex flex-col justify-between space-y-3 shadow-sm">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <div className="p-2 bg-indigo-950 border border-indigo-800/80 rounded-lg text-indigo-400">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 min-w-0">
+              <div className="p-2 bg-indigo-950 border border-indigo-800/80 rounded-lg text-indigo-400 shrink-0">
                 <Cpu size={16} />
               </div>
-              <span className="text-xs font-bold text-slate-300 uppercase tracking-wider">Process Stacks</span>
+              <span className="text-xs font-bold text-slate-300 uppercase tracking-wider whitespace-nowrap">Process Stacks</span>
             </div>
-            <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-indigo-950 text-indigo-400 border border-indigo-800">
+            <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-indigo-950 text-indigo-400 border border-indigo-800 whitespace-nowrap shrink-0">
               DAEMONS
             </span>
           </div>
@@ -876,36 +902,36 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
             <div className="flex items-center justify-between text-slate-300">
               <button
                 onClick={() => setProcessFilter(processFilter === 'docker' ? 'all' : 'docker')}
-                className={`hover:text-white transition-colors flex items-center gap-1.5 ${
+                className={`hover:text-white transition-colors inline-flex items-center gap-1.5 whitespace-nowrap ${
                   processFilter === 'docker' ? 'text-brand-400 font-bold' : ''
                 }`}
               >
-                <Box size={12} className="text-brand-400" />
-                <span>Docker Suites:</span>
+                <Box size={12} className="text-brand-400 shrink-0" />
+                <span className="whitespace-nowrap">Docker Suites:</span>
               </button>
               <span className="font-mono font-bold text-white">{processDistribution.docker}</span>
             </div>
             <div className="flex items-center justify-between text-slate-300">
               <button
                 onClick={() => setProcessFilter(processFilter === 'apache' ? 'all' : 'apache')}
-                className={`hover:text-white transition-colors flex items-center gap-1.5 ${
+                className={`hover:text-white transition-colors inline-flex items-center gap-1.5 whitespace-nowrap ${
                   processFilter === 'apache' ? 'text-brand-400 font-bold' : ''
                 }`}
               >
-                <Server size={12} className="text-amber-400" />
-                <span>Apache2 VirtualHosts:</span>
+                <Server size={12} className="text-amber-400 shrink-0" />
+                <span className="whitespace-nowrap">Apache2 VirtualHosts:</span>
               </button>
               <span className="font-mono font-bold text-white">{processDistribution.apache}</span>
             </div>
             <div className="flex items-center justify-between text-slate-300">
               <button
                 onClick={() => setProcessFilter(processFilter === 'nginx' ? 'all' : 'nginx')}
-                className={`hover:text-white transition-colors flex items-center gap-1.5 ${
+                className={`hover:text-white transition-colors inline-flex items-center gap-1.5 whitespace-nowrap ${
                   processFilter === 'nginx' ? 'text-brand-400 font-bold' : ''
                 }`}
               >
-                <Layers size={12} className="text-teal-400" />
-                <span>Nginx Reverse Proxies:</span>
+                <Layers size={12} className="text-teal-400 shrink-0" />
+                <span className="whitespace-nowrap">Nginx Reverse Proxies:</span>
               </button>
               <span className="font-mono font-bold text-white">{processDistribution.nginx}</span>
             </div>
@@ -920,19 +946,19 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
 
         {/* Card 4: Network & Port Allocation */}
         <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 flex flex-col justify-between space-y-3 shadow-sm">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <div className="p-2 bg-emerald-950 border border-emerald-800/80 rounded-lg text-emerald-400">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 min-w-0">
+              <div className="p-2 bg-emerald-950 border border-emerald-800/80 rounded-lg text-emerald-400 shrink-0">
                 <Network size={16} />
               </div>
-              <span className="text-xs font-bold text-slate-300 uppercase tracking-wider">Port Safety</span>
+              <span className="text-xs font-bold text-slate-300 uppercase tracking-wider whitespace-nowrap">Port Safety</span>
             </div>
             {portStats.collisions.length > 0 ? (
-              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-950 text-rose-300 border border-rose-800">
+              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-950 text-rose-300 border border-rose-800 whitespace-nowrap shrink-0">
                 COLLISION
               </span>
             ) : (
-              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-950 text-emerald-400 border border-emerald-800">
+              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-950 text-emerald-400 border border-emerald-800 whitespace-nowrap shrink-0">
                 0 CONFLICTS
               </span>
             )}
@@ -943,13 +969,13 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
               {portStats.uniquePorts.slice(0, 6).map((p) => (
                 <span
                   key={p}
-                  className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-slate-950 text-emerald-300 border border-slate-800"
+                  className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-slate-950 text-emerald-300 border border-slate-800 whitespace-nowrap shrink-0"
                 >
                   :{p}
                 </span>
               ))}
               {portStats.uniquePorts.length > 6 && (
-                <span className="text-[10px] text-slate-500 font-mono self-center">
+                <span className="text-[10px] text-slate-500 font-mono self-center whitespace-nowrap">
                   +{portStats.uniquePorts.length - 6} more
                 </span>
               )}
@@ -977,7 +1003,7 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
 
         <div className="flex items-center gap-2 flex-wrap">
           {/* Sort By Dropdown */}
-          <div className="flex items-center gap-1.5 bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-300">
+          <div className="flex items-center gap-1.5 bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-300 whitespace-nowrap shrink-0">
             <ArrowUpDown size={13} className="text-brand-400 shrink-0" />
             <span className="text-slate-500 text-[11px]">Sort:</span>
             <select
@@ -998,7 +1024,7 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
           <select
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value)}
-            className="bg-slate-900 border border-slate-800 rounded-lg text-xs text-slate-300 px-3 py-1.5 focus:outline-none focus:border-brand-500"
+            className="bg-slate-900 border border-slate-800 rounded-lg text-xs text-slate-300 px-3 py-1.5 focus:outline-none focus:border-brand-500 whitespace-nowrap shrink-0"
           >
             <option value="all">All Statuses</option>
             <option value="ONLINE">Online</option>
@@ -1015,14 +1041,14 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
           <table className="w-full text-left border-collapse text-xs">
             <thead>
               <tr className="border-b border-slate-800 bg-slate-950/60 text-slate-400 font-semibold uppercase tracking-wider text-[11px]">
-                <th className="py-3 px-4">Application</th>
-                <th className="py-3 px-4">Environment</th>
-                <th className="py-3 px-4">Server & IP</th>
-                <th className="py-3 px-4">Process / Port</th>
-                <th className="py-3 px-4">Git Head</th>
-                <th className="py-3 px-4">Uptime</th>
-                <th className="py-3 px-4">Health</th>
-                <th className="py-3 px-4 text-right">Actions</th>
+                <th className="py-3 px-4 whitespace-nowrap">Application</th>
+                <th className="py-3 px-4 whitespace-nowrap">Environment</th>
+                <th className="py-3 px-4 whitespace-nowrap">Server & IP</th>
+                <th className="py-3 px-4 whitespace-nowrap">Process / Port</th>
+                <th className="py-3 px-4 whitespace-nowrap">Git Head</th>
+                <th className="py-3 px-4 whitespace-nowrap">Uptime</th>
+                <th className="py-3 px-4 whitespace-nowrap">Health</th>
+                <th className="py-3 px-4 text-right whitespace-nowrap">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800/60 text-slate-200">
@@ -1050,10 +1076,10 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
                           setStatusFilter('all');
                           setProcessFilter('all');
                         }}
-                        className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-xs font-semibold shadow-sm transition-colors"
+                        className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-xs font-semibold shadow-sm transition-colors whitespace-nowrap shrink-0"
                       >
-                        <RefreshCw size={12} />
-                        <span>Reset All Filters</span>
+                        <RefreshCw size={12} className="shrink-0" />
+                        <span className="whitespace-nowrap">Reset All Filters</span>
                       </button>
                     </div>
                   </td>
@@ -1063,6 +1089,11 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
                   const isSuite = Boolean(app.is_suite && app.components && app.components.length > 1);
                   const isExpanded = expandedSuites.has(app.id);
                   const isSuiteBusy = Boolean(suiteActionInProgress[app.id]);
+                  const hasGitCommit = Boolean(app.current_commit && app.current_commit !== 'HEAD');
+                  const repoFolder =
+                    app.root_path && !app.root_path.startsWith('/var/lib/docker')
+                      ? app.root_path.split('/').filter(Boolean).pop()
+                      : null;
 
                   return (
                     <React.Fragment key={app.id}>
@@ -1086,14 +1117,14 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
                       >
                         {/* App Name, Suite Indicator & Domain */}
                         <td className="py-3 px-4 font-medium">
-                          <div className="flex items-center gap-2">
+                          <div className="flex items-center gap-2 whitespace-nowrap">
                             {isSuite && (
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   toggleSuiteExpanded(app.id);
                                 }}
-                                className="p-1 hover:bg-slate-800 rounded text-slate-400 hover:text-white transition-colors"
+                                className="p-1 hover:bg-slate-800 rounded text-slate-400 hover:text-white transition-colors shrink-0"
                                 title={isExpanded ? 'Collapse microservices' : 'Expand microservices dropdown'}
                               >
                                 {isExpanded ? (
@@ -1104,25 +1135,27 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
                               </button>
                             )}
 
-                            <span className="font-semibold text-white group-hover:text-brand-400 transition-colors">
+                            <span className="font-semibold text-white group-hover:text-brand-400 transition-colors whitespace-nowrap">
                               {app.name}
                             </span>
 
                             {isSuite && (
-                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-brand-950/80 text-brand-300 border border-brand-800/80">
-                                <Box size={10} />
-                                {app.components?.length || app.component_count || 1} Services
+                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-brand-950/80 text-brand-300 border border-brand-800/80 whitespace-nowrap shrink-0">
+                                <Box size={10} className="shrink-0" />
+                                <span className="whitespace-nowrap">
+                                  {app.components?.length || app.component_count || 1} Services
+                                </span>
                               </span>
                             )}
 
                             {app.is_maintenance && (
-                              <span className="text-[10px] font-mono px-1 py-0.2 bg-blue-950 text-blue-300 border border-blue-800 rounded">
+                              <span className="text-[10px] font-mono px-1 py-0.2 bg-blue-950 text-blue-300 border border-blue-800 rounded whitespace-nowrap shrink-0">
                                 MAINT
                               </span>
                             )}
                           </div>
 
-                          <div className="flex items-center gap-1.5 text-slate-400 mt-0.5 mono">
+                          <div className="flex items-center gap-1.5 text-slate-400 mt-0.5 mono whitespace-nowrap">
                             <span>{app.domain || `${app.service_name}.local`}</span>
                             {app.domain && !app.domain.endsWith('.local') && (
                               <a
@@ -1130,7 +1163,7 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
                                 target="_blank"
                                 rel="noreferrer"
                                 onClick={(e) => e.stopPropagation()}
-                                className="hover:text-white"
+                                className="hover:text-white shrink-0"
                               >
                                 <ExternalLink size={10} />
                               </a>
@@ -1139,9 +1172,9 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
                         </td>
 
                         {/* Environment */}
-                        <td className="py-3 px-4">
+                        <td className="py-3 px-4 whitespace-nowrap">
                           <span
-                            className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wider border ${
+                            className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wider border whitespace-nowrap shrink-0 ${
                               app.environment === 'production'
                                 ? 'bg-purple-950/80 text-purple-300 border-purple-800/80'
                                 : app.environment === 'staging'
@@ -1154,29 +1187,29 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
                         </td>
 
                         {/* Server & IP */}
-                        <td className="py-3 px-4">
+                        <td className="py-3 px-4 whitespace-nowrap">
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
                               if (app.server_id) handleServerSelect(app.server_id);
                             }}
-                            className="flex items-center gap-1.5 text-slate-300 hover:text-brand-300 transition-colors text-left group/srv"
+                            className="inline-flex items-center gap-1.5 text-slate-300 hover:text-brand-300 transition-colors text-left group/srv whitespace-nowrap"
                             title={`Click to filter apps to ${app.server_name || 'this server'}`}
                           >
                             <Server size={13} className="text-slate-500 group-hover/srv:text-brand-400 shrink-0" />
-                            <span className="truncate max-w-[130px] font-medium">{app.server_name || 'VPS Node'}</span>
+                            <span className="truncate max-w-[140px] font-medium whitespace-nowrap">{app.server_name || 'VPS Node'}</span>
                           </button>
-                          <div className="text-slate-400 mono text-[11px] mt-0.5">
+                          <div className="text-slate-400 mono text-[11px] mt-0.5 whitespace-nowrap">
                             {app.server_ip || '185.192.97.84'}
                           </div>
                         </td>
 
                         {/* Process / Port */}
-                        <td className="py-3 px-4">
-                          <div className="text-slate-300 font-medium">
+                        <td className="py-3 px-4 whitespace-nowrap">
+                          <div className="text-slate-300 font-medium whitespace-nowrap">
                             {isSuite ? 'Docker Compose' : app.process_manager}
                           </div>
-                          <div className="text-slate-400 mono text-[11px] mt-0.5">
+                          <div className="text-slate-400 mono text-[11px] mt-0.5 whitespace-nowrap">
                             {isSuite ? (
                               <span>
                                 Ports:{' '}
@@ -1193,32 +1226,55 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
                         </td>
 
                         {/* Git Head */}
-                        <td className="py-3 px-4">
-                          <div className="flex items-center gap-1.5 mono">
-                            <GitBranch size={12} className="text-slate-500 shrink-0" />
-                            <span className="text-slate-300">{app.git_branch || 'main'}</span>
+                        <td className="py-3 px-4 whitespace-nowrap">
+                          {hasGitCommit ? (
+                            <>
+                              <div className="inline-flex items-center gap-1.5 mono whitespace-nowrap">
+                                <GitBranch size={12} className="text-brand-400 shrink-0" />
+                                <span className="text-slate-300 whitespace-nowrap">{app.git_branch || 'main'}</span>
+                                <span
+                                  className="text-brand-400 font-semibold px-1.5 py-0.5 bg-slate-950 rounded border border-slate-800 text-[11px] whitespace-nowrap shrink-0"
+                                  title={`Commit: ${app.current_commit}${app.root_path ? ` | Repo: ${app.root_path}` : ''}`}
+                                >
+                                  {app.current_commit!.slice(0, 7)}
+                                </span>
+                              </div>
+                              {app.latest_repo_commit && app.current_commit !== app.latest_repo_commit ? (
+                                <div className="text-[10px] text-amber-400 font-semibold mt-0.5 whitespace-nowrap">
+                                  Update Available
+                                </div>
+                              ) : repoFolder ? (
+                                <div
+                                  className="text-[10px] text-slate-500 mono mt-0.5 truncate max-w-[140px] whitespace-nowrap"
+                                  title={app.root_path}
+                                >
+                                  /{repoFolder}
+                                </div>
+                              ) : null}
+                            </>
+                          ) : (
                             <span
-                              className="text-brand-400 font-semibold px-1.5 py-0.5 bg-slate-950 rounded border border-slate-800 text-[11px]"
-                              title={app.current_commit || 'HEAD'}
+                              className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-slate-950/80 text-slate-500 border border-slate-800/80 text-[11px] font-mono whitespace-nowrap shrink-0"
+                              title={
+                                app.root_path
+                                  ? `No Git repository found in ${app.root_path}`
+                                  : 'No Git repository tracked for this site'
+                              }
                             >
-                              {app.current_commit ? app.current_commit.slice(0, 7) : 'HEAD'}
+                              <GitBranch size={11} className="text-slate-600 shrink-0" />
+                              <span className="whitespace-nowrap">No Git Repo</span>
                             </span>
-                          </div>
-                          {app.current_commit && app.current_commit !== app.latest_repo_commit && (
-                            <div className="text-[10px] text-amber-400 font-semibold mt-0.5">
-                              Update Available
-                            </div>
                           )}
                         </td>
 
                         {/* Uptime */}
-                        <td className="py-3 px-4 mono text-emerald-400 font-medium">
+                        <td className="py-3 px-4 mono text-emerald-400 font-medium whitespace-nowrap">
                           {app.uptime_percent || 99.98}%
                         </td>
 
                         {/* Health Status */}
-                        <td className="py-3 px-4">
-                          <div className="flex items-center gap-1.5 flex-wrap">
+                        <td className="py-3 px-4 whitespace-nowrap">
+                          <div className="inline-flex items-center gap-1.5 whitespace-nowrap">
                             <StatusBadge status={app.health_status} size="sm" />
                             {(app.health_status === 'OFFLINE' || app.health_status === 'DEGRADED') && (
                               <button
@@ -1226,38 +1282,38 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
                                   e.stopPropagation();
                                   handleInvestigateError(app);
                                 }}
-                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-rose-950 text-rose-300 border border-rose-800 hover:bg-rose-900 transition-colors shadow-sm"
+                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-rose-950 text-rose-300 border border-rose-800 hover:bg-rose-900 transition-colors shadow-sm whitespace-nowrap shrink-0"
                                 title="Click to audit outage reason and run AI fix on VPS"
                               >
-                                <Sparkles size={10} className="text-rose-400" />
-                                <span>Fix with AI</span>
+                                <Sparkles size={10} className="text-rose-400 shrink-0" />
+                                <span className="whitespace-nowrap">Fix with AI</span>
                               </button>
                             )}
                           </div>
                         </td>
 
                         {/* Operational Quick Actions */}
-                        <td className="py-3 px-4 text-right" onClick={(e) => e.stopPropagation()}>
-                          <div className="flex flex-wrap items-center justify-end gap-1.5">
+                        <td className="py-3 px-4 text-right whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                          <div className="inline-flex items-center justify-end gap-1.5 whitespace-nowrap">
                             {isSuite ? (
                               <>
                                 <button
                                   onClick={() => toggleSuiteExpanded(app.id)}
-                                  className={`px-2 py-1 rounded text-[11px] font-semibold border transition-colors flex items-center gap-1 ${
+                                  className={`px-2 py-1 rounded text-[11px] font-semibold border transition-colors inline-flex items-center gap-1 whitespace-nowrap shrink-0 ${
                                     isExpanded
                                       ? 'bg-brand-950 text-brand-300 border-brand-800'
                                       : 'bg-slate-950 hover:bg-slate-800 text-slate-300 border-slate-800'
                                   }`}
                                   title={isExpanded ? 'Hide services dropdown' : 'View microservices dropdown'}
                                 >
-                                  <span>{isExpanded ? 'Hide' : 'Services'}</span>
-                                  {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                                  <span className="whitespace-nowrap">{isExpanded ? 'Hide' : 'Services'}</span>
+                                  {isExpanded ? <ChevronDown size={12} className="shrink-0" /> : <ChevronRight size={12} className="shrink-0" />}
                                 </button>
 
                                 <button
                                   onClick={() => handleSuiteAction(app, 'restart')}
                                   disabled={isSuiteBusy}
-                                  className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded transition-colors"
+                                  className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded transition-colors whitespace-nowrap shrink-0"
                                   title="Restart Entire Suite (All Containers)"
                                 >
                                   <RotateCw
@@ -1271,7 +1327,7 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
                                 <button
                                   onClick={() => handleAction(app, 'restart')}
                                   disabled={actionInProgress === app.id}
-                                  className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded transition-colors"
+                                  className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded transition-colors whitespace-nowrap shrink-0"
                                   title="Graceful Restart"
                                 >
                                   <RotateCw
@@ -1284,7 +1340,7 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
                                     handleAction(app, app.health_status === 'OFFLINE' ? 'start' : 'stop')
                                   }
                                   disabled={actionInProgress === app.id}
-                                  className="p-1.5 text-slate-400 hover:text-rose-400 hover:bg-slate-800 rounded transition-colors"
+                                  className="p-1.5 text-slate-400 hover:text-rose-400 hover:bg-slate-800 rounded transition-colors whitespace-nowrap shrink-0"
                                   title={app.health_status === 'OFFLINE' ? 'Start Service' : 'Stop Service'}
                                 >
                                   {app.health_status === 'OFFLINE' ? <Play size={13} /> : <Square size={13} />}
@@ -1297,7 +1353,7 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
                                 setSelectedAppForDelete(app);
                                 setDeleteModalOpen(true);
                               }}
-                              className="p-1.5 text-slate-400 hover:text-rose-400 hover:bg-slate-800 rounded transition-colors"
+                              className="p-1.5 text-slate-400 hover:text-rose-400 hover:bg-slate-800 rounded transition-colors whitespace-nowrap shrink-0"
                               title="Delete Application"
                             >
                               <Trash2 size={13} />
@@ -1305,7 +1361,7 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
 
                             <button
                               onClick={() => onSelectApp(app.id)}
-                              className="p-1.5 text-brand-400 hover:text-brand-300 hover:bg-slate-800 rounded transition-colors"
+                              className="p-1.5 text-brand-400 hover:text-brand-300 hover:bg-slate-800 rounded transition-colors whitespace-nowrap shrink-0"
                               title="View Full Dashboard"
                             >
                               <ChevronRight size={14} />
@@ -1325,7 +1381,7 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
                                   <div className="text-xs font-bold text-white flex items-center gap-2 flex-wrap">
                                     <Box size={14} className="text-brand-400 shrink-0" />
                                     <span className="truncate">{app.name} &mdash; Microservices & Sub-Containers</span>
-                                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 font-mono font-medium shrink-0">
+                                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 font-mono font-medium whitespace-nowrap shrink-0">
                                       {app.components?.length || 0} Components
                                     </span>
                                   </div>
@@ -1338,14 +1394,14 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
                                   <button
                                     onClick={() => handleSuiteAction(app, 'restart')}
                                     disabled={isSuiteBusy}
-                                    className="flex items-center gap-1.5 px-3 py-1.5 bg-brand-600 hover:bg-brand-500 text-white rounded-lg text-xs font-semibold transition-colors shadow-sm disabled:opacity-50 shrink-0 whitespace-nowrap"
+                                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-brand-600 hover:bg-brand-500 text-white rounded-lg text-xs font-semibold transition-colors shadow-sm disabled:opacity-50 shrink-0 whitespace-nowrap"
                                     title="Restart all containers in coordinated order (DB -> Backend -> Frontend)"
                                   >
                                     <RotateCw
                                       size={12}
-                                      className={isSuiteBusy ? 'animate-spin' : ''}
+                                      className={`shrink-0 ${isSuiteBusy ? 'animate-spin' : ''}`}
                                     />
-                                    <span>Restart Entire Suite</span>
+                                    <span className="whitespace-nowrap">Restart Entire Suite</span>
                                   </button>
                                 </div>
                               </div>
@@ -1373,32 +1429,32 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
                                             {comp.name}
                                           </div>
                                           <div className="flex items-center gap-2 mt-0.5 text-[11px] text-slate-400 flex-wrap">
-                                            <span className="font-mono">Port :{comp.port}</span>
+                                            <span className="font-mono whitespace-nowrap">Port :{comp.port}</span>
                                             <span>&bull;</span>
-                                            <span>{comp.process_manager || 'Docker'}</span>
+                                            <span className="whitespace-nowrap">{comp.process_manager || 'Docker'}</span>
                                           </div>
                                         </div>
                                         <StatusBadge status={comp.health_status} size="sm" />
                                       </div>
 
                                       {/* Individual Component Controls */}
-                                      <div className="flex flex-wrap items-center justify-between gap-1.5 pt-2 border-t border-slate-800/80">
-                                        <div className="flex flex-wrap items-center gap-1.5">
+                                      <div className="flex items-center justify-between gap-1.5 pt-2 border-t border-slate-800/80 whitespace-nowrap">
+                                        <div className="inline-flex items-center gap-1.5 whitespace-nowrap">
                                           <button
                                             onClick={() => handleComponentAction(app, comp.name, 'restart')}
                                             disabled={isBusy}
-                                            className="flex items-center gap-1 px-2 py-1 bg-slate-900 hover:bg-slate-800 border border-slate-700/80 text-slate-200 hover:text-white rounded text-[11px] font-medium transition-colors disabled:opacity-50 shrink-0"
+                                            className="inline-flex items-center gap-1 px-2 py-1 bg-slate-900 hover:bg-slate-800 border border-slate-700/80 text-slate-200 hover:text-white rounded text-[11px] font-medium transition-colors disabled:opacity-50 whitespace-nowrap shrink-0"
                                             title={`Restart ${comp.name} container only`}
                                           >
                                             <RotateCw
                                               size={11}
-                                              className={
+                                              className={`shrink-0 ${
                                                 componentActionInProgress[actionKey] === 'restart'
                                                   ? 'animate-spin text-brand-400'
                                                   : ''
-                                              }
+                                              }`}
                                             />
-                                            <span>Restart</span>
+                                            <span className="whitespace-nowrap">Restart</span>
                                           </button>
 
                                           <button
@@ -1412,7 +1468,7 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
                                               )
                                             }
                                             disabled={isBusy}
-                                            className={`flex items-center gap-1 px-2 py-1 border rounded text-[11px] font-medium transition-colors disabled:opacity-50 shrink-0 ${
+                                            className={`inline-flex items-center gap-1 px-2 py-1 border rounded text-[11px] font-medium transition-colors disabled:opacity-50 whitespace-nowrap shrink-0 ${
                                               comp.health_status === 'OFFLINE' || comp.health_status === 'STOPPED'
                                                 ? 'bg-emerald-950/60 hover:bg-emerald-900/60 border-emerald-800 text-emerald-300'
                                                 : 'bg-rose-950/40 hover:bg-rose-900/40 border-rose-800/80 text-rose-300'
@@ -1425,13 +1481,13 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
                                           >
                                             {comp.health_status === 'OFFLINE' || comp.health_status === 'STOPPED' ? (
                                               <>
-                                                <Play size={11} />
-                                                <span>Start</span>
+                                                <Play size={11} className="shrink-0" />
+                                                <span className="whitespace-nowrap">Start</span>
                                               </>
                                             ) : (
                                               <>
-                                                <Square size={11} />
-                                                <span>Stop</span>
+                                                <Square size={11} className="shrink-0" />
+                                                <span className="whitespace-nowrap">Stop</span>
                                               </>
                                             )}
                                           </button>
@@ -1439,11 +1495,11 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
 
                                         <button
                                           onClick={() => handleViewComponentLogs(app, comp.name)}
-                                          className="flex items-center gap-1 px-2 py-1 text-slate-400 hover:text-sky-300 hover:bg-slate-800 rounded transition-colors text-[11px] shrink-0"
+                                          className="inline-flex items-center gap-1 px-2 py-1 text-slate-400 hover:text-sky-300 hover:bg-slate-800 rounded transition-colors text-[11px] whitespace-nowrap shrink-0"
                                           title={`View logs for ${comp.name}`}
                                         >
-                                          <Terminal size={12} />
-                                          <span>Logs</span>
+                                          <Terminal size={12} className="shrink-0" />
+                                          <span className="whitespace-nowrap">Logs</span>
                                         </button>
                                       </div>
                                     </div>

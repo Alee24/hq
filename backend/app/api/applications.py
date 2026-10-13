@@ -3,6 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
 from typing import List, Optional, Dict, Any
 import re
+import os
 from datetime import datetime, timezone, timedelta
 from backend.app.core.database import get_db
 from backend.app.core.deps import get_current_user, require_roles
@@ -18,7 +19,8 @@ from backend.app.schemas.api_schemas import (
 from backend.app.services.audit import log_audit_event
 from backend.app.services.websocket_manager import ws_manager
 from backend.app.services.remote_executor import (
-    inspect_remote_container, execute_container_action, execute_remote_command
+    inspect_remote_container, execute_container_action, execute_remote_command,
+    build_allowed_names_for_app
 )
 
 router = APIRouter(prefix="/applications", tags=["Applications"])
@@ -142,6 +144,16 @@ def group_applications_list(enriched: List[ApplicationResponse]) -> List[Applica
                 suite_status = "ONLINE"
 
             lead_copy = lead.model_copy()
+            if not lead_copy.current_commit:
+                for it in items:
+                    if it.current_commit:
+                        lead_copy.current_commit = it.current_commit
+                        lead_copy.latest_repo_commit = it.latest_repo_commit
+                        lead_copy.git_branch = it.git_branch
+                        lead_copy.repo_url = it.repo_url
+                        if it.root_path and not it.root_path.startswith("/var/lib/docker"):
+                            lead_copy.root_path = it.root_path
+                        break
             lead_copy.name = pretty_suite_name(skey)
             lead_copy.group_name = skey
             lead_copy.is_suite = True
@@ -205,6 +217,48 @@ async def list_applications(
     stmt = stmt.order_by(Application.name.asc())
     result = await db.execute(stmt)
     apps = result.scalars().all()
+
+    # Self-heal any non-Docker domain apps whose root_path/current_commit was previously hijacked by substring matching
+    subdir_names = {
+        "public", "public_html", "html", "dist", "build", "web", "www",
+        "current", "release", "releases", "frontend", "backend", "client",
+        "server", "api", "app", "src", "out", "static", "httpdocs", "htdocs"
+    }
+    commit_groups: Dict[tuple, List[Application]] = {}
+    for app in apps:
+        if app.current_commit and app.server_id:
+            commit_groups.setdefault((app.server_id, app.current_commit), []).append(app)
+
+    healed_any = False
+    for (_, _), grp in commit_groups.items():
+        suite_keys = {extract_suite_key(a.name, a.app_type) or f"standalone-{a.id}" for a in grp}
+        for a in grp:
+            dom_c = (a.domain or "").lower().strip()
+            rp_c = (a.root_path or "").lower().strip().rstrip("/")
+            is_dock = bool(
+                (rp_c and rp_c.startswith("/var/lib/docker"))
+                or dom_c.endswith(".local")
+                or (a.process_manager and "docker" in a.process_manager.lower())
+                or (a.app_type and "docker" in a.app_type.lower())
+            )
+            if not is_dock and rp_c:
+                allowed = build_allowed_names_for_app(a.name, a.domain, a.service_name, is_docker=False)
+                rp_base = os.path.basename(rp_c)
+                rp_parent = os.path.basename(os.path.dirname(rp_c))
+                was_substring_hijacked = bool(
+                    len(suite_keys) > 1
+                    or (rp_base and len(rp_base) >= 3 and (rp_base in dom_c or rp_base in a.name.lower()))
+                )
+                if was_substring_hijacked and rp_base not in allowed and not (rp_base in subdir_names and rp_parent in allowed):
+                    a.current_commit = None
+                    a.latest_repo_commit = None
+                    a.git_branch = None
+                    a.repo_url = None
+                    if dom_c and not dom_c.endswith(".local"):
+                        a.root_path = f"/var/www/{dom_c}"
+                    healed_any = True
+    if healed_any:
+        await db.commit()
 
     # Enrich with server and license info
     enriched = []
@@ -313,6 +367,7 @@ async def create_application(
         app_type=payload.app_type,
         framework=payload.framework,
         repo_url=payload.repo_url,
+        root_path=payload.root_path,
         git_branch=payload.git_branch,
         current_version=payload.current_version,
         process_manager=payload.process_manager,
