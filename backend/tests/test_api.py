@@ -1698,3 +1698,100 @@ async def test_license_deletion_and_online_telemetry():
         get_res = await ac.get(f"/api/licenses/{lic_id}", headers=headers)
         assert get_res.status_code == 404
 
+
+@pytest.mark.asyncio
+async def test_domain_provision_and_terminal_endpoint():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        token = await get_admin_token(ac)
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # 1. Register a test VPS server
+        srv_res = await ac.post("/api/servers", json={
+            "public_ip": "185.192.97.84",
+            "name": "VPS-Provision-Node",
+            "ssh_password": "TestPassword!2026"
+        }, headers=headers)
+        assert srv_res.status_code == 200
+        srv_id = srv_res.json()["id"]
+
+        # 2. Test AI Domain Provisioning with mocked remote executor
+        with patch("backend.app.api.domains.provision_remote_domain_vhost") as mock_prov:
+            mock_prov.return_value = {
+                "success": True,
+                "vhost_path": "/etc/nginx/sites-available/newportal.kkdes.co.ke.conf",
+                "conf_content": "server { listen 80; server_name newportal.kkdes.co.ke; }",
+                "document_root": "/var/www/newportal.kkdes.co.ke",
+                "syntax_test": {"exit_code": 0, "output": "syntax is ok"},
+                "ssl_status": "VALID",
+                "ssl_issuer": "Let's Encrypt Authority X3",
+                "days_remaining": 89,
+                "verification_results": {
+                    "dns_match": True,
+                    "resolved_ip": "185.192.97.84",
+                    "http_status_code": 200,
+                    "tls_socket_open": True,
+                    "probe_message": "Domain HTTP probe returned 200"
+                },
+                "steps": [
+                    {"step": "DocumentRoot Preparation", "status": "SUCCESS", "details": "Created /var/www/newportal.kkdes.co.ke"},
+                    {"step": "VirtualHost Configuration", "status": "SUCCESS", "details": "Wrote /etc/nginx/sites-available/newportal.kkdes.co.ke.conf"},
+                    {"step": "Certbot SSL Automation", "status": "SUCCESS", "details": "Issued Let's Encrypt certificate"}
+                ],
+                "stdout": "VirtualHost created successfully",
+                "stderr": "",
+                "duration_ms": 1420
+            }
+
+            prov_res = await ac.post("/api/domains/provision", json={
+                "server_id": srv_id,
+                "domain_name": "newportal.kkdes.co.ke",
+                "web_server": "nginx",
+                "architecture_mode": "document_root",
+                "document_root": "/var/www/newportal.kkdes.co.ke",
+                "install_ssl": True,
+                "verify_installation": True,
+                "register_as_app": True,
+                "app_name": "NewPortal Suite"
+            }, headers=headers)
+
+            assert prov_res.status_code == 200
+            p_data = prov_res.json()
+            assert p_data["success"] is True
+            assert p_data["domain_name"] == "newportal.kkdes.co.ke"
+            assert p_data["web_server"] == "nginx"
+            assert p_data["ssl_status"] == "VALID"
+            assert p_data["days_remaining"] == 89
+            assert len(p_data["steps"]) == 3
+            assert p_data["verification_results"]["dns_match"] is True
+
+            domain_id = p_data["domain_id"]
+
+        # 3. Test Domain Server Terminal Execution
+        with patch("backend.app.api.domains.execute_domain_server_terminal") as mock_term:
+            mock_term.return_value = {
+                "success": True,
+                "command": "node -v && npm -v",
+                "stdout": "v20.18.0\n10.8.2",
+                "stderr": "",
+                "exit_code": 0,
+                "duration_ms": 65,
+                "working_dir": "/var/www/newportal.kkdes.co.ke"
+            }
+
+            term_res = await ac.post("/api/domains/server-terminal", json={
+                "server_id": srv_id,
+                "domain_id": domain_id,
+                "command": "node -v && npm -v",
+                "working_dir": "/var/www/newportal.kkdes.co.ke"
+            }, headers=headers)
+
+            assert term_res.status_code == 200
+            t_data = term_res.json()
+            assert t_data["success"] is True
+            assert t_data["command"] == "node -v && npm -v"
+            assert "v20.18.0" in t_data["stdout"]
+            assert t_data["exit_code"] == 0
+            assert t_data["server_id"] == srv_id
+
+

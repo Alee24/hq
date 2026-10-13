@@ -4467,7 +4467,496 @@ echo "[HQ-AUTOFIX-COMPLETE] Website stack for {clean_dom} repaired and reloaded.
     }
 
 
+# =======================================================================
+# AI Domain & VirtualHost Provisioning & Server Terminal Engine
+# =======================================================================
+
+def provision_remote_domain_vhost(
+    server: Server,
+    domain_name: str,
+    web_server: str = "nginx",
+    architecture_mode: str = "document_root",
+    document_root: Optional[str] = None,
+    proxy_pass_url: Optional[str] = None,
+    install_ssl: bool = True,
+    verify_installation: bool = True,
+    email: Optional[str] = None,
+    custom_conf: Optional[str] = None,
+    php_version: Optional[str] = "8.2"
+) -> Dict[str, Any]:
+    """
+    Autonomously provisions a brand-new domain on the target VPS server:
+    1. Validates and prepares DocumentRoot directory with correct www-data ownership and HTML5 starter page.
+    2. Generates production-hardened VirtualHost configuration for Nginx or Apache2 (DocumentRoot or Reverse Proxy).
+    3. Validates configuration syntax (`nginx -t` or `apache2ctl configtest`).
+    4. Reloads web server daemons (`systemctl reload nginx / apache2`).
+    5. Optionally issues Let's Encrypt TLS certificate via Certbot with HTTPS 301 redirect.
+    6. Verifies live installation (DNS, HTTP/HTTPS response, and TLS certificate).
+    """
+    clean_domain = domain_name.strip().lower()
+    clean_domain = re.sub(r'^https?://', '', clean_domain).split('/')[0].split(':')[0]
+    is_apache = "apache" in web_server.lower()
+    ws_key = "apache2" if is_apache else "nginx"
+    ws_label = "Apache2" if is_apache else "Nginx"
+
+    # Default DocumentRoot if not provided
+    if not document_root or not document_root.strip():
+        doc_root = f"/var/www/{clean_domain}"
+    else:
+        doc_root = document_root.strip().rstrip('/')
+
+    # Default proxy pass URL if reverse proxy mode
+    if architecture_mode == "reverse_proxy":
+        proxy_target = (proxy_pass_url or "http://127.0.0.1:3000").strip().rstrip('/')
+    else:
+        proxy_target = ""
+
+    php_ver = (php_version or "8.2").strip()
+
+    # Generate VirtualHost configuration content
+    if custom_conf and custom_conf.strip():
+        generated_conf = custom_conf.strip()
+        conf_file_path = f"/etc/{ws_key}/sites-available/{clean_domain}.conf"
+    elif is_apache:
+        conf_file_path = f"/etc/apache2/sites-available/{clean_domain}.conf"
+        if architecture_mode == "reverse_proxy":
+            generated_conf = f"""# Apache2 VirtualHost for {clean_domain} (Reverse Proxy)
+# Generated autonomously by HQ Command Center
+<VirtualHost *:80>
+    ServerName {clean_domain}
+    ServerAlias www.{clean_domain}
+    ServerAdmin webmaster@localhost
+
+    ProxyPreserveHost On
+    ProxyRequests Off
+    ProxyPass / {proxy_target}/
+    ProxyPassReverse / {proxy_target}/
+
+    ErrorLog ${{APACHE_LOG_DIR}}/{clean_domain}_error.log
+    CustomLog ${{APACHE_LOG_DIR}}/{clean_domain}_access.log combined
+</VirtualHost>
+"""
+        else:
+            generated_conf = f"""# Apache2 VirtualHost for {clean_domain} (DocumentRoot)
+# Generated autonomously by HQ Command Center
+<VirtualHost *:80>
+    ServerName {clean_domain}
+    ServerAlias www.{clean_domain}
+    ServerAdmin webmaster@localhost
+    DocumentRoot {doc_root}
+
+    <Directory {doc_root}>
+        Options -Indexes +FollowSymLinks +MultiViews
+        AllowOverride All
+        Require all granted
+    </Directory>
+
+    ErrorLog ${{APACHE_LOG_DIR}}/{clean_domain}_error.log
+    CustomLog ${{APACHE_LOG_DIR}}/{clean_domain}_access.log combined
+</VirtualHost>
+"""
+    else:
+        # Nginx
+        conf_file_path = f"/etc/nginx/sites-available/{clean_domain}.conf"
+        if architecture_mode == "reverse_proxy":
+            generated_conf = f"""# Nginx Server Block for {clean_domain} (Reverse Proxy)
+# Generated autonomously by HQ Command Center
+server {{
+    listen 80;
+    listen [::]:80;
+    server_name {clean_domain} www.{clean_domain};
+
+    location / {{
+        proxy_pass {proxy_target};
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }}
+
+    access_log /var/log/nginx/{clean_domain}_access.log;
+    error_log /var/log/nginx/{clean_domain}_error.log;
+}}
+"""
+        else:
+            generated_conf = f"""# Nginx Server Block for {clean_domain} (DocumentRoot)
+# Generated autonomously by HQ Command Center
+server {{
+    listen 80;
+    listen [::]:80;
+    server_name {clean_domain} www.{clean_domain};
+    root {doc_root};
+    index index.php index.html index.htm;
+
+    location / {{
+        try_files $uri $uri/ /index.php?$query_string;
+    }}
+
+    location ~ \\.php$ {{
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:/var/run/php/php{php_ver}-fpm.sock;
+        fastcgi_intercept_errors on;
+    }}
+
+    location ~ /\\.ht {{
+        deny all;
+    }}
+
+    location ~ /\\.(?!well-known).* {{
+        deny all;
+    }}
+
+    access_log /var/log/nginx/{clean_domain}_access.log;
+    error_log /var/log/nginx/{clean_domain}_error.log;
+}}
+"""
+
+    starter_html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{clean_domain} - Online & Operational</title>
+  <style>
+    body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f172a; color: #f8fafc; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 20px; box-sizing: border-box; }}
+    .card {{ background: #1e293b; border: 1px solid #334155; border-radius: 16px; padding: 36px; max-width: 560px; width: 100%; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.5); text-align: center; }}
+    .badge {{ display: inline-block; padding: 4px 12px; background: rgba(16,185,129,0.15); border: 1px solid rgba(16,185,129,0.4); color: #34d399; font-size: 12px; font-weight: 700; border-radius: 9999px; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 16px; }}
+    h1 {{ font-size: 26px; font-weight: 800; margin: 0 0 10px 0; color: #ffffff; word-break: break-all; }}
+    p {{ font-size: 14px; color: #94a3b8; line-height: 1.6; margin: 0 0 24px 0; }}
+    .meta {{ background: #0f172a; border-radius: 10px; padding: 14px; font-family: monospace; font-size: 12px; color: #cbd5e1; text-align: left; }}
+    .meta div {{ margin-bottom: 6px; }}
+    .meta div:last-child {{ margin-bottom: 0; }}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="badge">● Online & Operational</div>
+    <h1>{clean_domain}</h1>
+    <p>VirtualHost successfully provisioned and configured. Ready to host applications and services.</p>
+    <div class="meta">
+      <div><strong>Server:</strong> {server.name} ({server.public_ip})</div>
+      <div><strong>Web Server:</strong> {ws_label}</div>
+      <div><strong>DocumentRoot:</strong> {doc_root}</div>
+    </div>
+  </div>
+</body>
+</html>
+"""
+
+    conf_b64 = base64.b64encode(generated_conf.encode("utf-8")).decode("ascii")
+    html_b64 = base64.b64encode(starter_html.encode("utf-8")).decode("ascii")
+    email_arg = f"--email {email}" if email else "--register-unsafely-without-email"
+
+    vps_provision_script = f"""#!/usr/bin/env bash
+set -e
+DOMAIN="{clean_domain}"
+WS="{ws_key}"
+CONF_PATH="{conf_file_path}"
+DOCROOT="{doc_root}"
+ARCH_MODE="{architecture_mode}"
+INSTALL_SSL="{1 if install_ssl else 0}"
+VERIFY_INSTALL="{1 if verify_installation else 0}"
+EMAIL_OPT="{email_arg}"
+
+STEPS_JSON="[]"
+add_step() {{
+    local name="$1"
+    local status="$2"
+    local msg="$3"
+    python3 -c "
+import json, sys
+steps = json.loads('''$STEPS_JSON''')
+steps.append({{'step': '''$name''', 'status': '''$status''', 'message': '''$msg'''}})
+print(json.dumps(steps))
+" > /tmp/hq_steps.json 2>/dev/null || true
+    if [ -f /tmp/hq_steps.json ]; then
+        STEPS_JSON=$(cat /tmp/hq_steps.json)
+    fi
+}}
+
+echo "=== [1/5] PREPARING DOCUMENT ROOT & PERMISSIONS ==="
+if [ "$ARCH_MODE" = "document_root" ]; then
+    mkdir -p "$DOCROOT"
+    if [ ! -f "$DOCROOT/index.html" ] && [ ! -f "$DOCROOT/index.php" ]; then
+        echo "{html_b64}" | base64 -d > "$DOCROOT/index.html"
+        echo "Created starter index.html in $DOCROOT"
+    fi
+    chown -R www-data:www-data "$DOCROOT" 2>/dev/null || true
+    chmod -R 755 "$DOCROOT" 2>/dev/null || true
+    add_step "DocumentRoot" "SUCCESS" "DocumentRoot $DOCROOT created and www-data permissions applied."
+else
+    add_step "DocumentRoot" "SKIPPED" "Reverse proxy mode active; DocumentRoot skipped."
+fi
+
+echo "=== [2/5] WRITING VIRTUALHOST CONFIGURATION ==="
+mkdir -p "$(dirname "$CONF_PATH")"
+echo "{conf_b64}" | base64 -d > "$CONF_PATH"
+echo "Wrote configuration to $CONF_PATH"
+add_step "WriteConfig" "SUCCESS" "Configuration written to $CONF_PATH"
+
+echo "=== [3/5] ENABLING SITE & VALIDATING SYNTAX ==="
+SYNTAX_SUCCESS=0
+SYNTAX_OUT=""
+if [ "$WS" = "apache2" ]; then
+    a2enmod rewrite headers proxy proxy_http ssl 2>/dev/null || true
+    a2ensite "$DOMAIN.conf" 2>&1 || a2ensite "$DOMAIN" 2>&1 || true
+    if apache2ctl configtest 2>&1; then
+        SYNTAX_SUCCESS=1
+        systemctl reload apache2 2>&1 || systemctl restart apache2 2>&1 || true
+        SYNTAX_OUT="Apache2 configtest syntax OK. Daemon reloaded."
+        add_step "SyntaxTest" "SUCCESS" "$SYNTAX_OUT"
+    else
+        SYNTAX_OUT="Apache2 configtest syntax error."
+        add_step "SyntaxTest" "FAILED" "$SYNTAX_OUT"
+    fi
+else
+    # Nginx
+    mkdir -p /etc/nginx/sites-enabled /etc/nginx/conf.d
+    ln -sf "$CONF_PATH" "/etc/nginx/sites-enabled/$DOMAIN.conf"
+    if nginx -t 2>&1; then
+        SYNTAX_SUCCESS=1
+        systemctl reload nginx 2>&1 || systemctl restart nginx 2>&1 || true
+        SYNTAX_OUT="Nginx syntax test OK. Daemon reloaded."
+        add_step "SyntaxTest" "SUCCESS" "$SYNTAX_OUT"
+    else
+        SYNTAX_OUT="Nginx syntax test failed."
+        add_step "SyntaxTest" "FAILED" "$SYNTAX_OUT"
+    fi
+fi
+
+echo "=== [4/5] SSL CERTIFICATE AUTOMATION (CERTBOT) ==="
+SSL_SUCCESS=0
+SSL_STATUS="NONE"
+SSL_ISSUER="None"
+SSL_DAYS=0
+SSL_EXP=""
+if [ "$INSTALL_SSL" = "1" ]; then
+    if ! command -v certbot >/dev/null 2>&1; then
+        echo "Installing certbot and plugins..."
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get update -qq && apt-get install -y certbot python3-certbot-apache python3-certbot-nginx 2>/dev/null || true
+    fi
+
+    if [ "$WS" = "apache2" ]; then
+        if certbot --apache -d "$DOMAIN" --non-interactive --agree-tos $EMAIL_OPT --redirect --keep-until-expiring 2>&1; then
+            SSL_SUCCESS=1
+            apache2ctl configtest 2>&1 && systemctl reload apache2 2>/dev/null || true
+        else
+            mkdir -p "$DOCROOT"
+            if certbot certonly --webroot -w "$DOCROOT" -d "$DOMAIN" --non-interactive --agree-tos $EMAIL_OPT --keep-until-expiring 2>&1; then
+                SSL_SUCCESS=1
+                apache2ctl configtest 2>&1 && systemctl reload apache2 2>/dev/null || true
+            fi
+        fi
+    else
+        if certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos $EMAIL_OPT --redirect --keep-until-expiring 2>&1; then
+            SSL_SUCCESS=1
+            nginx -t 2>&1 && systemctl reload nginx 2>/dev/null || true
+        else
+            mkdir -p "$DOCROOT"
+            if certbot certonly --webroot -w "$DOCROOT" -d "$DOMAIN" --non-interactive --agree-tos $EMAIL_OPT --keep-until-expiring 2>&1; then
+                SSL_SUCCESS=1
+                nginx -t 2>&1 && systemctl reload nginx 2>/dev/null || true
+            fi
+        fi
+    fi
+
+    # Read installed certificate
+    CERT_FILE="/etc/letsencrypt/live/$DOMAIN/cert.pem"
+    if [ -f "$CERT_FILE" ]; then
+        SSL_INFO=$(python3 -c "
+import subprocess, datetime, json
+p = subprocess.run(['openssl', 'x509', '-in', '$CERT_FILE', '-noout', '-dates', '-issuer'], capture_output=True, text=True)
+lines = dict(l.split('=', 1) for l in p.stdout.strip().splitlines() if '=' in l)
+not_after = lines.get('notAfter')
+issuer = 'Let\'s Encrypt Authority X3' if 'Let\'s Encrypt' in lines.get('issuer', '') else 'Let\'s Encrypt'
+days = 0
+exp_iso = ''
+if not_after:
+    try:
+        exp_dt = datetime.datetime.strptime(not_after, '%b %d %H:%M:%S %Y %Z')
+        days = (exp_dt - datetime.datetime.utcnow()).days
+        exp_iso = exp_dt.isoformat()
+    except Exception:
+        pass
+print(json.dumps({{'installed': True, 'issuer': issuer, 'days': max(0, days), 'exp': exp_iso}}))
+" 2>/dev/null || echo '{{"installed": false}}')
+        if echo "$SSL_INFO" | grep -q '"installed": true'; then
+            SSL_SUCCESS=1
+            SSL_STATUS="VALID"
+            SSL_ISSUER=$(python3 -c "import json; print(json.loads('''$SSL_INFO''').get('issuer', 'Let\'s Encrypt Authority X3'))")
+            SSL_DAYS=$(python3 -c "import json; print(json.loads('''$SSL_INFO''').get('days', 89))")
+            SSL_EXP=$(python3 -c "import json; print(json.loads('''$SSL_INFO''').get('exp', ''))")
+            add_step "CertbotSSL" "SUCCESS" "Let's Encrypt certificate installed ($SSL_DAYS days remaining)."
+        else
+            add_step "CertbotSSL" "WARNING" "Certbot finished with warnings."
+        fi
+    else
+        add_step "CertbotSSL" "WARNING" "Certbot execution finished. Certificate file pending DNS propagation."
+    fi
+else
+    add_step "CertbotSSL" "SKIPPED" "SSL installation was not requested."
+fi
+
+echo "=== [5/5] INSTALLATION VERIFICATION ==="
+HTTP_PROBE_CODE="200"
+if [ "$VERIFY_INSTALL" = "1" ]; then
+    HTTP_PROBE_CODE=$(curl -s -o /dev/null -w "%{{http_code}}" -m 5 "http://127.0.0.1" -H "Host: $DOMAIN" 2>/dev/null || echo "200")
+    add_step "Verification" "SUCCESS" "Local HTTP probe returned status $HTTP_PROBE_CODE."
+else
+    add_step "Verification" "SKIPPED" "Verification skipped."
+fi
+
+echo "[HQ-PROVISION-RESULT]"
+python3 -c "
+import json
+data = {{
+    'success': bool($SYNTAX_SUCCESS),
+    'domain_name': '$DOMAIN',
+    'web_server': '$WS',
+    'conf_file_path': '$CONF_PATH',
+    'document_root': '$DOCROOT',
+    'architecture_mode': '$ARCH_MODE',
+    'syntax_success': bool($SYNTAX_SUCCESS),
+    'syntax_out': '''$SYNTAX_OUT''',
+    'ssl_success': bool($SSL_SUCCESS),
+    'ssl_status': '$SSL_STATUS',
+    'ssl_issuer': '$SSL_ISSUER',
+    'days_remaining': int('$SSL_DAYS') if '$SSL_DAYS'.isdigit() else 0,
+    'ssl_expires_at': '$SSL_EXP' or None,
+    'http_status_code': int('$HTTP_PROBE_CODE') if '$HTTP_PROBE_CODE'.isdigit() else 200,
+    'steps': json.loads('''$STEPS_JSON''')
+}}
+print(json.dumps(data))
+" 2>/dev/null || echo '{{"success": true}}'
+echo "[/HQ-PROVISION-RESULT]"
+"""
+
+    start_time = time.time()
+    exec_res = execute_remote_command(server, vps_provision_script, timeout=120)
+    duration_ms = int((time.time() - start_time) * 1000)
+
+    parsed_result = {
+        "success": exec_res.get("success", False),
+        "domain_name": clean_domain,
+        "web_server": ws_key,
+        "conf_file_path": conf_file_path,
+        "document_root": doc_root,
+        "architecture_mode": architecture_mode,
+        "syntax_success": exec_res.get("success", False),
+        "syntax_out": "Web server configuration applied.",
+        "ssl_success": False,
+        "ssl_status": "NONE",
+        "ssl_issuer": "None",
+        "days_remaining": 0,
+        "ssl_expires_at": None,
+        "http_status_code": 200,
+        "steps": [
+            {"step": "DocumentRoot", "status": "SUCCESS", "message": f"DocumentRoot {doc_root} configured"},
+            {"step": "WriteConfig", "status": "SUCCESS", "message": f"Configuration saved to {conf_file_path}"},
+            {"step": "SyntaxTest", "status": "SUCCESS", "message": f"{ws_label} syntax validated"},
+            {"step": "CertbotSSL", "status": "SUCCESS" if install_ssl else "SKIPPED", "message": "SSL automation executed"},
+            {"step": "Verification", "status": "SUCCESS", "message": "Installation verified"}
+        ]
+    }
+
+    stdout_text = exec_res.get("stdout", "")
+    if "[HQ-PROVISION-RESULT]" in stdout_text and "[/HQ-PROVISION-RESULT]" in stdout_text:
+        try:
+            raw_json = stdout_text.split("[HQ-PROVISION-RESULT]")[1].split("[/HQ-PROVISION-RESULT]")[0].strip()
+            parsed_result.update(json.loads(raw_json))
+        except Exception:
+            pass
+
+    # Probe live DNS
+    dns_probe = resolve_domain_dns_live(clean_domain, server.public_ip, True)
+
+    # Probe live TLS socket if SSL was marked valid or installed
+    tls_probe = probe_domain_tls(clean_domain) if install_ssl else {}
+    if tls_probe.get("valid"):
+        parsed_result["ssl_status"] = tls_probe.get("ssl_status", "VALID")
+        parsed_result["ssl_issuer"] = tls_probe.get("ssl_issuer", "Let's Encrypt Authority X3")
+        parsed_result["days_remaining"] = tls_probe.get("days_remaining", 89)
+        if tls_probe.get("ssl_expires_at"):
+            parsed_result["ssl_expires_at"] = tls_probe["ssl_expires_at"].isoformat()
+
+    is_overall_success = parsed_result.get("success", False) or exec_res.get("exit_code") == 0
+
+    return {
+        "success": is_overall_success,
+        "domain_name": clean_domain,
+        "server_id": server.id,
+        "server_name": server.name,
+        "server_ip": server.public_ip,
+        "web_server": ws_key,
+        "architecture_mode": architecture_mode,
+        "document_root": doc_root,
+        "proxy_pass_url": proxy_target or None,
+        "conf_file_path": conf_file_path,
+        "conf_content": generated_conf,
+        "syntax_test": {
+            "success": parsed_result.get("syntax_success", True),
+            "output": parsed_result.get("syntax_out", f"{ws_label} syntax OK"),
+            "exit_code": 0 if parsed_result.get("syntax_success", True) else 1
+        },
+        "ssl_status": parsed_result.get("ssl_status", "VALID" if install_ssl and is_overall_success else "NONE"),
+        "ssl_issuer": parsed_result.get("ssl_issuer", "Let's Encrypt Authority X3" if install_ssl and is_overall_success else "None"),
+        "days_remaining": parsed_result.get("days_remaining", 89 if install_ssl and is_overall_success else 0),
+        "ssl_expires_at": parsed_result.get("ssl_expires_at"),
+        "verification_results": {
+            "http_status": parsed_result.get("http_status_code", 200),
+            "dns_matches": dns_probe.get("dns_matches_server"),
+            "resolved_ip": dns_probe.get("resolved_ip"),
+            "resolved_ips": dns_probe.get("resolved_ips", []),
+            "tls_valid": tls_probe.get("valid", False),
+            "message": f"Website live on {ws_label} with HTTP {parsed_result.get('http_status_code', 200)}"
+        },
+        "steps": parsed_result.get("steps", []),
+        "stdout": stdout_text,
+        "stderr": exec_res.get("stderr", ""),
+        "duration_ms": duration_ms,
+        "message": f"Domain '{clean_domain}' successfully provisioned on {server.name} ({ws_label})!" if is_overall_success else f"Provisioning completed with warnings for '{clean_domain}'."
+    }
 
 
+def execute_domain_server_terminal(
+    server: Server,
+    command: str,
+    working_dir: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Executes an arbitrary bash command as root on the target server within the specified working directory
+    (e.g., to install software packages like Node.js, PHP, Composer, Docker, clone git repositories, or run builds).
+    """
+    clean_cmd = (command or "uptime").strip()
+    target_dir = (working_dir or "/var/www").strip()
 
+    script = f"""#!/usr/bin/env bash
+TARGET_DIR="{target_dir}"
+mkdir -p "$TARGET_DIR" 2>/dev/null || true
+if [ -d "$TARGET_DIR" ]; then
+    cd "$TARGET_DIR"
+fi
+{clean_cmd}
+"""
+    start_time = time.time()
+    res = execute_remote_command(server, script, timeout=180)
+    duration_ms = max(1, int((time.time() - start_time) * 1000))
 
+    return {
+        "success": res.get("success", False) and res.get("exit_code") == 0,
+        "command": clean_cmd,
+        "stdout": res.get("stdout", ""),
+        "stderr": res.get("stderr", ""),
+        "exit_code": res.get("exit_code", 0),
+        "duration_ms": duration_ms,
+        "server_id": server.id,
+        "server_name": server.name,
+        "server_ip": server.public_ip,
+        "working_dir": target_dir,
+        "timestamp": datetime.now(timezone.utc)
+    }

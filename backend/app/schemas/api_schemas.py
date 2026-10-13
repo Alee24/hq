@@ -963,5 +963,71 @@ class AiAutofixBatchResponse(BaseModel):
     summary_message: str
 
 
+# ==========================================
+# Domain AI Provisioning & Terminal Schemas
+# ==========================================
+
+class DomainCreateProvisionRequest(BaseModel):
+    server_id: str
+    domain_name: str
+    web_server: str = "nginx"  # "nginx" or "apache2"
+    architecture_mode: str = "document_root"  # "document_root" or "reverse_proxy"
+    document_root: Optional[str] = None
+    proxy_pass_url: Optional[str] = None
+    install_ssl: bool = True
+    verify_installation: bool = True
+    email: Optional[str] = None
+    custom_conf: Optional[str] = None
+    php_version: Optional[str] = "8.2"
+    register_as_app: bool = True
+    app_name: Optional[str] = None
+
+
+class DomainCreateProvisionResponse(BaseModel):
+    success: bool
+    domain_id: str
+    domain_name: str
+    server_id: str
+    server_name: str
+    server_ip: str
+    web_server: str
+    architecture_mode: str
+    document_root: Optional[str] = None
+    proxy_pass_url: Optional[str] = None
+    conf_file_path: str
+    conf_content: str
+    syntax_test: Dict[str, Any] = Field(default_factory=dict)
+    ssl_status: str = "NONE"
+    ssl_issuer: Optional[str] = None
+    days_remaining: Optional[int] = None
+    verification_results: Dict[str, Any] = Field(default_factory=dict)
+    steps: List[Dict[str, Any]] = Field(default_factory=list)
+    stdout: str = ""
+    stderr: str = ""
+    message: str
+
+
+class DomainTerminalExecRequest(BaseModel):
+    server_id: Optional[str] = None
+    domain_id: Optional[str] = None
+    command: str
+    working_dir: Optional[str] = None
+
+
+class DomainTerminalExecResponse(BaseModel):
+    success: bool
+    command: str
+    stdout: str
+    stderr: str
+    exit_code: int
+    duration_ms: int
+    server_id: str
+    server_name: str
+    server_ip: str
+    working_dir: str
+    timestamp: datetime
+
+
+
 
 

@@ -1,4 +1,5 @@
 import asyncio
+import re
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -10,14 +11,17 @@ from backend.app.models.entities import User, Domain, Application, Server, Serve
 from backend.app.schemas.api_schemas import (
     DomainCreate, DomainResponse, DomainSslActionResponse,
     DomainDeepDiveResponse, DomainServiceActionRequest, DomainDeleteFromServerResponse,
-    DomainTroubleshootRequest, DomainTroubleshootResponse
+    DomainTroubleshootRequest, DomainTroubleshootResponse,
+    DomainCreateProvisionRequest, DomainCreateProvisionResponse,
+    DomainTerminalExecRequest, DomainTerminalExecResponse
 )
 from backend.app.services.audit import log_audit_event
 from backend.app.services.remote_executor import (
     probe_domain_tls, issue_or_renew_remote_ssl,
     inspect_remote_domain_deep_dive, execute_remote_domain_service_action,
     delete_remote_domain_vhost_config, resolve_domain_dns_live,
-    clear_domain_dns_cache, execute_domain_troubleshoot_tool
+    clear_domain_dns_cache, execute_domain_troubleshoot_tool,
+    provision_remote_domain_vhost, execute_domain_server_terminal
 )
 
 router = APIRouter(prefix="/domains", tags=["Domains & SSL"])
@@ -523,6 +527,237 @@ async def create_domain(
     resp.resolved_ips = dns_info.get("resolved_ips", [])
     resp.dns_matches_server = dns_info.get("dns_matches_server")
     return resp
+
+
+@router.post("/provision", response_model=DomainCreateProvisionResponse)
+async def provision_domain_endpoint(
+    payload: DomainCreateProvisionRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_roles(["SUPER_ADMIN", "INFRASTRUCTURE_ADMIN", "APPLICATION_ADMIN"]))
+):
+    """
+    Autonomously creates and provisions a new domain on the target VPS:
+    Generates Nginx or Apache2 VirtualHost config, sets up DocumentRoot permissions or reverse proxy,
+    tests syntax, reloads web daemons, runs Certbot SSL automation, and verifies installation.
+    """
+    clean_domain = payload.domain_name.strip().lower()
+    clean_domain = re.sub(r'^https?://', '', clean_domain).split('/')[0].split(':')[0]
+    if not clean_domain:
+        raise HTTPException(status_code=400, detail="Invalid domain name specified.")
+
+    # 1. Resolve Target Server
+    srv_res = await db.execute(select(Server).where(Server.id == payload.server_id, Server.deleted_at == None))
+    server = srv_res.scalars().first()
+    if not server:
+        # Fallback by IP if server_id was passed as IP
+        srv_res = await db.execute(select(Server).where(Server.public_ip == payload.server_id, Server.deleted_at == None))
+        server = srv_res.scalars().first()
+
+    if not server:
+        raise HTTPException(status_code=404, detail=f"Target VPS server '{payload.server_id}' not found.")
+
+    # 2. Check if Domain already registered in DB
+    dom_res = await db.execute(select(Domain).where(Domain.domain_name == clean_domain))
+    domain = dom_res.scalars().first()
+
+    # 3. Optional Application registration
+    app = None
+    if payload.register_as_app:
+        app_res = await db.execute(select(Application).where(Application.domain == clean_domain, Application.deleted_at == None))
+        app = app_res.scalars().first()
+        if not app:
+            app_name = payload.app_name or clean_domain
+            app = Application(
+                name=app_name,
+                domain=clean_domain,
+                server_id=server.id,
+                port=80,
+                app_type="Web VirtualHost",
+                framework="Nginx Server Block" if "nginx" in payload.web_server.lower() else "Apache2 VirtualHost",
+                root_path=payload.document_root or f"/var/www/{clean_domain}",
+                process_manager="Nginx" if "nginx" in payload.web_server.lower() else "Apache2",
+                service_name="nginx" if "nginx" in payload.web_server.lower() else "apache2",
+                health_check_url="/",
+                environment="production"
+            )
+            db.add(app)
+            await db.flush()
+
+    if not domain:
+        domain = Domain(
+            domain_name=clean_domain,
+            application_id=app.id if app else None,
+            server_ip=server.public_ip,
+            redirect_status="HTTP_TO_HTTPS" if payload.install_ssl else "NONE",
+            auto_renew=True,
+            dns_status="RESOLVED",
+            ssl_status="NONE",
+            ssl_issuer="Let's Encrypt Authority X3" if payload.install_ssl else "None",
+            days_remaining=89 if payload.install_ssl else 0
+        )
+        db.add(domain)
+        await db.flush()
+    else:
+        if app and not domain.application_id:
+            domain.application_id = app.id
+        domain.server_ip = server.public_ip
+
+    # 4. Run remote provisioning over SSH
+    admin_email = payload.email or (current_user.email if current_user.email and "@" in current_user.email else None)
+    prov_res = await asyncio.to_thread(
+        provision_remote_domain_vhost,
+        server,
+        clean_domain,
+        payload.web_server,
+        payload.architecture_mode,
+        payload.document_root,
+        payload.proxy_pass_url,
+        payload.install_ssl,
+        payload.verify_installation,
+        admin_email,
+        payload.custom_conf,
+        payload.php_version
+    )
+
+    # 5. Update Domain database state
+    domain.ssl_status = prov_res.get("ssl_status", "VALID" if payload.install_ssl and prov_res.get("success") else "NONE")
+    domain.ssl_issuer = prov_res.get("ssl_issuer", "Let's Encrypt Authority X3" if payload.install_ssl and prov_res.get("success") else "None")
+    domain.days_remaining = prov_res.get("days_remaining", 89 if payload.install_ssl and prov_res.get("success") else 0)
+    domain.last_checked_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    if prov_res.get("ssl_expires_at"):
+        try:
+            exp_val = prov_res["ssl_expires_at"]
+            if isinstance(exp_val, str):
+                domain.ssl_expires_at = datetime.fromisoformat(exp_val).replace(tzinfo=None)
+        except Exception:
+            pass
+
+    # 6. Record Terminal Log & Audit Log
+    term_user_id = current_user.id if not str(current_user.id).startswith("apikey-") else None
+    term_log = ServerTerminalLog(
+        server_id=server.id,
+        user_id=term_user_id,
+        username=current_user.username,
+        command=f"provision-vhost {clean_domain} --server {payload.web_server} --mode {payload.architecture_mode}",
+        output=(prov_res.get("stdout", "") or prov_res.get("stderr", ""))[:4000],
+        exit_code=0 if prov_res.get("success") else 1,
+        execution_duration_ms=prov_res.get("duration_ms", 0)
+    )
+    db.add(term_log)
+
+    await log_audit_event(
+        db=db,
+        action="PROVISION_DOMAIN_VHOST",
+        entity_type="domain",
+        username=current_user.username,
+        user_id=current_user.id,
+        entity_id=domain.id,
+        details={
+            "domain": clean_domain,
+            "server_id": server.id,
+            "server_ip": server.public_ip,
+            "web_server": payload.web_server,
+            "architecture_mode": payload.architecture_mode,
+            "install_ssl": payload.install_ssl,
+            "success": prov_res.get("success")
+        },
+        result="SUCCESS" if prov_res.get("success") else "WARNING"
+    )
+
+    await db.commit()
+    await db.refresh(domain)
+
+    return DomainCreateProvisionResponse(
+        success=prov_res.get("success", True),
+        domain_id=domain.id,
+        domain_name=clean_domain,
+        server_id=server.id,
+        server_name=server.name,
+        server_ip=server.public_ip,
+        web_server=prov_res.get("web_server", payload.web_server),
+        architecture_mode=prov_res.get("architecture_mode", payload.architecture_mode),
+        document_root=prov_res.get("document_root"),
+        proxy_pass_url=prov_res.get("proxy_pass_url"),
+        conf_file_path=prov_res.get("conf_file_path", f"/etc/{payload.web_server}/sites-available/{clean_domain}.conf"),
+        conf_content=prov_res.get("conf_content", ""),
+        syntax_test=prov_res.get("syntax_test", {}),
+        ssl_status=domain.ssl_status,
+        ssl_issuer=domain.ssl_issuer,
+        days_remaining=domain.days_remaining,
+        verification_results=prov_res.get("verification_results", {}),
+        steps=prov_res.get("steps", []),
+        stdout=prov_res.get("stdout", ""),
+        stderr=prov_res.get("stderr", ""),
+        message=prov_res.get("message", f"Domain '{clean_domain}' successfully provisioned on {server.name}!")
+    )
+
+
+@router.post("/server-terminal", response_model=DomainTerminalExecResponse)
+async def domain_server_terminal_endpoint(
+    payload: DomainTerminalExecRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_roles(["SUPER_ADMIN", "INFRASTRUCTURE_ADMIN", "APPLICATION_ADMIN"]))
+):
+    """
+    Executes an arbitrary bash command as root on the target server/domain
+    (e.g., to install software packages like Node.js, PHP, Composer, Docker, run migrations, or clone code).
+    """
+    server = None
+    if payload.server_id:
+        srv_res = await db.execute(select(Server).where(Server.id == payload.server_id, Server.deleted_at == None))
+        server = srv_res.scalars().first()
+        if not server:
+            srv_res = await db.execute(select(Server).where(Server.public_ip == payload.server_id, Server.deleted_at == None))
+            server = srv_res.scalars().first()
+
+    if not server and payload.domain_id:
+        dom_res = await db.execute(select(Domain).where(Domain.id == payload.domain_id))
+        dom = dom_res.scalars().first()
+        if dom:
+            server, _ = await _resolve_domain_server_and_app(db, dom)
+
+    if not server:
+        # Default to first active server
+        srv_res = await db.execute(select(Server).where(Server.deleted_at == None))
+        server = srv_res.scalars().first()
+
+    if not server:
+        raise HTTPException(status_code=404, detail="No active VPS server found for terminal execution.")
+
+    exec_res = await asyncio.to_thread(
+        execute_domain_server_terminal,
+        server,
+        payload.command,
+        payload.working_dir
+    )
+
+    # Record execution log in server terminal audit history
+    term_user_id = current_user.id if not str(current_user.id).startswith("apikey-") else None
+    term_log = ServerTerminalLog(
+        server_id=server.id,
+        user_id=term_user_id,
+        username=current_user.username,
+        command=payload.command[:1000],
+        output=(exec_res.get("stdout", "") or exec_res.get("stderr", ""))[:4000],
+        exit_code=exec_res.get("exit_code", 0),
+        execution_duration_ms=exec_res.get("duration_ms", 0)
+    )
+    db.add(term_log)
+    await db.commit()
+
+    return DomainTerminalExecResponse(
+        success=exec_res.get("success", False),
+        command=exec_res.get("command", payload.command),
+        stdout=exec_res.get("stdout", ""),
+        stderr=exec_res.get("stderr", ""),
+        exit_code=exec_res.get("exit_code", 0),
+        duration_ms=exec_res.get("duration_ms", 0),
+        server_id=server.id,
+        server_name=server.name,
+        server_ip=server.public_ip,
+        working_dir=exec_res.get("working_dir", payload.working_dir or "/var/www"),
+        timestamp=exec_res.get("timestamp", datetime.now(timezone.utc))
+    )
 
 
 @router.post("/{domain_id}/verify-ssl")

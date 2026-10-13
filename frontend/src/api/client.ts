@@ -189,6 +189,82 @@ export interface NotificationLogItem {
   created_at: string;
 }
 
+export interface DomainProvisionRequest {
+  server_id: string;
+  domain_name: string;
+  web_server: 'nginx' | 'apache2' | string;
+  architecture_mode: 'document_root' | 'reverse_proxy' | string;
+  document_root?: string;
+  proxy_pass_url?: string;
+  install_ssl?: boolean;
+  verify_installation?: boolean;
+  email?: string;
+  custom_conf?: string;
+  php_version?: string;
+  register_as_app?: boolean;
+  app_name?: string;
+}
+
+export interface DomainProvisionResponse {
+  success: boolean;
+  domain_id: string;
+  domain_name: string;
+  server_id: string;
+  server_name: string;
+  server_ip: string;
+  web_server: string;
+  architecture_mode: string;
+  document_root?: string;
+  proxy_pass_url?: string;
+  conf_file_path: string;
+  conf_content: string;
+  syntax_test: {
+    success: boolean;
+    output?: string;
+    exit_code?: number;
+  };
+  ssl_status: string;
+  ssl_issuer?: string;
+  days_remaining?: number;
+  verification_results: {
+    http_status?: number;
+    dns_matches?: boolean | null;
+    resolved_ip?: string | null;
+    resolved_ips?: string[];
+    tls_valid?: boolean;
+    message?: string;
+  };
+  steps: Array<{
+    step: string;
+    status: 'SUCCESS' | 'WARNING' | 'FAILED' | 'SKIPPED' | string;
+    message: string;
+  }>;
+  stdout: string;
+  stderr: string;
+  message: string;
+}
+
+export interface DomainTerminalExecRequest {
+  server_id?: string;
+  domain_id?: string;
+  command: string;
+  working_dir?: string;
+}
+
+export interface DomainTerminalExecResponse {
+  success: boolean;
+  command: string;
+  stdout: string;
+  stderr: string;
+  exit_code: number;
+  duration_ms: number;
+  server_id: string;
+  server_name: string;
+  server_ip: string;
+  working_dir: string;
+  timestamp: string;
+}
+
 
 class ApiClient {
   public getToken(): string | null {
@@ -983,6 +1059,20 @@ class ApiClient {
   async deleteDomain(id: string) {
     return this.request<any>(`/domains/${id}`, {
       method: 'DELETE',
+    });
+  }
+
+  async provisionDomain(data: DomainProvisionRequest) {
+    return this.request<DomainProvisionResponse>('/domains/provision', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async executeDomainTerminal(data: DomainTerminalExecRequest) {
+    return this.request<DomainTerminalExecResponse>('/domains/server-terminal', {
+      method: 'POST',
+      body: JSON.stringify(data),
     });
   }
 

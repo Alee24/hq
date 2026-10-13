@@ -175,6 +175,64 @@ const TROUBLESHOOT_TOOLS: TroubleshootToolDef[] = [
   },
 ];
 
+interface SoftwarePreset {
+  name: string;
+  desc: string;
+  cmd: string;
+  icon: string;
+}
+
+const SOFTWARE_PRESETS: SoftwarePreset[] = [
+  {
+    name: 'Node.js 20 LTS & NPM',
+    desc: 'Installs NodeSource Node.js 20.x, npm package manager & essential build tools',
+    cmd: 'curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && apt-get install -y nodejs',
+    icon: '📦',
+  },
+  {
+    name: 'PHP 8.2 & Extensions',
+    desc: 'Installs PHP-FPM, CLI, MySQL, cURL, MBString, XML, and Zip extensions',
+    cmd: 'apt-get update -qq && apt-get install -y php8.2-fpm php8.2-cli php8.2-mysql php8.2-curl php8.2-mbstring php8.2-xml php8.2-zip',
+    icon: '🐘',
+  },
+  {
+    name: 'Composer (PHP Package Mgr)',
+    desc: 'Downloads and installs global Composer binary to /usr/local/bin',
+    cmd: 'curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer',
+    icon: '🎼',
+  },
+  {
+    name: 'Python 3, Pip & Venv',
+    desc: 'Installs python3, python3-pip, python3-venv, and python3-dev libraries',
+    cmd: 'apt-get update -qq && apt-get install -y python3 python3-pip python3-venv python3-dev',
+    icon: '🐍',
+  },
+  {
+    name: 'Docker & Docker Compose',
+    desc: 'Installs Docker engine daemon and docker-compose-plugin',
+    cmd: 'curl -fsSL https://get.docker.com | sh && apt-get install -y docker-compose-plugin',
+    icon: '🐳',
+  },
+  {
+    name: 'Fix Permissions (www-data)',
+    desc: 'Sets owner to www-data:www-data and permissions to 755/644 on working directory',
+    cmd: 'chown -R www-data:www-data . 2>/dev/null || true && chmod -R 755 . 2>/dev/null || true && echo "Permissions repaired to www-data."',
+    icon: '📁',
+  },
+  {
+    name: 'Reload Web Daemons',
+    desc: 'Tests syntax and reloads Apache2 and Nginx web servers',
+    cmd: 'nginx -t 2>/dev/null && systemctl reload nginx 2>/dev/null || true; apache2ctl configtest 2>/dev/null && systemctl reload apache2 2>/dev/null || true; echo "Web servers syntax tested and reloaded."',
+    icon: '🔄',
+  },
+  {
+    name: 'Git Status & Logs Check',
+    desc: 'Checks working directory git status, branch, and last 5 commits',
+    cmd: 'git status -sb 2>/dev/null || ls -la',
+    icon: '🌿',
+  },
+];
+
 interface DomainsViewProps {
   initialServerId?: string;
   initialDomainId?: string;
@@ -187,7 +245,7 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId, initi
   const [applications, setApplications] = useState<any[]>([]);
   const [selectedServerId, setSelectedServerId] = useState<string | null>(initialServerId || null);
   const [selectedDomainId, setSelectedDomainId] = useState<string | null>(initialDomainId || null);
-  const [activeDomainTab, setActiveDomainTab] = useState<'telemetry' | 'troubleshoot' | 'config' | 'logs'>('telemetry');
+  const [activeDomainTab, setActiveDomainTab] = useState<'telemetry' | 'troubleshoot' | 'config' | 'logs' | 'terminal'>('telemetry');
 
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'DNS_MATCH' | 'DNS_MISMATCH' | 'SSL_VALID' | 'SSL_ISSUE'>('ALL');
@@ -226,11 +284,43 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId, initi
   const [selectedDomainForTeardown, setSelectedDomainForTeardown] = useState<DomainItem | null>(null);
   const [teardownRunning, setTeardownRunning] = useState(false);
 
-  // Add Domain Modal
+  // Add Domain Modal (Legacy)
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [newDomain, setNewDomain] = useState('');
   const [newIp, setNewIp] = useState('');
   const [newAppId, setNewAppId] = useState('');
+
+  // AI Domain Provisioning & VirtualHost Wizard State
+  const [provisionModalOpen, setProvisionModalOpen] = useState(false);
+  const [provisionServerId, setProvisionServerId] = useState('');
+  const [provisionDomainName, setProvisionDomainName] = useState('');
+  const [provisionWebServer, setProvisionWebServer] = useState<'nginx' | 'apache2'>('nginx');
+  const [provisionMode, setProvisionMode] = useState<'document_root' | 'reverse_proxy'>('document_root');
+  const [provisionDocRoot, setProvisionDocRoot] = useState('');
+  const [provisionProxyUrl, setProvisionProxyUrl] = useState('http://127.0.0.1:3000');
+  const [provisionInstallSsl, setProvisionInstallSsl] = useState(true);
+  const [provisionVerifyInstall, setProvisionVerifyInstall] = useState(true);
+  const [provisionRegisterApp, setProvisionRegisterApp] = useState(true);
+  const [provisionCustomConf, setProvisionCustomConf] = useState('');
+  const [showCustomConfEditor, setShowCustomConfEditor] = useState(false);
+  const [provisionLoading, setProvisionLoading] = useState(false);
+  const [provisionResult, setProvisionResult] = useState<any | null>(null);
+
+  // Server Terminal State
+  const [terminalCommand, setTerminalCommand] = useState('');
+  const [terminalWorkingDir, setTerminalWorkingDir] = useState('');
+  const [terminalRunning, setTerminalRunning] = useState(false);
+  const [terminalOutput, setTerminalOutput] = useState<{
+    command: string;
+    stdout: string;
+    stderr: string;
+    exit_code: number;
+    duration_ms: number;
+    working_dir: string;
+    server_name?: string;
+    server_ip?: string;
+    timestamp: string;
+  } | null>(null);
 
   const showToast = (text: string, type: 'success' | 'error' | 'info' = 'success') => {
     setToastMessage({ text, type });
@@ -280,7 +370,7 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId, initi
     }
   };
 
-  const openDomainPage = async (domainId: string, initialTab: 'telemetry' | 'troubleshoot' | 'config' | 'logs' = 'telemetry') => {
+  const openDomainPage = async (domainId: string, initialTab: 'telemetry' | 'troubleshoot' | 'config' | 'logs' | 'terminal' = 'telemetry') => {
     setSelectedDomainId(domainId);
     setActiveDomainTab(initialTab);
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -704,6 +794,223 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId, initi
     }
   };
 
+  const openProvisionWizard = (targetServerId?: string) => {
+    const srv = (targetServerId && servers.find(s => s.id === targetServerId)) || selectedServer || servers[0];
+    if (srv) {
+      setProvisionServerId(srv.id);
+    }
+    setProvisionDomainName('');
+    setProvisionDocRoot('');
+    setProvisionProxyUrl('http://127.0.0.1:3000');
+    setProvisionWebServer('nginx');
+    setProvisionMode('document_root');
+    setProvisionInstallSsl(true);
+    setProvisionVerifyInstall(true);
+    setProvisionRegisterApp(true);
+    setProvisionCustomConf('');
+    setShowCustomConfEditor(false);
+    setProvisionResult(null);
+    setProvisionModalOpen(true);
+  };
+
+  const handleDomainNameChange = (val: string) => {
+    const clean = val.toLowerCase().replace(/[^a-z0-9.-]/g, '');
+    setProvisionDomainName(clean);
+    if (!provisionDocRoot || provisionDocRoot.startsWith('/var/www/')) {
+      setProvisionDocRoot(clean ? `/var/www/${clean}` : '');
+    }
+  };
+
+  const getPreviewConfig = () => {
+    const dom = provisionDomainName.trim() || 'example.com';
+    const doc = provisionDocRoot.trim() || `/var/www/${dom}`;
+    const proxy = provisionProxyUrl.trim() || 'http://127.0.0.1:3000';
+
+    if (provisionWebServer === 'apache2') {
+      if (provisionMode === 'reverse_proxy') {
+        return `<VirtualHost *:80>
+    ServerName ${dom}
+    ServerAlias www.${dom}
+    ServerAdmin webmaster@localhost
+
+    ProxyPreserveHost On
+    ProxyRequests Off
+    ProxyPass / ${proxy}/
+    ProxyPassReverse / ${proxy}/
+
+    ErrorLog \${APACHE_LOG_DIR}/${dom}_error.log
+    CustomLog \${APACHE_LOG_DIR}/${dom}_access.log combined
+</VirtualHost>`;
+      }
+      return `<VirtualHost *:80>
+    ServerName ${dom}
+    ServerAlias www.${dom}
+    ServerAdmin webmaster@localhost
+    DocumentRoot ${doc}
+
+    <Directory ${doc}>
+        Options -Indexes +FollowSymLinks +MultiViews
+        AllowOverride All
+        Require all granted
+    </Directory>
+
+    ErrorLog \${APACHE_LOG_DIR}/${dom}_error.log
+    CustomLog \${APACHE_LOG_DIR}/${dom}_access.log combined
+</VirtualHost>`;
+    }
+
+    if (provisionMode === 'reverse_proxy') {
+      return `server {
+    listen 80;
+    listen [::]:80;
+    server_name ${dom} www.${dom};
+
+    location / {
+        proxy_pass ${proxy};
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    access_log /var/log/nginx/${dom}_access.log;
+    error_log /var/log/nginx/${dom}_error.log;
+}`;
+    }
+
+    return `server {
+    listen 80;
+    listen [::]:80;
+    server_name ${dom} www.${dom};
+    root ${doc};
+    index index.php index.html index.htm;
+
+    location / {
+        try_files $uri $uri/ /index.php?$query_string;
+    }
+
+    location ~ \\.php$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:/var/run/php/php8.2-fpm.sock;
+        fastcgi_intercept_errors on;
+    }
+
+    location ~ /\\.ht {
+        deny all;
+    }
+
+    location ~ /\\.(?!well-known).* {
+        deny all;
+    }
+
+    access_log /var/log/nginx/${dom}_access.log;
+    error_log /var/log/nginx/${dom}_error.log;
+}`;
+  };
+
+  const handleExecuteProvision = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!provisionDomainName.trim()) {
+      showToast('Please enter a valid domain name.', 'error');
+      return;
+    }
+    const targetSrv = servers.find(s => s.id === provisionServerId) || selectedServer || servers[0];
+    if (!targetSrv) {
+      showToast('Please select a target VPS server node.', 'error');
+      return;
+    }
+
+    setProvisionLoading(true);
+    setProvisionResult(null);
+    try {
+      const res = await api.provisionDomain({
+        server_id: targetSrv.id,
+        domain_name: provisionDomainName.trim(),
+        web_server: provisionWebServer,
+        architecture_mode: provisionMode,
+        document_root: provisionMode === 'document_root' ? (provisionDocRoot.trim() || `/var/www/${provisionDomainName.trim()}`) : undefined,
+        proxy_pass_url: provisionMode === 'reverse_proxy' ? provisionProxyUrl.trim() : undefined,
+        install_ssl: provisionInstallSsl,
+        verify_installation: provisionVerifyInstall,
+        register_as_app: provisionRegisterApp,
+        custom_conf: showCustomConfEditor && provisionCustomConf.trim() ? provisionCustomConf.trim() : undefined,
+      });
+
+      setProvisionResult(res);
+      if (res.success) {
+        showToast(res.message || `Domain '${provisionDomainName}' successfully provisioned!`, 'success');
+      } else {
+        showToast(res.message || 'Provisioning completed with warnings.', 'error');
+      }
+      await loadData();
+    } catch (err: any) {
+      showToast(err.message || 'Failed to provision domain on server.', 'error');
+    } finally {
+      setProvisionLoading(false);
+    }
+  };
+
+  const handleRunTerminalCommand = async (cmdToRun?: string, customDir?: string) => {
+    const cmd = (cmdToRun || terminalCommand).trim();
+    if (!cmd) return;
+
+    const targetSrv = selectedServer || (selectedDomain && servers.find(s => s.id === selectedDomain.server_id || s.public_ip === selectedDomain.server_ip)) || servers[0];
+    if (!targetSrv) {
+      showToast('No active VPS server identified for terminal execution.', 'error');
+      return;
+    }
+
+    const docRootFallback = selectedDomain ? (deepDives[selectedDomain.id]?.root_path || `/var/www/${selectedDomain.domain_name}`) : '/var/www';
+    const effectiveDir = customDir || terminalWorkingDir || docRootFallback;
+
+    setTerminalRunning(true);
+    try {
+      const res = await api.executeDomainTerminal({
+        server_id: targetSrv.id,
+        domain_id: selectedDomain?.id,
+        command: cmd,
+        working_dir: effectiveDir,
+      });
+
+      setTerminalOutput({
+        command: res.command,
+        stdout: res.stdout,
+        stderr: res.stderr,
+        exit_code: res.exit_code,
+        duration_ms: res.duration_ms,
+        working_dir: res.working_dir,
+        server_name: res.server_name,
+        server_ip: res.server_ip,
+        timestamp: res.timestamp,
+      });
+
+      if (!cmdToRun) {
+        setTerminalCommand('');
+      }
+
+      showToast(`Command executed (Exit ${res.exit_code}) in ${res.duration_ms}ms`, res.exit_code === 0 ? 'success' : 'error');
+    } catch (err: any) {
+      showToast(err.message || 'Terminal command execution failed', 'error');
+      setTerminalOutput({
+        command: cmd,
+        stdout: '',
+        stderr: err.message || 'Execution error',
+        exit_code: 1,
+        duration_ms: 100,
+        working_dir: effectiveDir,
+        server_name: targetSrv.name,
+        server_ip: targetSrv.public_ip,
+        timestamp: new Date().toISOString(),
+      });
+    } finally {
+      setTerminalRunning(false);
+    }
+  };
+
   const selectedServer = servers.find(
     (s) => s.id === selectedServerId || s.public_ip === selectedServerId
   ) || null;
@@ -852,6 +1159,14 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId, initi
 
             <div className="flex items-center gap-2.5 flex-wrap">
               <Button
+                variant="primary"
+                size="sm"
+                onClick={() => openProvisionWizard()}
+                leftIcon={<Sparkles size={14} className="text-amber-300" />}
+              >
+                + Create Domain on Server
+              </Button>
+              <Button
                 variant="secondary"
                 size="sm"
                 onClick={() => loadData()}
@@ -964,20 +1279,35 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId, initi
                       </div>
                     </div>
 
-                    <Button
-                      variant="primary"
-                      size="sm"
-                      className="w-full justify-center group-hover:bg-brand-500"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setSelectedServerId(srv.id);
-                        setSelectedDomainId(null);
-                        setNewIp(srv.public_ip);
-                      }}
-                      rightIcon={<ChevronRight size={14} className="group-hover:translate-x-0.5 transition-transform" />}
-                    >
-                      <span>Select VPS & Manage Domains</span>
-                    </Button>
+                    <div className="flex items-center gap-2 mt-auto">
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        className="flex-1 justify-center group-hover:bg-brand-500"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setSelectedServerId(srv.id);
+                          setSelectedDomainId(null);
+                          setNewIp(srv.public_ip);
+                        }}
+                        rightIcon={<ChevronRight size={14} className="group-hover:translate-x-0.5 transition-transform" />}
+                      >
+                        <span>Manage Domains</span>
+                      </Button>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        className="shrink-0"
+                        title={`Create new domain and provision VirtualHost on ${srv.name}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openProvisionWizard(srv.id);
+                        }}
+                        leftIcon={<Sparkles size={13} className="text-amber-300" />}
+                      >
+                        <span>+ Create Domain</span>
+                      </Button>
+                    </div>
                   </div>
                 );
               })}
@@ -1292,6 +1622,19 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId, initi
                   {output && (
                     <span className={`w-2 h-2 rounded-full ${output.success ? 'bg-emerald-400' : 'bg-rose-400'}`} />
                   )}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setActiveDomainTab('terminal')}
+                  className={`h-9 px-4 rounded-xl text-xs font-semibold inline-flex items-center gap-2 whitespace-nowrap shrink-0 transition-colors ${
+                    activeDomainTab === 'terminal'
+                      ? 'bg-emerald-600 text-white shadow-sm'
+                      : 'bg-slate-900 text-emerald-400 hover:text-white border border-emerald-800/60'
+                  }`}
+                >
+                  <Terminal size={14} />
+                  <span>Root Terminal & Software Installer</span>
                 </button>
 
                 <button
@@ -1805,6 +2148,191 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId, initi
                   )}
                 </div>
               )}
+
+              {/* TAB 5: ROOT TERMINAL & SOFTWARE INSTALLER */}
+              {activeDomainTab === 'terminal' && (
+                <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-5 shadow-sm">
+                  {/* Top Header Card */}
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-800">
+                    <div className="flex items-center gap-3">
+                      <div className="p-2.5 rounded-xl bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 shrink-0">
+                        <Terminal size={20} />
+                      </div>
+                      <div>
+                        <h3 className="text-sm font-bold text-white flex items-center gap-2 flex-wrap">
+                          <span>Root Software Installer & Server Terminal</span>
+                          <span className="px-2 py-0.5 rounded text-[10px] bg-emerald-500/20 text-emerald-300 font-mono border border-emerald-500/30">
+                            root@{selectedServer?.public_ip || d.server_ip}
+                          </span>
+                        </h3>
+                        <p className="text-xs text-slate-400 mt-0.5">
+                          Execute bash commands over root SSH to install Node.js, PHP, Composer, Docker, clone repositories, or configure app services.
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 self-start sm:self-auto flex-wrap">
+                      <div className="px-3 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-[11px] font-mono text-slate-400">
+                        <span className="text-slate-500">Working Dir: </span>
+                        <span className="text-emerald-400 font-semibold">{terminalWorkingDir || deepDive?.root_path || `/var/www/${d.domain_name}`}</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* 1-Click Quick Software Installation Presets */}
+                  <div className="space-y-2.5">
+                    <div className="flex items-center justify-between text-xs flex-wrap gap-2">
+                      <span className="font-semibold text-white flex items-center gap-1.5">
+                        <Sparkles size={13} className="text-amber-400 shrink-0" />
+                        <span>1-Click Software Installation & Optimization Presets</span>
+                      </span>
+                      <span className="text-[11px] text-slate-400">Click to execute immediately on VPS as root</span>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                      {SOFTWARE_PRESETS.map((preset) => (
+                        <div
+                          key={preset.name}
+                          className="p-3 rounded-xl bg-slate-950/80 border border-slate-800 hover:border-slate-700 transition-all flex flex-col justify-between gap-2.5 group"
+                        >
+                          <div>
+                            <div className="flex items-center gap-2 mb-1">
+                              <span className="text-base shrink-0">{preset.icon}</span>
+                              <h4 className="text-xs font-bold text-white truncate">{preset.name}</h4>
+                            </div>
+                            <p className="text-[11px] text-slate-400 line-clamp-2 leading-relaxed">
+                              {preset.desc}
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            disabled={terminalRunning}
+                            onClick={() => handleRunTerminalCommand(preset.cmd)}
+                            className="w-full h-7 px-2.5 rounded-lg bg-slate-800 hover:bg-emerald-600 hover:text-white text-slate-200 border border-slate-700 hover:border-emerald-500 text-[11px] font-semibold inline-flex items-center justify-center gap-1.5 whitespace-nowrap transition-colors disabled:opacity-50"
+                          >
+                            <Play size={11} className="fill-current" />
+                            <span>Install / Run</span>
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Interactive Terminal Command Runner Bar */}
+                  <div className="p-4 rounded-xl bg-black/90 border border-slate-800 space-y-3">
+                    <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+                      <div className="flex-1 flex items-center gap-2 bg-slate-950 px-3 py-2 rounded-lg border border-slate-800 focus-within:border-emerald-500 transition-colors">
+                        <span className="text-emerald-400 font-mono font-bold text-xs shrink-0">$</span>
+                        <input
+                          type="text"
+                          value={terminalCommand}
+                          onChange={(e) => setTerminalCommand(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' && !terminalRunning) {
+                              e.preventDefault();
+                              handleRunTerminalCommand();
+                            }
+                          }}
+                          placeholder="Enter arbitrary root bash command (e.g. npm install, git clone <url>, composer install)..."
+                          className="w-full bg-transparent text-xs text-white placeholder-slate-500 font-mono focus:outline-none"
+                        />
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <input
+                          type="text"
+                          value={terminalWorkingDir}
+                          onChange={(e) => setTerminalWorkingDir(e.target.value)}
+                          placeholder={`Dir: ${deepDive?.root_path || `/var/www/${d.domain_name}`}`}
+                          className="w-36 sm:w-44 px-2.5 py-2 bg-slate-950 border border-slate-800 rounded-lg text-xs font-mono text-slate-300 focus:outline-none focus:border-brand-500 truncate"
+                          title="Working directory for command execution"
+                        />
+                        <button
+                          type="button"
+                          disabled={terminalRunning || !terminalCommand.trim()}
+                          onClick={() => handleRunTerminalCommand()}
+                          className="h-8 px-4 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap transition-colors shadow-sm"
+                        >
+                          <Play size={12} className={terminalRunning ? 'animate-spin' : 'fill-current'} />
+                          <span>{terminalRunning ? 'Executing...' : 'Run on VPS'}</span>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Live Terminal Output Console */}
+                  {terminalOutput ? (
+                    <div className="rounded-xl border border-slate-800 overflow-hidden bg-black/95">
+                      <div className="flex items-center justify-between px-4 py-2.5 bg-slate-950 border-b border-slate-800 text-xs flex-wrap gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold font-mono whitespace-nowrap ${
+                            terminalOutput.exit_code === 0
+                              ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
+                              : 'bg-rose-500/15 text-rose-400 border border-rose-500/30'
+                          }`}>
+                            EXIT {terminalOutput.exit_code}: {terminalOutput.exit_code === 0 ? 'SUCCESS' : 'FAILED'}
+                          </span>
+                          <span className="text-slate-400 text-[11px] font-mono">{terminalOutput.duration_ms} ms</span>
+                          <span className="text-slate-600">·</span>
+                          <span className="text-slate-400 font-mono text-[11px] truncate">
+                            cd {terminalOutput.working_dir}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setAuditExecutionData({
+                                command: terminalOutput.command,
+                                stdout: terminalOutput.stdout,
+                                stderr: terminalOutput.stderr,
+                                exit_code: terminalOutput.exit_code,
+                                duration_ms: terminalOutput.duration_ms,
+                                server_id: selectedServer?.id,
+                                server_name: selectedServer?.name,
+                                context_type: 'DOMAIN_TERMINAL_EXEC',
+                                title: `Terminal Exec: ${terminalOutput.command}`
+                              });
+                              setAuditModalOpen(true);
+                            }}
+                            className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-500 text-white rounded text-[11px] font-semibold inline-flex items-center gap-1.5 whitespace-nowrap"
+                          >
+                            <Sparkles size={11} />
+                            <span>Investigate & Fix with AI</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleCopyText('term', `${terminalOutput.command}\n\n${terminalOutput.stdout}\n${terminalOutput.stderr}`, 'output')}
+                            className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-[11px] inline-flex items-center gap-1.5 border border-slate-700 whitespace-nowrap"
+                          >
+                            {copiedDomainId === 'term' ? <Check size={11} className="text-emerald-400" /> : <Copy size={11} />}
+                            <span>{copiedDomainId === 'term' ? 'Copied' : 'Copy'}</span>
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="p-4 font-mono text-xs max-h-96 overflow-y-auto space-y-1.5">
+                        <div className="text-slate-400 font-semibold break-all">
+                          root@{selectedServer?.public_ip || d.server_ip}:{terminalOutput.working_dir}# {terminalOutput.command}
+                        </div>
+                        {terminalOutput.stdout && (
+                          <pre className="text-emerald-400/95 whitespace-pre-wrap break-words font-mono">
+                            {terminalOutput.stdout}
+                          </pre>
+                        )}
+                        {terminalOutput.stderr && (
+                          <pre className="text-amber-400/90 whitespace-pre-wrap break-words font-mono pt-1 border-t border-slate-800/60">
+                            {terminalOutput.stderr}
+                          </pre>
+                        )}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="p-8 text-center text-xs text-slate-500 border border-dashed border-slate-800 rounded-xl space-y-2">
+                      <Terminal size={24} className="mx-auto text-slate-600" />
+                      <p>No active terminal outputs yet. Choose a 1-click software preset above or type an arbitrary root bash command.</p>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           );
         })()
@@ -1879,11 +2407,20 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId, initi
 
               <button
                 type="button"
+                onClick={() => openProvisionWizard(selectedServer.id)}
+                className="h-8 px-3.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap shadow-sm transition-colors"
+              >
+                <Sparkles size={13} className="text-emerald-200" />
+                <span>+ Create Domain on Server</span>
+              </button>
+
+              <button
+                type="button"
                 onClick={() => {
                   setNewIp(selectedServer.public_ip);
                   setCreateModalOpen(true);
                 }}
-                className="h-8 px-3.5 rounded-lg bg-brand-600 hover:bg-brand-500 text-white text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap shadow-sm transition-colors"
+                className="h-8 px-3 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap transition-colors"
               >
                 <Plus size={14} />
                 <span>Register Domain</span>
@@ -2254,6 +2791,518 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId, initi
             </div>
           )}
         </form>
+      </ModalShell>
+
+      {/* AI Domain Provisioning & VirtualHost Wizard Modal */}
+      <ModalShell
+        isOpen={provisionModalOpen}
+        onClose={() => {
+          if (!provisionLoading) {
+            setProvisionModalOpen(false);
+          }
+        }}
+        title={
+          <div className="flex items-center gap-2">
+            <span>AI Domain Provisioning & VirtualHost Wizard</span>
+            <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-brand-500/10 text-brand-400 border border-brand-500/20">
+              Autonomous VPS Setup
+            </span>
+          </div>
+        }
+        description="Autonomously configure Nginx or Apache2 VirtualHosts, auto-create DocumentRoots with www-data permissions, generate Let's Encrypt SSL, and verify TLS & DNS live."
+        icon={Sparkles}
+        size="2xl"
+        footer={
+          provisionResult ? (
+            <div className="flex flex-wrap items-center justify-between w-full gap-2">
+              <div className="flex items-center gap-2 text-xs text-slate-400">
+                <CheckCircle2 size={15} className="text-emerald-400 shrink-0" />
+                <span>
+                  Configured on <strong className="text-white">{provisionResult.server_name}</strong> ({provisionResult.server_ip})
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="secondary"
+                  onClick={() => {
+                    setProvisionResult(null);
+                    setProvisionDomainName('');
+                    setProvisionDocRoot('');
+                  }}
+                >
+                  Provision Another
+                </Button>
+                <Button
+                  variant="primary"
+                  onClick={() => {
+                    setProvisionModalOpen(false);
+                    if (provisionResult.domain_id) {
+                      openDomainPage(provisionResult.domain_id, 'telemetry');
+                    }
+                  }}
+                  leftIcon={<ChevronRight size={14} />}
+                >
+                  Open Domain Control
+                </Button>
+                <Button
+                  variant="secondary"
+                  onClick={() => {
+                    setProvisionModalOpen(false);
+                    if (provisionResult.domain_id) {
+                      openDomainPage(provisionResult.domain_id, 'terminal');
+                    }
+                  }}
+                  leftIcon={<Terminal size={14} />}
+                >
+                  Open Root Terminal
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <div className="flex items-center justify-between w-full">
+              <Button
+                variant="secondary"
+                disabled={provisionLoading}
+                onClick={() => setProvisionModalOpen(false)}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="primary"
+                type="submit"
+                form="ai-domain-provision-form"
+                isLoading={provisionLoading}
+                disabled={provisionLoading || !provisionDomainName.trim()}
+                leftIcon={<Sparkles size={14} />}
+              >
+                {provisionLoading ? 'Deploying & Configuring...' : 'Deploy & Provision VirtualHost'}
+              </Button>
+            </div>
+          )
+        }
+      >
+        {provisionResult ? (
+          <div className="space-y-4 text-xs">
+            {/* Success Banner */}
+            <div className={`p-4 rounded-xl border ${provisionResult.success ? 'bg-emerald-950/30 border-emerald-800/60 text-emerald-300' : 'bg-amber-950/30 border-amber-800/60 text-amber-300'} flex items-start gap-3`}>
+              {provisionResult.success ? (
+                <CheckCircle2 size={20} className="text-emerald-400 shrink-0 mt-0.5" />
+              ) : (
+                <AlertTriangle size={20} className="text-amber-400 shrink-0 mt-0.5" />
+              )}
+              <div className="space-y-1">
+                <div className="font-semibold text-sm text-white">
+                  {provisionResult.success ? 'VirtualHost & Domain Successfully Provisioned!' : 'Provisioning Completed with Warnings'}
+                </div>
+                <div className="text-xs text-slate-300">
+                  {provisionResult.message}
+                </div>
+              </div>
+            </div>
+
+            {/* Vitals Summary Grid */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+              <div className="p-3 rounded-lg bg-slate-950/80 border border-slate-800/80 space-y-1">
+                <span className="text-[10px] uppercase font-bold tracking-wider text-slate-500">Domain</span>
+                <div className="font-mono text-sm font-semibold text-white truncate">{provisionResult.domain_name}</div>
+              </div>
+              <div className="p-3 rounded-lg bg-slate-950/80 border border-slate-800/80 space-y-1">
+                <span className="text-[10px] uppercase font-bold tracking-wider text-slate-500">Target Server</span>
+                <div className="font-mono text-xs font-semibold text-slate-300 truncate">{provisionResult.server_name} ({provisionResult.server_ip})</div>
+              </div>
+              <div className="p-3 rounded-lg bg-slate-950/80 border border-slate-800/80 space-y-1">
+                <span className="text-[10px] uppercase font-bold tracking-wider text-slate-500">Web Engine</span>
+                <div className="text-xs font-semibold text-slate-300 uppercase">{provisionResult.web_server} · {provisionResult.architecture_mode}</div>
+              </div>
+              <div className="p-3 rounded-lg bg-slate-950/80 border border-slate-800/80 space-y-1">
+                <span className="text-[10px] uppercase font-bold tracking-wider text-slate-500">SSL Certificate</span>
+                <div className="flex items-center gap-1.5">
+                  <ShieldCheck size={14} className={provisionResult.ssl_status === 'VALID' ? 'text-emerald-400' : 'text-amber-400'} />
+                  <span className={`text-xs font-semibold ${provisionResult.ssl_status === 'VALID' ? 'text-emerald-400' : 'text-amber-400'}`}>
+                    {provisionResult.ssl_status} {provisionResult.days_remaining ? `(${provisionResult.days_remaining}d)` : ''}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Provisioning Steps Trajectory */}
+            {provisionResult.steps && provisionResult.steps.length > 0 && (
+              <div className="space-y-2">
+                <div className="text-[11px] font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+                  <Activity size={13} className="text-brand-400" />
+                  <span>Execution Trajectory ({provisionResult.steps.length} Steps)</span>
+                </div>
+                <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1 rounded-lg border border-slate-800/80 bg-slate-950/60 p-2.5">
+                  {provisionResult.steps.map((st: any, idx: number) => (
+                    <div key={idx} className="flex items-start gap-2.5 text-xs py-1 border-b border-slate-900 last:border-none">
+                      {st.status === 'SUCCESS' ? (
+                        <CheckCircle2 size={14} className="text-emerald-400 shrink-0 mt-0.5" />
+                      ) : st.status === 'WARNING' ? (
+                        <AlertTriangle size={14} className="text-amber-400 shrink-0 mt-0.5" />
+                      ) : (
+                        <AlertCircle size={14} className="text-rose-400 shrink-0 mt-0.5" />
+                      )}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-semibold text-slate-200">{st.step}</span>
+                          {st.duration_ms !== undefined && (
+                            <span className="text-[10px] font-mono text-slate-500">{st.duration_ms}ms</span>
+                          )}
+                        </div>
+                        {st.details && <p className="text-[11px] text-slate-400 mt-0.5">{st.details}</p>}
+                        {st.command && (
+                          <code className="text-[10px] font-mono text-slate-500 block truncate mt-0.5">
+                            $ {st.command}
+                          </code>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Live Verification Results */}
+            {provisionResult.verification_results && (
+              <div className="p-3 rounded-lg border border-slate-800/80 bg-slate-950/50 space-y-2">
+                <div className="text-[11px] font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+                  <Radio size={13} className="text-indigo-400" />
+                  <span>Live Verification Diagnostics</span>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  <div className="p-2 rounded bg-slate-900/60 border border-slate-800/60">
+                    <span className="text-[10px] text-slate-500 block">DNS Match</span>
+                    <span className={`text-xs font-semibold ${provisionResult.verification_results.dns_match ? 'text-emerald-400' : 'text-amber-400'}`}>
+                      {provisionResult.verification_results.dns_match ? 'Matched Server IP' : 'Mismatch / Propagating'}
+                    </span>
+                    <div className="text-[10px] font-mono text-slate-400 truncate">
+                      {provisionResult.verification_results.resolved_ip || 'No DNS record yet'}
+                    </div>
+                  </div>
+                  <div className="p-2 rounded bg-slate-900/60 border border-slate-800/60">
+                    <span className="text-[10px] text-slate-500 block">HTTP Probe</span>
+                    <span className="text-xs font-semibold text-slate-200">
+                      HTTP {provisionResult.verification_results.http_status_code || 200}
+                    </span>
+                    <div className="text-[10px] text-slate-400 truncate">
+                      {provisionResult.verification_results.probe_message || 'Site responding'}
+                    </div>
+                  </div>
+                  <div className="p-2 rounded bg-slate-900/60 border border-slate-800/60">
+                    <span className="text-[10px] text-slate-500 block">TLS Port 443 Handshake</span>
+                    <span className={`text-xs font-semibold ${provisionResult.verification_results.tls_socket_open ? 'text-emerald-400' : 'text-slate-400'}`}>
+                      {provisionResult.verification_results.tls_socket_open ? 'TLS Socket Active' : 'HTTP Only'}
+                    </span>
+                    <div className="text-[10px] text-slate-400 truncate">
+                      {provisionResult.ssl_issuer || 'Standard TLS'}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Generated VirtualHost Config Preview */}
+            {provisionResult.conf_content && (
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-semibold text-slate-300 font-mono">
+                    {provisionResult.conf_file_path}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => handleCopyText('provision_conf', provisionResult.conf_content, 'config')}
+                    className="h-6 px-2 text-[10px] rounded bg-slate-800 hover:bg-slate-700 text-slate-300 inline-flex items-center gap-1 transition-colors"
+                  >
+                    <Copy size={11} />
+                    <span>Copy Config</span>
+                  </button>
+                </div>
+                <pre className="p-3 rounded-lg bg-black/80 border border-slate-800 font-mono text-[11px] text-emerald-400 overflow-x-auto max-h-40 leading-relaxed">
+                  {provisionResult.conf_content}
+                </pre>
+              </div>
+            )}
+          </div>
+        ) : (
+          <form id="ai-domain-provision-form" onSubmit={handleExecuteProvision} className="space-y-4 text-xs">
+            {/* Step 1: Target Server Selection */}
+            <div className="space-y-1.5">
+              <label className="block text-xs font-semibold text-slate-200">
+                1. Select Target Hosting VPS Node <span className="text-rose-400">*</span>
+              </label>
+              <select
+                value={provisionServerId}
+                onChange={(e) => setProvisionServerId(e.target.value)}
+                className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-xs text-white focus:outline-none focus:border-brand-500 font-mono"
+                required
+              >
+                {servers.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name} ({s.public_ip}) · {s.os || 'Linux Ubuntu'} · {s.status}
+                  </option>
+                ))}
+              </select>
+              {provisionServerId && (
+                <div className="text-[11px] text-slate-400 flex items-center gap-1.5">
+                  <ServerIcon size={12} className="text-brand-400 shrink-0" />
+                  <span>
+                    Point your domain's DNS <code className="text-brand-300 font-semibold">A Record</code> to{' '}
+                    <strong className="text-white font-mono font-semibold">
+                      {servers.find(s => s.id === provisionServerId)?.public_ip}
+                    </strong>
+                  </span>
+                </div>
+              )}
+            </div>
+
+            {/* Step 2: Domain Name Input */}
+            <div className="space-y-1.5">
+              <label className="block text-xs font-semibold text-slate-200">
+                2. Fully Qualified Domain Name (FQDN) <span className="text-rose-400">*</span>
+              </label>
+              <InputField
+                label=""
+                value={provisionDomainName}
+                onChange={(e) => handleDomainNameChange(e.target.value)}
+                placeholder="e.g. portal.company.com or store.example.com"
+                isRequired
+              />
+              <p className="text-[11px] text-slate-400">
+                Lowercase letters, numbers, hyphens, and periods only.
+              </p>
+            </div>
+
+            {/* Step 3: Web Server Engine (Nginx vs Apache2) */}
+            <div className="space-y-1.5">
+              <label className="block text-xs font-semibold text-slate-200">
+                3. Preferred Web Server Engine <span className="text-rose-400">*</span>
+              </label>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setProvisionWebServer('nginx')}
+                  className={`p-3 rounded-lg border text-left transition-all ${
+                    provisionWebServer === 'nginx'
+                      ? 'bg-brand-500/10 border-brand-500 text-white shadow-sm'
+                      : 'bg-slate-950/60 border-slate-800 text-slate-400 hover:border-slate-700'
+                  }`}
+                >
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="font-semibold text-xs text-white">Nginx</span>
+                    <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                      Recommended
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-400">
+                    High throughput, asynchronous event loop, fast PHP-FPM socket, and robust reverse proxying.
+                  </p>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setProvisionWebServer('apache2')}
+                  className={`p-3 rounded-lg border text-left transition-all ${
+                    provisionWebServer === 'apache2'
+                      ? 'bg-brand-500/10 border-brand-500 text-white shadow-sm'
+                      : 'bg-slate-950/60 border-slate-800 text-slate-400 hover:border-slate-700'
+                  }`}
+                >
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="font-semibold text-xs text-white">Apache2</span>
+                    <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                      Classic
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-400">
+                    Native <code className="text-slate-300">.htaccess</code> rewrite support, a2ensite/a2dissite tools, and mod_proxy.
+                  </p>
+                </button>
+              </div>
+            </div>
+
+            {/* Step 4: Architecture Mode (DocumentRoot vs Reverse Proxy) */}
+            <div className="space-y-1.5">
+              <label className="block text-xs font-semibold text-slate-200">
+                4. Application Architecture Mode
+              </label>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setProvisionMode('document_root')}
+                  className={`p-2.5 rounded-lg border text-left transition-all ${
+                    provisionMode === 'document_root'
+                      ? 'bg-brand-500/10 border-brand-500 text-white'
+                      : 'bg-slate-950/60 border-slate-800 text-slate-400 hover:border-slate-700'
+                  }`}
+                >
+                  <div className="font-semibold text-xs text-white mb-0.5">Static / PHP / HTML DocumentRoot</div>
+                  <p className="text-[11px] text-slate-400">Serve files directly from disk path with PHP-FPM or HTML starter page.</p>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setProvisionMode('reverse_proxy')}
+                  className={`p-2.5 rounded-lg border text-left transition-all ${
+                    provisionMode === 'reverse_proxy'
+                      ? 'bg-brand-500/10 border-brand-500 text-white'
+                      : 'bg-slate-950/60 border-slate-800 text-slate-400 hover:border-slate-700'
+                  }`}
+                >
+                  <div className="font-semibold text-xs text-white mb-0.5">Reverse Proxy to Backend / Port</div>
+                  <p className="text-[11px] text-slate-400">Forward traffic to local app port (Node.js, Docker, FastAPI, Python).</p>
+                </button>
+              </div>
+            </div>
+
+            {/* DocumentRoot or Proxy URL Config */}
+            {provisionMode === 'document_root' ? (
+              <div className="space-y-2 p-3 rounded-lg border border-slate-800 bg-slate-950/50">
+                <label className="block text-xs font-semibold text-slate-200">
+                  Target DocumentRoot Directory <span className="text-rose-400">*</span>
+                </label>
+                <input
+                  type="text"
+                  value={provisionDocRoot}
+                  onChange={(e) => setProvisionDocRoot(e.target.value)}
+                  placeholder="/var/www/example.com"
+                  className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-xs text-white font-mono focus:outline-none focus:border-brand-500"
+                />
+                <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                  <span className="text-[10px] text-slate-500">Suggested:</span>
+                  {[
+                    `/var/www/${provisionDomainName || 'myapp'}`,
+                    `/var/www/html/${provisionDomainName || 'myapp'}`,
+                    `/var/www/${provisionDomainName || 'myapp'}/public`,
+                  ].map((p) => (
+                    <button
+                      key={p}
+                      type="button"
+                      onClick={() => setProvisionDocRoot(p)}
+                      className="px-2 py-0.5 text-[10px] font-mono rounded bg-slate-800/80 hover:bg-slate-700 text-slate-300 border border-slate-700/60 transition-colors"
+                    >
+                      {p}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-[11px] text-slate-400">
+                  Directory will be created automatically on the VPS if missing, with <code className="text-slate-300">www-data:www-data</code> (755) permissions and a starter index page.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-2 p-3 rounded-lg border border-slate-800 bg-slate-950/50">
+                <label className="block text-xs font-semibold text-slate-200">
+                  Proxy Upstream Target URL <span className="text-rose-400">*</span>
+                </label>
+                <input
+                  type="text"
+                  value={provisionProxyUrl}
+                  onChange={(e) => setProvisionProxyUrl(e.target.value)}
+                  placeholder="http://127.0.0.1:3000"
+                  className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-xs text-white font-mono focus:outline-none focus:border-brand-500"
+                />
+                <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                  <span className="text-[10px] text-slate-500">Quick Ports:</span>
+                  {[
+                    'http://127.0.0.1:3000',
+                    'http://127.0.0.1:8000',
+                    'http://127.0.0.1:8080',
+                    'http://127.0.0.1:5000',
+                    'http://127.0.0.1:4000',
+                  ].map((p) => (
+                    <button
+                      key={p}
+                      type="button"
+                      onClick={() => setProvisionProxyUrl(p)}
+                      className="px-2 py-0.5 text-[10px] font-mono rounded bg-slate-800/80 hover:bg-slate-700 text-slate-300 border border-slate-700/60 transition-colors"
+                    >
+                      {p}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-[11px] text-slate-400">
+                  Configures HTTP 1.1 proxying with WebSocket Upgrade headers and <code className="text-slate-300">X-Forwarded-For</code> forwarding.
+                </p>
+              </div>
+            )}
+
+            {/* Automation Checkboxes */}
+            <div className="space-y-2 pt-1 border-t border-slate-800/80">
+              <label className="flex items-center gap-2 cursor-pointer text-xs text-slate-300 hover:text-white">
+                <input
+                  type="checkbox"
+                  checked={provisionInstallSsl}
+                  onChange={(e) => setProvisionInstallSsl(e.target.checked)}
+                  className="w-4 h-4 rounded bg-slate-950 border-slate-800 text-brand-500 focus:ring-0 focus:ring-offset-0"
+                />
+                <span className="font-medium">
+                  Automate Let's Encrypt SSL Installation (Certbot + HTTPS 301 Redirect)
+                </span>
+              </label>
+
+              <label className="flex items-center gap-2 cursor-pointer text-xs text-slate-300 hover:text-white">
+                <input
+                  type="checkbox"
+                  checked={provisionVerifyInstall}
+                  onChange={(e) => setProvisionVerifyInstall(e.target.checked)}
+                  className="w-4 h-4 rounded bg-slate-950 border-slate-800 text-brand-500 focus:ring-0 focus:ring-offset-0"
+                />
+                <span className="font-medium">
+                  Verify Installation Live (Check Port 443 TLS Handshake & DNS Resolution Probe)
+                </span>
+              </label>
+
+              <label className="flex items-center gap-2 cursor-pointer text-xs text-slate-300 hover:text-white">
+                <input
+                  type="checkbox"
+                  checked={provisionRegisterApp}
+                  onChange={(e) => setProvisionRegisterApp(e.target.checked)}
+                  className="w-4 h-4 rounded bg-slate-950 border-slate-800 text-brand-500 focus:ring-0 focus:ring-offset-0"
+                />
+                <span className="font-medium">
+                  Register Domain as Monitored Application in HQ Directory
+                </span>
+              </label>
+            </div>
+
+            {/* Live Syntax Preview Accordion */}
+            <div className="pt-2 border-t border-slate-800/80">
+              <button
+                type="button"
+                onClick={() => setShowCustomConfEditor(!showCustomConfEditor)}
+                className="text-[11px] font-semibold text-brand-400 hover:text-brand-300 inline-flex items-center gap-1.5"
+              >
+                <FileCode size={13} />
+                <span>{showCustomConfEditor ? 'Hide' : 'Inspect Generated'} VirtualHost Configuration (.conf)</span>
+              </button>
+
+              {showCustomConfEditor && (
+                <div className="mt-2 space-y-2">
+                  <div className="flex items-center justify-between text-[11px] text-slate-400">
+                    <span>
+                      Generated for <strong className="text-white">{provisionWebServer.toUpperCase()}</strong>:
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setProvisionCustomConf(getPreviewConfig())}
+                      className="text-[10px] text-brand-400 hover:underline"
+                    >
+                      Reset to Generated
+                    </button>
+                  </div>
+                  <textarea
+                    rows={8}
+                    value={provisionCustomConf || getPreviewConfig()}
+                    onChange={(e) => setProvisionCustomConf(e.target.value)}
+                    className="w-full p-2.5 rounded-lg bg-black/90 border border-slate-800 font-mono text-[11px] text-emerald-400 focus:outline-none focus:border-brand-500 leading-relaxed"
+                  />
+                  <p className="text-[10px] text-slate-500">
+                    You can inspect or customize the configuration before deployment. If left as generated, AI will write standard hardened settings.
+                  </p>
+                </div>
+              )}
+            </div>
+          </form>
+        )}
       </ModalShell>
 
       {/* Delete / Teardown Configuration from Server Modal */}
