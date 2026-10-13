@@ -177,15 +177,16 @@ const TROUBLESHOOT_TOOLS: TroubleshootToolDef[] = [
 
 interface DomainsViewProps {
   initialServerId?: string;
+  initialDomainId?: string;
   onNavigate?: (view: string, id?: string) => void;
 }
 
-export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId, onNavigate }) => {
+export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId, initialDomainId, onNavigate }) => {
   const [domains, setDomains] = useState<DomainItem[]>([]);
   const [servers, setServers] = useState<Server[]>([]);
   const [applications, setApplications] = useState<any[]>([]);
   const [selectedServerId, setSelectedServerId] = useState<string | null>(initialServerId || null);
-  const [selectedDomainId, setSelectedDomainId] = useState<string | null>(null);
+  const [selectedDomainId, setSelectedDomainId] = useState<string | null>(initialDomainId || null);
   const [activeDomainTab, setActiveDomainTab] = useState<'telemetry' | 'troubleshoot' | 'config' | 'logs'>('telemetry');
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -246,6 +247,15 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId, onNav
       setDomains(resDomains);
       setServers(resServers);
       setApplications(resApps);
+      if (initialDomainId) {
+        const targetDom = resDomains.find((d: any) => d.id === initialDomainId);
+        if (targetDom) {
+          const targetSrvId = targetDom.server_id || (resServers[0] && resServers[0].id) || null;
+          if (targetSrvId) setSelectedServerId(targetSrvId);
+          setSelectedDomainId(targetDom.id);
+          fetchDomainDeepDive(targetDom.id);
+        }
+      }
     } catch (e) {
       console.error(e);
     } finally {
@@ -255,7 +265,7 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId, onNav
 
   useEffect(() => {
     loadData();
-  }, []);
+  }, [initialDomainId]);
 
   const fetchDomainDeepDive = async (domainId: string, force = false) => {
     if (deepDives[domainId] && !force) return;

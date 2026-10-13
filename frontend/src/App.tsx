@@ -33,6 +33,7 @@ export const MainAppShell: React.FC = () => {
   const [currentView, setCurrentView] = useState('overview');
   const [selectedAppId, setSelectedAppId] = useState<string | null>(null);
   const [selectedServerId, setSelectedServerId] = useState<string | null>(null);
+  const [selectedDomainId, setSelectedDomainId] = useState<string | null>(null);
 
   const [searchModalOpen, setSearchModalOpen] = useState(false);
   const [wizardModalOpen, setWizardModalOpen] = useState(false);
@@ -69,13 +70,23 @@ export const MainAppShell: React.FC = () => {
     setMobileMenuOpen(false);
     if (view === 'applications' && id) {
       setSelectedAppId(id);
+      setSelectedServerId(null);
+      setSelectedDomainId(null);
       setCurrentView('application-detail');
     } else if (view === 'servers' && id) {
       setSelectedServerId(id);
+      setSelectedAppId(null);
+      setSelectedDomainId(null);
       setCurrentView('server-detail');
+    } else if (view === 'domains' && id) {
+      setSelectedDomainId(id);
+      setSelectedAppId(null);
+      setSelectedServerId(null);
+      setCurrentView('domains');
     } else {
       setSelectedAppId(null);
       setSelectedServerId(null);
+      setSelectedDomainId(null);
       setCurrentView(view);
     }
   };
@@ -138,7 +149,10 @@ export const MainAppShell: React.FC = () => {
           )}
 
           {currentView === 'domains' && (
-            <DomainsView onNavigate={(v, id) => navigateTo(v, id)} />
+            <DomainsView
+              initialDomainId={selectedDomainId || undefined}
+              onNavigate={(v, id) => navigateTo(v, id)}
+            />
           )}
 
           {currentView === 'monitoring' && <MonitoringView />}

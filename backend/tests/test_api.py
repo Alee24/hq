@@ -1522,5 +1522,29 @@ async def test_per_site_git_resolution_no_substring_hijack():
         await ac.delete(f"/api/servers/{srv_id}", headers=headers)
 
 
+@pytest.mark.asyncio
+async def test_comprehensive_dashboard_overview_insights():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        token = await get_admin_token(ac)
+        headers = {"Authorization": f"Bearer {token}"}
 
+        res = await ac.get("/api/dashboard/metrics", headers=headers)
+        assert res.status_code == 200
+        body = res.json()
 
+        # Verify all comprehensive Overview telemetry sections exist
+        assert "applications" in body
+        assert "total_containers" in body["applications"]
+        assert "suites_count" in body["applications"]
+        assert "runtimes" in body["applications"]
+        assert "ports" in body["applications"]
+        assert "servers" in body
+        assert "nodes" in body["servers"]
+        assert "ssl" in body
+        assert "dns_matching_server" in body["ssl"]
+        assert "git" in body
+        assert "tracked_count" in body["git"]
+        assert "app_insights" in body
+        assert isinstance(body["app_insights"], list)
+        assert "domain_insights" in body
+        assert isinstance(body["domain_insights"], list)
