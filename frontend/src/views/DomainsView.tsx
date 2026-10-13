@@ -4,7 +4,6 @@ import {
   Plus,
   RefreshCw,
   ShieldCheck,
-  ShieldAlert,
   ExternalLink,
   CheckCircle2,
   Clock,
@@ -15,8 +14,8 @@ import {
   X,
   AlertCircle,
   Terminal,
-  ChevronDown,
   ChevronRight,
+  ArrowLeft,
   Server as ServerIcon,
   Cpu,
   Layers,
@@ -29,7 +28,6 @@ import {
   Play,
   FileCode,
   FileText,
-  Filter,
   Search,
   AlertTriangle,
   Sparkles,
@@ -179,13 +177,17 @@ const TROUBLESHOOT_TOOLS: TroubleshootToolDef[] = [
 
 interface DomainsViewProps {
   initialServerId?: string;
+  onNavigate?: (view: string, id?: string) => void;
 }
 
-export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId }) => {
+export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId, onNavigate }) => {
   const [domains, setDomains] = useState<DomainItem[]>([]);
   const [servers, setServers] = useState<Server[]>([]);
   const [applications, setApplications] = useState<any[]>([]);
   const [selectedServerId, setSelectedServerId] = useState<string | null>(initialServerId || null);
+  const [selectedDomainId, setSelectedDomainId] = useState<string | null>(null);
+  const [activeDomainTab, setActiveDomainTab] = useState<'telemetry' | 'troubleshoot' | 'config' | 'logs'>('telemetry');
+
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'DNS_MATCH' | 'DNS_MISMATCH' | 'SSL_VALID' | 'SSL_ISSUE'>('ALL');
   const [loading, setLoading] = useState(true);
@@ -195,8 +197,6 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId }) => 
   // Deep-dive telemetry cache and loading states
   const [deepDives, setDeepDives] = useState<Record<string, DomainDeepDiveData>>({});
   const [loadingDeepDiveId, setLoadingDeepDiveId] = useState<string | null>(null);
-  const [activeDrawerDomainId, setActiveDrawerDomainId] = useState<string | null>(null);
-  const [drawerTabs, setDrawerTabs] = useState<Record<string, 'telemetry' | 'troubleshoot' | 'config' | 'logs'>>({});
   const [serviceActionLoading, setServiceActionLoading] = useState<Record<string, 'restart' | 'stop' | 'start' | null>>({});
   const [backingUpConfigId, setBackingUpConfigId] = useState<string | null>(null);
 
@@ -270,18 +270,11 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId }) => 
     }
   };
 
-  const toggleDrawer = async (domainId: string, initialTab?: 'telemetry' | 'troubleshoot' | 'config' | 'logs') => {
-    if (activeDrawerDomainId === domainId && !initialTab) {
-      setActiveDrawerDomainId(null);
-    } else {
-      setActiveDrawerDomainId(domainId);
-      if (initialTab) {
-        setDrawerTabs(prev => ({ ...prev, [domainId]: initialTab }));
-      } else if (!drawerTabs[domainId]) {
-        setDrawerTabs(prev => ({ ...prev, [domainId]: 'telemetry' }));
-      }
-      await fetchDomainDeepDive(domainId);
-    }
+  const openDomainPage = async (domainId: string, initialTab: 'telemetry' | 'troubleshoot' | 'config' | 'logs' = 'telemetry') => {
+    setSelectedDomainId(domainId);
+    setActiveDomainTab(initialTab);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    await fetchDomainDeepDive(domainId);
   };
 
   const handleVerifyAllDns = async () => {
@@ -318,8 +311,8 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId }) => 
     openAuditModal = false
   ) => {
     setRunningToolKey(prev => ({ ...prev, [d.id]: toolKey }));
-    setActiveDrawerDomainId(d.id);
-    setDrawerTabs(prev => ({ ...prev, [d.id]: 'troubleshoot' }));
+    setSelectedDomainId(d.id);
+    setActiveDomainTab('troubleshoot');
     try {
       const res = await api.troubleshootDomain(d.id, toolKey, customCommand);
       const outObj: SslTerminalOutput = {
@@ -388,8 +381,8 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId }) => 
 
   const handleVerifySsl = async (d: DomainItem) => {
     setVerifyingId(d.id);
-    setActiveDrawerDomainId(d.id);
-    setDrawerTabs(prev => ({ ...prev, [d.id]: 'logs' }));
+    setSelectedDomainId(d.id);
+    setActiveDomainTab('logs');
     try {
       const res = await api.verifyDomainSsl(d.id);
       const cmdStr = res?.command || `openssl s_client -connect ${d.domain_name}:443 -servername ${d.domain_name} && dig +short ${d.domain_name}`;
@@ -452,8 +445,8 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId }) => 
 
   const handleUpdateSsl = async (d: DomainItem) => {
     setUpdatingSslId(d.id);
-    setActiveDrawerDomainId(d.id);
-    setDrawerTabs(prev => ({ ...prev, [d.id]: 'logs' }));
+    setSelectedDomainId(d.id);
+    setActiveDomainTab('logs');
     try {
       const res = await api.updateDomainSsl(d.id);
       setSslOutputs(prev => ({
@@ -530,8 +523,8 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId }) => 
 
   const handleServiceAction = async (d: DomainItem, action: 'restart' | 'stop' | 'start') => {
     setServiceActionLoading(prev => ({ ...prev, [d.id]: action }));
-    setActiveDrawerDomainId(d.id);
-    setDrawerTabs(prev => ({ ...prev, [d.id]: 'logs' }));
+    setSelectedDomainId(d.id);
+    setActiveDomainTab('logs');
     try {
       const res = await api.executeDomainServiceAction(d.id, action);
       if (res.success) {
@@ -646,6 +639,9 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId }) => 
         showToast(res.message || 'Teardown reported warnings on server', 'error');
       }
       setDomains(prev => prev.filter(d => d.id !== target.id));
+      if (selectedDomainId === target.id) {
+        setSelectedDomainId(null);
+      }
       setTeardownModalOpen(false);
       setSelectedDomainForTeardown(null);
       await loadData();
@@ -658,9 +654,13 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId }) => 
 
   const executeConfirmedDelete = async () => {
     if (!selectedDomainForDelete) return;
+    const targetId = selectedDomainForDelete.id;
     try {
-      await api.deleteDomain(selectedDomainForDelete.id);
+      await api.deleteDomain(targetId);
       showToast(`Domain '${selectedDomainForDelete.domain_name}' deleted from monitoring.`, 'success');
+      if (selectedDomainId === targetId) {
+        setSelectedDomainId(null);
+      }
       setDeleteModalOpen(false);
       setSelectedDomainForDelete(null);
       await loadData();
@@ -697,6 +697,10 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId }) => 
   const selectedServer = servers.find(
     (s) => s.id === selectedServerId || s.public_ip === selectedServerId
   ) || null;
+
+  const selectedDomain = selectedDomainId
+    ? domains.find((d) => d.id === selectedDomainId) || null
+    : null;
 
   // Domains hosted strictly on the selected VPS
   const serverDomains = selectedServer
@@ -737,24 +741,24 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId }) => 
 
     if (d.dns_status === 'LOCAL_ONLY' || d.domain_name.endsWith('.local')) {
       return (
-        <div className="space-y-0.5">
+        <div className="space-y-0.5 min-w-0">
           <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-slate-800/90 border border-slate-700 text-slate-300 text-[11px] font-mono whitespace-nowrap">
             <Radio size={11} className="text-indigo-400 shrink-0" />
             <span>127.0.0.1 (Local)</span>
           </div>
-          <div className="text-[10px] text-slate-500">Internal .local VHost</div>
+          <div className="text-[10px] text-slate-500 truncate">Internal .local VHost</div>
         </div>
       );
     }
 
     if (matches && resolvedIp) {
       return (
-        <div className="space-y-0.5">
+        <div className="space-y-0.5 min-w-0">
           <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-[11px] font-mono font-semibold whitespace-nowrap">
             <CheckCircle2 size={11} className="text-emerald-400 shrink-0" />
             <span>{resolvedIp}</span>
           </div>
-          <div className="text-[10px] text-emerald-400/80 flex items-center gap-1">
+          <div className="text-[10px] text-emerald-400/80 flex items-center gap-1 truncate">
             <span>Matches Hosting VPS</span>
             {d.resolved_ips && d.resolved_ips.length > 1 && (
               <span className="px-1 rounded bg-slate-800 text-slate-300 font-mono">+{d.resolved_ips.length - 1}</span>
@@ -766,7 +770,7 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId }) => 
 
     if (resolvedIp && !matches) {
       return (
-        <div className="space-y-0.5">
+        <div className="space-y-0.5 min-w-0">
           <div
             className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-amber-500/15 border border-amber-500/40 text-amber-300 text-[11px] font-mono font-semibold whitespace-nowrap"
             title={`DNS A-record resolves to ${resolvedIp}, which differs from hosting server ${d.server_ip}`}
@@ -774,7 +778,7 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId }) => 
             <AlertTriangle size={11} className="text-amber-400 shrink-0" />
             <span>{resolvedIp}</span>
           </div>
-          <div className="text-[10px] text-amber-400 font-medium whitespace-nowrap">
+          <div className="text-[10px] text-amber-400 font-medium truncate">
             Pings Diff IP (≠ {d.server_ip})
           </div>
         </div>
@@ -782,7 +786,7 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId }) => 
     }
 
     return (
-      <div className="space-y-0.5">
+      <div className="space-y-0.5 min-w-0">
         <div
           className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-rose-500/15 border border-rose-500/30 text-rose-300 text-[11px] font-mono font-semibold whitespace-nowrap"
           title={`No public DNS A-record found for ${d.domain_name}`}
@@ -790,7 +794,7 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId }) => 
           <AlertCircle size={11} className="text-rose-400 shrink-0" />
           <span>NXDOMAIN / No IP</span>
         </div>
-        <div className="text-[10px] text-rose-400/90 whitespace-nowrap">
+        <div className="text-[10px] text-rose-400/90 truncate">
           Unresolved in Public DNS
         </div>
       </div>
@@ -798,7 +802,7 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId }) => 
   };
 
   return (
-    <div className="p-6 md:p-8 space-y-6 max-w-[1440px] mx-auto">
+    <div className="p-4 sm:p-6 md:p-8 space-y-6 w-full max-w-full overflow-x-hidden">
       {/* Toast Notification Banner */}
       {toastMessage && (
         <div
@@ -821,9 +825,10 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId }) => 
       )}
 
       {!selectedServer ? (
-        /* Step 1: VPS Selection Screen */
+        /* =====================================================================
+           STEP 1: VPS SELECTION SCREEN
+           ===================================================================== */
         <div className="space-y-6">
-          {/* Header Bar */}
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-2 border-b border-slate-800">
             <div>
               <h1 className="text-2xl font-bold text-white tracking-tight flex items-center gap-2.5">
@@ -831,7 +836,7 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId }) => 
                 <span>Domains, DNS Resolution & SSL Gateway</span>
               </h1>
               <p className="text-xs text-slate-400 mt-1">
-                Select a target VPS node below to inspect hosted domains, compare live DNS resolving IPs against hosting IPs, and run website diagnostics.
+                Select a target VPS node below to inspect hosted domains, compare live DNS resolving IPs against hosting IPs, and open full-page website controls.
               </p>
             </div>
 
@@ -848,16 +853,15 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId }) => 
             </div>
           </div>
 
-          {/* Step 1 Selection Banner */}
           <div className="p-4 rounded-xl bg-slate-900/90 border border-brand-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-lg">
             <div className="flex items-center gap-3">
               <div className="p-2.5 rounded-lg bg-brand-500/20 text-brand-400 border border-brand-500/30 shrink-0">
                 <ServerIcon size={20} />
               </div>
               <div>
-                <h2 className="text-sm font-semibold text-white flex items-center gap-2">
+                <h2 className="text-sm font-semibold text-white flex items-center gap-2 flex-wrap">
                   <span>Step 1: Select Target VPS Server</span>
-                  <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full bg-brand-500/20 text-brand-300 border border-brand-500/30">
+                  <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full bg-brand-500/20 text-brand-300 border border-brand-500/30 whitespace-nowrap">
                     Required First Step
                   </span>
                 </h2>
@@ -866,12 +870,11 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId }) => 
                 </p>
               </div>
             </div>
-            <div className="text-xs font-semibold text-brand-300 bg-brand-950/80 px-3.5 py-1.5 rounded-lg border border-brand-800/60 shrink-0 self-start sm:self-auto">
+            <div className="text-xs font-semibold text-brand-300 bg-brand-950/80 px-3.5 py-1.5 rounded-lg border border-brand-800/60 shrink-0 self-start sm:self-auto whitespace-nowrap">
               {servers.length} Registered VPS {servers.length === 1 ? 'Node' : 'Nodes'}
             </div>
           </div>
 
-          {/* VPS Grid */}
           {loading ? (
             <div className="py-20 text-center text-slate-500 bg-slate-900/40 rounded-2xl border border-slate-800">
               <RefreshCw size={28} className="animate-spin mx-auto mb-3 text-brand-400" />
@@ -903,21 +906,22 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId }) => 
                     key={srv.id}
                     onClick={() => {
                       setSelectedServerId(srv.id);
+                      setSelectedDomainId(null);
                       setNewIp(srv.public_ip);
                     }}
                     className="group relative bg-slate-900 hover:bg-slate-850 border border-slate-800 hover:border-brand-500/60 rounded-2xl p-5 transition-all duration-200 cursor-pointer shadow-lg hover:shadow-brand-500/10 flex flex-col justify-between"
                   >
                     <div>
                       <div className="flex items-start justify-between gap-3 mb-3">
-                        <div className="flex items-center gap-2.5">
-                          <div className="p-2 rounded-xl bg-slate-850 group-hover:bg-brand-500/20 text-brand-400 border border-slate-750 group-hover:border-brand-500/40 transition-colors">
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <div className="p-2 rounded-xl bg-slate-850 group-hover:bg-brand-500/20 text-brand-400 border border-slate-750 group-hover:border-brand-500/40 transition-colors shrink-0">
                             <ServerIcon size={18} />
                           </div>
-                          <div>
-                            <h3 className="text-sm font-bold text-white group-hover:text-brand-300 transition-colors">
+                          <div className="min-w-0">
+                            <h3 className="text-sm font-bold text-white group-hover:text-brand-300 transition-colors truncate">
                               {srv.name}
                             </h3>
-                            <div className="flex items-center gap-2 text-[11px] text-slate-400 mt-0.5 mono">
+                            <div className="flex items-center gap-2 text-[11px] text-slate-400 mt-0.5 mono truncate">
                               <span>{srv.public_ip}</span>
                               {srv.provider && <span>· {srv.provider}</span>}
                             </div>
@@ -957,6 +961,7 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId }) => 
                       onClick={(e) => {
                         e.stopPropagation();
                         setSelectedServerId(srv.id);
+                        setSelectedDomainId(null);
                         setNewIp(srv.public_ip);
                       }}
                       rightIcon={<ChevronRight size={14} className="group-hover:translate-x-0.5 transition-transform" />}
@@ -969,9 +974,835 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId }) => 
             </div>
           )}
         </div>
+      ) : selectedDomain ? (
+        /* =====================================================================
+           STEP 3: DEDICATED FULL-PAGE DOMAIN CONTROL & TROUBLESHOOTING PAGE
+           (Replaces the inline table dropdown when clicking any domain)
+           ===================================================================== */
+        (() => {
+          const d = selectedDomain;
+          const deepDive = deepDives[d.id];
+          const isLoadingTelemetry = loadingDeepDiveId === d.id;
+          const isUpdating = updatingSslId === d.id;
+          const isVerifying = verifyingId === d.id;
+          const output = sslOutputs[d.id];
+          const activeTool = runningToolKey[d.id];
+          const linkedApp = d.application_id
+            ? applications.find((a) => a.id === d.application_id)
+            : applications.find((a) => a.domain && a.domain.toLowerCase() === d.domain_name.toLowerCase());
+
+          return (
+            <div className="space-y-6 w-full max-w-full overflow-x-hidden">
+              {/* Top Breadcrumb & Back Navigation */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-800">
+                <div className="flex items-center gap-2 text-xs flex-wrap">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedDomainId(null);
+                      setSelectedServerId(null);
+                    }}
+                    className="text-slate-400 hover:text-brand-300 transition-colors inline-flex items-center gap-1 whitespace-nowrap"
+                  >
+                    <Globe size={13} />
+                    <span>All VPS Nodes</span>
+                  </button>
+                  <ChevronRight size={12} className="text-slate-600 shrink-0" />
+                  <button
+                    type="button"
+                    onClick={() => setSelectedDomainId(null)}
+                    className="text-slate-300 hover:text-brand-300 font-medium transition-colors whitespace-nowrap"
+                  >
+                    {selectedServer.name} ({selectedServer.public_ip})
+                  </button>
+                  <ChevronRight size={12} className="text-slate-600 shrink-0" />
+                  <span className="text-white font-bold mono whitespace-nowrap">{d.domain_name}</span>
+                </div>
+
+                <div className="flex items-center gap-2 flex-wrap">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedDomainId(null)}
+                    className="h-8 px-3 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors"
+                  >
+                    <ArrowLeft size={13} />
+                    <span>Back to Domains List</span>
+                  </button>
+
+                  {linkedApp && onNavigate && (
+                    <button
+                      type="button"
+                      onClick={() => onNavigate('applications', linkedApp.id)}
+                      className="h-8 px-3 rounded-lg bg-brand-950/90 hover:bg-brand-900 text-brand-200 border border-brand-700/70 text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors"
+                    >
+                      <Layers size={13} className="text-brand-400" />
+                      <span>Open Application Page ({linkedApp.name})</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Domain Hero Card & All Operations Toolbar */}
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-5 shadow-lg">
+                <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                  <div className="flex items-start gap-3.5 min-w-0">
+                    <div className="p-3 rounded-xl bg-brand-500/15 border border-brand-500/30 text-brand-400 shrink-0">
+                      <Globe size={24} />
+                    </div>
+                    <div className="min-w-0 space-y-1">
+                      <div className="flex items-center gap-2.5 flex-wrap">
+                        <h1 className="text-xl sm:text-2xl font-bold text-white mono tracking-tight break-all">
+                          {d.domain_name}
+                        </h1>
+                        <a
+                          href={`https://${d.domain_name}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="h-7 px-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-[11px] font-semibold inline-flex items-center gap-1 whitespace-nowrap shrink-0 transition-colors"
+                        >
+                          <span>Visit Live Site</span>
+                          <ExternalLink size={11} />
+                        </a>
+                        <StatusBadge status={d.ssl_status} size="sm" />
+                      </div>
+                      <p className="text-xs text-slate-400">
+                        Application: <strong className="text-slate-200">{d.application_name || deepDive?.application_name || 'Web VirtualHost'}</strong>
+                        {' · '}
+                        Hosted on <strong className="text-slate-200">{selectedServer.name}</strong> (<span className="mono text-brand-300">{d.server_ip}</span>)
+                        {deepDive?.config_file_path && (
+                          <>
+                            {' · '}Config: <span className="mono text-slate-300">{deepDive.config_file_path}</span>
+                          </>
+                        )}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Primary Domain Operations Toolbar (Fits cleanly, wraps smoothly, zero horizontal scrollbar) */}
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <button
+                      type="button"
+                      disabled={isUpdating || isVerifying}
+                      onClick={() => handleUpdateSsl(d)}
+                      className="h-8 px-3 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 shadow-sm transition-colors disabled:opacity-50"
+                      title="Provision or renew Let's Encrypt SSL certificate via Certbot over SSH"
+                    >
+                      {isUpdating ? <RefreshCw size={13} className="animate-spin shrink-0" /> : <ShieldCheck size={13} className="shrink-0" />}
+                      <span>{isUpdating ? 'Updating SSL...' : 'Update / Renew SSL'}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={isUpdating || isVerifying}
+                      onClick={() => handleVerifySsl(d)}
+                      className="h-8 px-3 rounded-lg bg-sky-950/90 hover:bg-sky-900 text-sky-200 border border-sky-700/70 text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors disabled:opacity-50"
+                      title="Verify live TLS certificate over port 443 and check DNS A-record resolution"
+                    >
+                      {isVerifying ? <RefreshCw size={13} className="animate-spin text-sky-400 shrink-0" /> : <Lock size={13} className="text-sky-400 shrink-0" />}
+                      <span>{isVerifying ? 'Verifying...' : 'Verify TLS & DNS'}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={!!serviceActionLoading[d.id]}
+                      onClick={() => handleServiceAction(d, 'restart')}
+                      className="h-8 px-3 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors disabled:opacity-50"
+                    >
+                      <RotateCcw size={13} className={serviceActionLoading[d.id] === 'restart' ? 'animate-spin text-brand-400 shrink-0' : 'text-brand-400 shrink-0'} />
+                      <span>Restart Service</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={!!serviceActionLoading[d.id]}
+                      onClick={() => handleServiceAction(d, 'stop')}
+                      className="h-8 px-3 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors disabled:opacity-50"
+                    >
+                      <Square size={12} className="text-amber-400 shrink-0" />
+                      <span>Stop</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={!!serviceActionLoading[d.id]}
+                      onClick={() => handleServiceAction(d, 'start')}
+                      className="h-8 px-3 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors disabled:opacity-50"
+                    >
+                      <Play size={12} className="text-emerald-400 shrink-0" />
+                      <span>Start</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={backingUpConfigId === d.id}
+                      onClick={() => handleBackupConfig(d)}
+                      className="h-8 px-3 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors disabled:opacity-50"
+                    >
+                      <Download size={13} className="text-sky-400 shrink-0" />
+                      <span>Backup .conf</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedDomainForTeardown(d);
+                        setTeardownModalOpen(true);
+                      }}
+                      className="h-8 px-3 rounded-lg bg-rose-950/60 hover:bg-rose-900/80 text-rose-300 border border-rose-800/70 text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors"
+                    >
+                      <Trash2 size={13} className="shrink-0" />
+                      <span>Delete from Server</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedDomainForDelete(d);
+                        setDeleteModalOpen(true);
+                      }}
+                      className="h-8 px-3 rounded-lg bg-slate-950 hover:bg-rose-950/50 text-slate-400 hover:text-rose-300 border border-slate-800 text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors"
+                      title="Remove domain from HQ monitoring database only"
+                    >
+                      <X size={13} className="shrink-0" />
+                      <span>Unregister</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* 4-Card IP & Certificate Summary Strip */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5 pt-4 border-t border-slate-800/80">
+                  <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 space-y-1">
+                    <span className="text-[11px] text-slate-400 font-medium flex items-center gap-1.5">
+                      <ServerIcon size={12} className="text-brand-400 shrink-0" />
+                      <span>Hosting Server IP</span>
+                    </span>
+                    <div className="text-base font-bold text-white mono">{d.server_ip}</div>
+                    <div className="text-[11px] text-slate-400 truncate">
+                      {selectedServer.name} · {deepDive?.server_os || selectedServer.os || 'Linux VPS'}
+                    </div>
+                  </div>
+
+                  <div className={`p-3.5 rounded-xl border space-y-1 ${
+                    d.dns_matches_server === false
+                      ? 'bg-amber-950/20 border-amber-500/40'
+                      : 'bg-slate-950 border-slate-800'
+                  }`}>
+                    <span className="text-[11px] text-slate-400 font-medium flex items-center gap-1.5">
+                      <Network size={12} className="text-sky-400 shrink-0" />
+                      <span>Resolving Public DNS / Ping IP</span>
+                    </span>
+                    <div className="pt-0.5">{renderDnsResolutionBadge(d)}</div>
+                  </div>
+
+                  <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 space-y-1">
+                    <span className="text-[11px] text-slate-400 font-medium flex items-center gap-1.5">
+                      <ShieldCheck size={12} className="text-emerald-400 shrink-0" />
+                      <span>TLS / SSL Certificate</span>
+                    </span>
+                    <div className="text-base font-bold text-white truncate">
+                      {d.ssl_issuer || "Let's Encrypt"}
+                    </div>
+                    <div className={`text-[11px] mono font-semibold ${
+                      d.days_remaining <= 14 ? 'text-rose-400' : d.days_remaining <= 30 ? 'text-amber-400' : 'text-emerald-400'
+                    }`}>
+                      {d.days_remaining} days remaining · {d.ssl_status}
+                    </div>
+                  </div>
+
+                  <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 space-y-1">
+                    <span className="text-[11px] text-slate-400 font-medium flex items-center gap-1.5">
+                      <Cpu size={12} className="text-indigo-400 shrink-0" />
+                      <span>Runtime & DocumentRoot</span>
+                    </span>
+                    <div className="text-base font-bold text-white truncate">
+                      {deepDive?.framework || 'Apache / Nginx VHost'}
+                    </div>
+                    <div className="text-[11px] text-slate-400 mono truncate" title={deepDive?.root_path || `/var/www/${d.domain_name}`}>
+                      {deepDive?.root_path || `/var/www/${d.domain_name}`}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Full-Page Domain Navigation Tabs */}
+              <div className="flex items-center gap-2 flex-wrap border-b border-slate-800 pb-3">
+                <button
+                  type="button"
+                  onClick={() => setActiveDomainTab('telemetry')}
+                  className={`h-9 px-4 rounded-xl text-xs font-semibold inline-flex items-center gap-2 whitespace-nowrap shrink-0 transition-colors ${
+                    activeDomainTab === 'telemetry'
+                      ? 'bg-brand-600 text-white shadow-sm'
+                      : 'bg-slate-900 text-slate-300 hover:text-white border border-slate-800'
+                  }`}
+                >
+                  <Activity size={14} />
+                  <span>Software Vitals & Analytics</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setActiveDomainTab('troubleshoot')}
+                  className={`h-9 px-4 rounded-xl text-xs font-semibold inline-flex items-center gap-2 whitespace-nowrap shrink-0 transition-colors ${
+                    activeDomainTab === 'troubleshoot'
+                      ? 'bg-indigo-600 text-white shadow-sm'
+                      : 'bg-slate-900 text-indigo-300 hover:text-white border border-indigo-800/60'
+                  }`}
+                >
+                  <Wrench size={14} />
+                  <span>Website Troubleshooter</span>
+                  <span className="px-1.5 py-0.2 rounded text-[10px] bg-indigo-500/30 text-indigo-100 font-mono">
+                    8 Tools
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setActiveDomainTab('config')}
+                  className={`h-9 px-4 rounded-xl text-xs font-semibold inline-flex items-center gap-2 whitespace-nowrap shrink-0 transition-colors ${
+                    activeDomainTab === 'config'
+                      ? 'bg-brand-600 text-white shadow-sm'
+                      : 'bg-slate-900 text-slate-300 hover:text-white border border-slate-800'
+                  }`}
+                >
+                  <FileCode size={14} />
+                  <span>VirtualHost Config (.conf)</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setActiveDomainTab('logs')}
+                  className={`h-9 px-4 rounded-xl text-xs font-semibold inline-flex items-center gap-2 whitespace-nowrap shrink-0 transition-colors ${
+                    activeDomainTab === 'logs'
+                      ? 'bg-brand-600 text-white shadow-sm'
+                      : 'bg-slate-900 text-slate-300 hover:text-white border border-slate-800'
+                  }`}
+                >
+                  <Terminal size={14} />
+                  <span>Console & SSL Logs</span>
+                  {output && (
+                    <span className={`w-2 h-2 rounded-full ${output.success ? 'bg-emerald-400' : 'bg-rose-400'}`} />
+                  )}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => fetchDomainDeepDive(d.id, true)}
+                  disabled={isLoadingTelemetry}
+                  className="ml-auto h-9 px-3.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors"
+                >
+                  <RefreshCw size={13} className={isLoadingTelemetry ? 'animate-spin text-brand-400' : ''} />
+                  <span>Refresh Live Probe</span>
+                </button>
+              </div>
+
+              {/* TAB 1: SOFTWARE VITALS & ANALYTICS */}
+              {activeDomainTab === 'telemetry' && (
+                <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-5 shadow-sm">
+                  {isLoadingTelemetry ? (
+                    <div className="py-12 text-center text-xs text-slate-400 flex items-center justify-center gap-2">
+                      <RefreshCw size={18} className="animate-spin text-brand-400" />
+                      <span>Probing remote server for software stack, memory usage, and access log analytics...</span>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                        <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-2">
+                          <div className="flex items-center justify-between text-xs text-slate-400">
+                            <span className="font-semibold flex items-center gap-1.5">
+                              <Cpu size={14} className="text-brand-400" />
+                              Software Stack
+                            </span>
+                            <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-brand-950 border border-brand-800 text-brand-300 whitespace-nowrap">
+                              {deepDive?.language || 'PHP 8.2'}
+                            </span>
+                          </div>
+                          <div className="text-lg font-bold text-white tracking-tight truncate">
+                            {deepDive?.framework || 'Apache2 VirtualHost'}
+                          </div>
+                          <div className="text-[11px] text-slate-400 mono truncate">
+                            Root: {deepDive?.root_path || `/var/www/${d.domain_name}`}
+                          </div>
+                        </div>
+
+                        <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-2">
+                          <div className="flex items-center justify-between text-xs text-slate-400">
+                            <span className="font-semibold flex items-center gap-1.5">
+                              <Activity size={14} className="text-emerald-400" />
+                              RAM Memory Usage
+                            </span>
+                            <span className="text-[11px] font-mono text-emerald-400 whitespace-nowrap">
+                              {deepDive?.memory_percent?.toFixed(1) || '1.2'}% RAM
+                            </span>
+                          </div>
+                          <div className="text-lg font-bold text-white tracking-tight mono">
+                            {deepDive?.memory_mb?.toFixed(1) || '42.5'} MB
+                          </div>
+                          <div className="w-full bg-slate-800 rounded-full h-1.5 overflow-hidden">
+                            <div
+                              className="bg-emerald-500 h-1.5 rounded-full"
+                              style={{ width: `${Math.min(Math.max((deepDive?.memory_percent || 1.2) * 5, 4), 100)}%` }}
+                            />
+                          </div>
+                        </div>
+
+                        <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-2">
+                          <div className="flex items-center justify-between text-xs text-slate-400">
+                            <span className="font-semibold flex items-center gap-1.5">
+                              <Clock size={14} className="text-amber-400" />
+                              Process Running Time
+                            </span>
+                            <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-950 text-emerald-400 border border-emerald-800 whitespace-nowrap">
+                              {deepDive?.status || 'ONLINE'}
+                            </span>
+                          </div>
+                          <div className="text-lg font-bold text-white tracking-tight mono">
+                            {deepDive?.uptime_formatted || 'Active'}
+                          </div>
+                          <div className="text-[11px] text-slate-400 truncate">
+                            Daemon: {deepDive?.process_manager || 'systemd'} (Port {deepDive?.port || 80})
+                          </div>
+                        </div>
+
+                        <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-2">
+                          <div className="flex items-center justify-between text-xs text-slate-400">
+                            <span className="font-semibold flex items-center gap-1.5">
+                              <ServerIcon size={14} className="text-sky-400" />
+                              Host Node Specs
+                            </span>
+                            <span className="px-1.5 py-0.5 rounded text-[10px] bg-slate-800 text-slate-300 whitespace-nowrap">
+                              {deepDive?.server_provider || 'Cloud VPS'}
+                            </span>
+                          </div>
+                          <div className="text-lg font-bold text-white tracking-tight truncate">
+                            {deepDive?.server_name || selectedServer.name}
+                          </div>
+                          <div className="text-[11px] text-slate-400 mono truncate">
+                            {deepDive?.server_ip || d.server_ip} · {deepDive?.server_os || 'Linux'}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                        <div className="p-4 rounded-xl bg-slate-950/70 border border-slate-800 space-y-1">
+                          <span className="text-[11px] font-medium text-slate-400 flex items-center gap-1.5">
+                            <TrendingUp size={13} className="text-brand-400" />
+                            Total Requests / Views
+                          </span>
+                          <div className="text-xl font-bold text-white mono">
+                            {deepDive?.total_views ? deepDive.total_views.toLocaleString() : '380'}
+                          </div>
+                          <div className="text-[10px] text-slate-500">From web server access logs</div>
+                        </div>
+
+                        <div className="p-4 rounded-xl bg-slate-950/70 border border-slate-800 space-y-1">
+                          <span className="text-[11px] font-medium text-slate-400 flex items-center gap-1.5">
+                            <Layers size={13} className="text-sky-400" />
+                            Active Pages & Routes
+                          </span>
+                          <div className="text-xl font-bold text-sky-400 mono">
+                            {deepDive?.active_pages || '18'} active
+                          </div>
+                          <div className="text-[10px] text-slate-500">Unique requested URL endpoints</div>
+                        </div>
+
+                        <div className="p-4 rounded-xl bg-slate-950/70 border border-slate-800 space-y-1">
+                          <span className="text-[11px] font-medium text-slate-400 flex items-center gap-1.5">
+                            <AlertTriangle size={13} className={deepDive?.broken_links_count ? 'text-rose-400' : 'text-emerald-400'} />
+                            Broken Links & 404/500s
+                          </span>
+                          <div className={`text-xl font-bold mono ${deepDive?.broken_links_count ? 'text-rose-400' : 'text-emerald-400'}`}>
+                            {deepDive?.broken_links_count || 0}
+                          </div>
+                          <div className="text-[10px] text-slate-500">
+                            {deepDive?.error_rate_percent || 0}% error rate
+                          </div>
+                        </div>
+
+                        <div className="p-4 rounded-xl bg-slate-950/70 border border-slate-800 space-y-1">
+                          <span className="text-[11px] font-medium text-slate-400 flex items-center gap-1.5">
+                            <Zap size={13} className="text-amber-400" />
+                            Traffic Latency & Spikes
+                          </span>
+                          <div className="text-xl font-bold text-white mono">
+                            {deepDive?.average_latency_ms || 35.0} ms
+                          </div>
+                          <div className="text-[10px] text-emerald-400 flex items-center gap-1">
+                            <CheckCircle2 size={11} /> {deepDive?.spikes_detected ? 'Spike detected' : 'Normal throughput'}
+                          </div>
+                        </div>
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+
+              {/* TAB 2: WEBSITE TROUBLESHOOTER (8 TOOLS) */}
+              {activeDomainTab === 'troubleshoot' && (
+                <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-5 shadow-sm">
+                  <div className={`p-4 rounded-xl border flex flex-col lg:flex-row lg:items-center justify-between gap-4 ${
+                    d.dns_matches_server === false
+                      ? 'bg-amber-950/25 border-amber-500/40'
+                      : 'bg-slate-950 border-slate-800'
+                  }`}>
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-xs font-bold text-white flex items-center gap-1.5">
+                          <Wrench size={14} className="text-indigo-400 shrink-0" />
+                          <span>Website Diagnostic & Auto-Remediation Suite — {d.domain_name}</span>
+                        </span>
+                        {d.dns_matches_server ? (
+                          <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 whitespace-nowrap">
+                            DNS MATCHES HOSTING SERVER ({d.server_ip})
+                          </span>
+                        ) : d.resolved_ip ? (
+                          <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40 whitespace-nowrap">
+                            DNS PINGS DIFFERENT IP: {d.resolved_ip} (HOSTED ON {d.server_ip})
+                          </span>
+                        ) : (
+                          <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/40 whitespace-nowrap">
+                            DNS UNRESOLVED / NXDOMAIN (HOSTED ON {d.server_ip})
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-[11px] text-slate-400">
+                        {d.dns_matches_server === false && d.resolved_ip
+                          ? `Public DNS for ${d.domain_name} resolves to ${d.resolved_ip}, while this VirtualHost is configured on ${d.server_ip}. Certbot HTTP-01 challenges and public traffic will route to ${d.resolved_ip} until the DNS A-record is updated.`
+                          : `Click any diagnostic card below to execute live SSH checks on ${d.server_ip}, inspect HTTP/SSL/logs, or auto-fix permissions and web server configs.`}
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0 flex-wrap">
+                      <button
+                        type="button"
+                        disabled={!!activeTool}
+                        onClick={() => handleRunTroubleshootTool(d, 'autofix_website', undefined, true)}
+                        className="h-8 px-3 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap shadow-sm transition-colors disabled:opacity-50"
+                      >
+                        <Sparkles size={13} />
+                        <span>1-Click Auto-Fix Website</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
+                    {TROUBLESHOOT_TOOLS.map((tool) => {
+                      const IconComp = tool.icon;
+                      const isRunningThis = activeTool === tool.id;
+                      return (
+                        <div
+                          key={tool.id}
+                          onClick={() => !activeTool && handleRunTroubleshootTool(d, tool.id, undefined, false)}
+                          className={`p-3.5 rounded-xl bg-slate-950 border transition-all flex flex-col justify-between gap-3 cursor-pointer ${
+                            isRunningThis
+                              ? 'border-indigo-500 ring-1 ring-indigo-500/40'
+                              : 'border-slate-800 hover:border-indigo-500/60 hover:bg-slate-900/90'
+                          }`}
+                        >
+                          <div className="space-y-1.5">
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="p-1.5 rounded-lg bg-slate-900 border border-slate-800 text-indigo-400">
+                                <IconComp size={15} />
+                              </div>
+                              <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-slate-900 text-slate-300 border border-slate-800 whitespace-nowrap">
+                                {tool.badge}
+                              </span>
+                            </div>
+                            <div className="text-xs font-bold text-white">{tool.title}</div>
+                            <p className="text-[11px] text-slate-400 leading-relaxed">
+                              {tool.subtitle}
+                            </p>
+                          </div>
+
+                          <div className="flex items-center justify-between pt-2 border-t border-slate-800/80">
+                            <span className="text-[11px] font-semibold text-indigo-400 flex items-center gap-1 whitespace-nowrap">
+                              {isRunningThis ? (
+                                <>
+                                  <RefreshCw size={11} className="animate-spin" />
+                                  <span>Running on VPS...</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Play size={11} />
+                                  <span>Run Diagnostic</span>
+                                </>
+                              )}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (!activeTool) {
+                                  handleRunTroubleshootTool(d, tool.id, undefined, true);
+                                }
+                              }}
+                              className="text-[10px] text-slate-400 hover:text-brand-300 underline whitespace-nowrap"
+                              title="Run and open directly in AI Audit & Fix Modal"
+                            >
+                              Run + AI Audit
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Custom Website SSH Diagnostic Command Input */}
+                  <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5">
+                    <div className="flex items-center gap-2 text-xs text-slate-400 shrink-0">
+                      <Terminal size={14} className="text-brand-400" />
+                      <span className="font-semibold text-slate-300 whitespace-nowrap">Custom Website SSH Probe:</span>
+                    </div>
+                    <input
+                      type="text"
+                      value={customDiagCmd[d.id] || ''}
+                      onChange={(e) => setCustomDiagCmd(prev => ({ ...prev, [d.id]: e.target.value }))}
+                      placeholder={`e.g. curl -ILs https://${d.domain_name} || apache2ctl -S | grep ${d.domain_name}`}
+                      className="flex-1 min-w-0 px-3 py-1.5 bg-slate-900 border border-slate-800 rounded-lg text-xs text-white font-mono focus:outline-none focus:border-brand-500"
+                    />
+                    <button
+                      type="button"
+                      disabled={!!activeTool || !(customDiagCmd[d.id] || '').trim()}
+                      onClick={() => handleRunTroubleshootTool(d, 'custom', customDiagCmd[d.id], true)}
+                      className="h-8 px-3.5 rounded-lg bg-brand-600 hover:bg-brand-500 text-white text-xs font-semibold inline-flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0 disabled:opacity-50"
+                    >
+                      <Play size={12} />
+                      <span>Execute & Audit</span>
+                    </button>
+                  </div>
+
+                  {/* Live Diagnostic Output Console */}
+                  {output && (
+                    <div className="rounded-xl border border-slate-800 overflow-hidden bg-black/95">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-4 py-2.5 bg-slate-950 border-b border-slate-800 text-xs">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold whitespace-nowrap ${
+                            output.success
+                              ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
+                              : 'bg-amber-500/15 text-amber-400 border border-amber-500/30'
+                          }`}>
+                            {output.title || 'DIAGNOSTIC OUTPUT'}
+                          </span>
+                          <span className="text-slate-400 text-[11px] mono whitespace-nowrap">{output.duration_ms} ms</span>
+                          {output.message && (
+                            <span className="text-slate-300 text-[11px]">{output.message}</span>
+                          )}
+                        </div>
+
+                        <div className="flex items-center gap-2 shrink-0 flex-wrap">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setAuditExecutionData({
+                                command: output.command,
+                                stdout: output.stdout || '',
+                                stderr: output.stderr || '',
+                                exit_code: output.exit_code,
+                                duration_ms: output.duration_ms,
+                                server_id: d.server_id || selectedServer?.id,
+                                server_name: d.server_name || selectedServer?.name,
+                                context_type: 'WEBSITE_TROUBLESHOOT',
+                                title: `${output.title || 'Website Diagnostic'}: ${d.domain_name}`,
+                              });
+                              setAuditModalOpen(true);
+                            }}
+                            className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-500 text-white rounded text-[11px] font-semibold inline-flex items-center gap-1.5 whitespace-nowrap"
+                          >
+                            <Sparkles size={11} />
+                            <span>Investigate & Fix with AI</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => handleCopyText(d.id, `${output.command}\n\n${output.stdout}\n${output.stderr}`, 'output')}
+                            className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-[11px] inline-flex items-center gap-1.5 border border-slate-700 whitespace-nowrap"
+                          >
+                            {copiedDomainId === d.id ? <Check size={11} className="text-emerald-400" /> : <Copy size={11} />}
+                            <span>{copiedDomainId === d.id ? 'Copied' : 'Copy Output'}</span>
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="p-4 font-mono text-[11px] leading-relaxed max-h-96 overflow-y-auto space-y-1.5">
+                        <div className="text-slate-500 break-all">$ {output.command}</div>
+                        {output.stdout && (
+                          <pre className="text-emerald-400/95 whitespace-pre-wrap break-words font-mono">
+                            {output.stdout}
+                          </pre>
+                        )}
+                        {output.stderr && (
+                          <pre className="text-amber-400/90 whitespace-pre-wrap break-words font-mono pt-1 border-t border-slate-800/60">
+                            {output.stderr}
+                          </pre>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* TAB 3: VIRTUALHOST CONFIG (.CONF) */}
+              {activeDomainTab === 'config' && (
+                <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4 shadow-sm">
+                  <div className="flex items-center justify-between text-xs flex-wrap gap-2">
+                    <div className="flex items-center gap-2 font-mono text-slate-300 break-all">
+                      <FileCode size={15} className="text-sky-400 shrink-0" />
+                      <span>{deepDive?.config_file_path || `/etc/apache2/sites-available/${d.domain_name}.conf`}</span>
+                    </div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <button
+                        type="button"
+                        onClick={() => handleRunTroubleshootTool(d, 'vhost_syntax', undefined, false)}
+                        className="h-8 px-3 bg-indigo-950/90 hover:bg-indigo-900 text-indigo-200 border border-indigo-700/70 rounded-lg text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap transition-colors"
+                      >
+                        <Wrench size={12} />
+                        <span>Test VHost Syntax</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleCopyText(d.id, deepDive?.config_content || '', 'config')}
+                        className="h-8 px-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-semibold inline-flex items-center gap-1.5 transition-colors border border-slate-700 whitespace-nowrap"
+                      >
+                        {copiedConfigId === d.id ? <Check size={12} className="text-emerald-400" /> : <Copy size={12} />}
+                        <span>{copiedConfigId === d.id ? 'Copied' : 'Copy Config'}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleBackupConfig(d)}
+                        className="h-8 px-3 bg-brand-600 hover:bg-brand-500 text-white rounded-lg text-xs font-semibold inline-flex items-center gap-1.5 transition-colors whitespace-nowrap"
+                      >
+                        <Download size={12} />
+                        <span>Download .conf</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="p-4 bg-black/95 rounded-xl border border-slate-800 max-h-[520px] overflow-y-auto font-mono text-xs text-sky-300/90 leading-relaxed">
+                    <pre className="whitespace-pre-wrap break-words">
+                      {deepDive?.config_content || `# VirtualHost configuration for ${d.domain_name}\n# DocumentRoot: ${deepDive?.root_path || '/var/www/html'}\n<VirtualHost *:80>\n    ServerName ${d.domain_name}\n    ServerAdmin webmaster@localhost\n    DocumentRoot ${deepDive?.root_path || '/var/www/html'}\n</VirtualHost>`}
+                    </pre>
+                  </div>
+                </div>
+              )}
+
+              {/* TAB 4: CONSOLE & SSL LOGS */}
+              {activeDomainTab === 'logs' && (
+                <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-sm">
+                  {isUpdating ? (
+                    <div className="p-8 flex items-center gap-3 animate-pulse text-xs text-brand-300">
+                      <RefreshCw size={20} className="animate-spin text-brand-400 shrink-0" />
+                      <div className="space-y-1">
+                        <div className="font-semibold text-white flex items-center gap-2">
+                          <Terminal size={14} className="text-emerald-400" />
+                          <span>Executing Let's Encrypt Certbot SSL automation on {d.server_ip}...</span>
+                        </div>
+                        <div className="mono text-[11px] text-slate-400">
+                          Configuring Apache/Nginx VirtualHost and 301 HTTPS redirect for <span className="text-emerald-400 font-semibold">{d.domain_name}</span> over root SSH session...
+                        </div>
+                      </div>
+                    </div>
+                  ) : output ? (
+                    <div>
+                      <div className="flex items-center justify-between px-4 py-3 bg-slate-950 border-b border-slate-800 text-xs flex-wrap gap-2">
+                        <div className="flex items-center gap-2.5 flex-wrap">
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold whitespace-nowrap ${
+                            output.success
+                              ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
+                              : 'bg-rose-500/15 text-rose-400 border border-rose-500/30'
+                          }`}>
+                            {output.success ? 'EXIT 0: SUCCESS' : `EXIT ${output.exit_code}: FAILED`}
+                          </span>
+                          <span className="text-slate-400 text-[11px] whitespace-nowrap">{output.duration_ms} ms</span>
+                          <span className="text-slate-600">|</span>
+                          <span className="text-slate-300 font-medium text-[11px] flex items-center gap-1">
+                            <Lock size={11} className="text-emerald-400 shrink-0" />
+                            <span>{output.ssl_issuer || "Let's Encrypt Authority"}</span>
+                          </span>
+                        </div>
+
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setAuditExecutionData({
+                                command: output.command,
+                                stdout: output.stdout || '',
+                                stderr: output.stderr || '',
+                                exit_code: output.exit_code,
+                                duration_ms: output.duration_ms,
+                                server_id: d.server_id || selectedServer?.id,
+                                server_name: d.server_name || selectedServer?.name,
+                                context_type: 'DOMAIN_CONSOLE_AUDIT',
+                                title: `Console Audit: ${d.domain_name}`,
+                              });
+                              setAuditModalOpen(true);
+                            }}
+                            className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-500 text-white rounded text-[11px] font-semibold inline-flex items-center gap-1.5 whitespace-nowrap"
+                          >
+                            <Sparkles size={11} />
+                            <span>Investigate & Fix with AI</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => handleCopyText(d.id, `${output.command}\n\n${output.stdout}\n${output.stderr}`, 'output')}
+                            className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-[11px] flex items-center gap-1.5 transition-colors border border-slate-700 whitespace-nowrap"
+                          >
+                            {copiedDomainId === d.id ? <Check size={11} className="text-emerald-400" /> : <Copy size={11} />}
+                            <span>{copiedDomainId === d.id ? 'Copied' : 'Copy Output'}</span>
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="p-4 bg-black/95 font-mono text-[11px] leading-relaxed max-h-96 overflow-y-auto space-y-1.5">
+                        <div className="text-slate-500 pb-1 break-all">$ {output.command}</div>
+                        {output.stdout && (
+                          <pre className="text-emerald-400/95 whitespace-pre-wrap break-words font-mono">
+                            {output.stdout}
+                          </pre>
+                        )}
+                        {output.stderr && (
+                          <pre className="text-amber-400/90 whitespace-pre-wrap break-words font-mono pt-1 border-t border-slate-800/60">
+                            {output.stderr}
+                          </pre>
+                        )}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="p-8 text-center text-xs text-slate-400 space-y-3">
+                      <Terminal size={28} className="mx-auto text-slate-600" />
+                      <div>
+                        No recent terminal executions for <strong className="text-white">{d.domain_name}</strong>.
+                      </div>
+                      <div className="flex items-center justify-center gap-2 flex-wrap">
+                        <button
+                          type="button"
+                          onClick={() => handleVerifySsl(d)}
+                          className="h-8 px-3 rounded-lg bg-sky-950/90 hover:bg-sky-900 text-sky-200 border border-sky-700/70 text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap"
+                        >
+                          <Lock size={12} />
+                          <span>Verify TLS & DNS Now</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleRunTroubleshootTool(d, 'dns_ping', undefined, false)}
+                          className="h-8 px-3 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap"
+                        >
+                          <Network size={12} />
+                          <span>Run DNS & Ping Trace</span>
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })()
       ) : (
-        /* Step 2: Selected VPS Domains Management View */
-        <div className="space-y-6">
+        /* =====================================================================
+           STEP 2: SELECTED VPS DOMAINS INVENTORY LIST (FITS PAGE 100%, NO HORIZONTAL SCROLL)
+           ===================================================================== */
+        <div className="space-y-6 w-full max-w-full overflow-x-hidden">
           {/* Header Bar */}
           <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-3 border-b border-slate-800">
             <div>
@@ -991,7 +1822,7 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId }) => 
                 <span className="text-sm font-normal text-slate-400 mono">({selectedServer.public_ip})</span>
               </h1>
               <p className="text-xs text-slate-400 mt-1">
-                Compare Hosting Server IP ({selectedServer.public_ip}) with Live Resolving DNS IPs, manage Let's Encrypt SSL, and troubleshoot websites.
+                Click any domain below to open its full-page control center (SSL renewal, DNS & Ping trace, VirtualHost config, and 8 troubleshooting tools).
               </p>
             </div>
 
@@ -1052,18 +1883,18 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId }) => 
 
           {/* Active VPS Banner & Quick Switcher */}
           <div className="p-3.5 rounded-xl bg-slate-900 border border-slate-800 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 shadow-md">
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 min-w-0">
               <div className="p-2 rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 shrink-0">
                 <ServerIcon size={16} />
               </div>
-              <div>
+              <div className="min-w-0">
                 <div className="flex items-center gap-2 flex-wrap">
                   <span className="text-xs font-semibold text-white">Hosting VPS Node: {selectedServer.name}</span>
-                  <span className="px-2 py-0.5 rounded bg-slate-950 border border-slate-800 text-[11px] font-mono text-brand-300">
+                  <span className="px-2 py-0.5 rounded bg-slate-950 border border-slate-800 text-[11px] font-mono text-brand-300 whitespace-nowrap">
                     Host IP: {selectedServer.public_ip}
                   </span>
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                  <span className="text-[11px] text-emerald-400 font-medium">SSH Ready</span>
+                  <span className="text-[11px] text-emerald-400 font-medium whitespace-nowrap">SSH Ready</span>
                 </div>
                 <div className="text-[11px] text-slate-400 mt-0.5">
                   Domains whose DNS A-record pings a different IP than <span className="font-mono text-slate-200">{selectedServer.public_ip}</span> are flagged in amber below.
@@ -1071,12 +1902,13 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId }) => 
               </div>
             </div>
 
-            <div className="flex items-center gap-2 self-end sm:self-auto">
+            <div className="flex items-center gap-2 self-end sm:self-auto shrink-0">
               <span className="text-xs text-slate-400 whitespace-nowrap">Switch VPS:</span>
               <select
                 value={selectedServer.id}
                 onChange={(e) => {
                   setSelectedServerId(e.target.value);
+                  setSelectedDomainId(null);
                   const newSrv = servers.find((s) => s.id === e.target.value);
                   if (newSrv) setNewIp(newSrv.public_ip);
                 }}
@@ -1102,10 +1934,10 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId }) => 
                   : 'bg-slate-900/70 border-slate-800 hover:border-slate-700'
               }`}
             >
-              <span className="text-[11px] text-slate-400 font-medium">Total Hosted Domains</span>
+              <span className="text-[11px] text-slate-400 font-medium block truncate">Total Hosted Domains</span>
               <div className="text-2xl font-bold text-white mono">{serverDomains.length}</div>
-              <div className="text-[11px] text-brand-400 flex items-center gap-1">
-                <Globe size={11} /> Click to show all
+              <div className="text-[11px] text-brand-400 flex items-center gap-1 truncate">
+                <Globe size={11} className="shrink-0" /> <span>Show all domains</span>
               </div>
             </button>
 
@@ -1118,10 +1950,10 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId }) => 
                   : 'bg-slate-900/70 border-slate-800 hover:border-slate-700'
               }`}
             >
-              <span className="text-[11px] text-slate-400 font-medium">DNS Matches Server IP</span>
+              <span className="text-[11px] text-slate-400 font-medium block truncate">DNS Matches Server IP</span>
               <div className="text-2xl font-bold text-emerald-400 mono">{dnsMatchedCount}</div>
-              <div className="text-[11px] text-emerald-400 flex items-center gap-1">
-                <CheckCircle2 size={11} /> Pings {selectedServer.public_ip}
+              <div className="text-[11px] text-emerald-400 flex items-center gap-1 truncate">
+                <CheckCircle2 size={11} className="shrink-0" /> <span>Pings {selectedServer.public_ip}</span>
               </div>
             </button>
 
@@ -1134,12 +1966,12 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId }) => 
                   : 'bg-slate-900/70 border-slate-800 hover:border-slate-700'
               }`}
             >
-              <span className="text-[11px] text-slate-400 font-medium">Diff DNS IP / Unresolved</span>
+              <span className="text-[11px] text-slate-400 font-medium block truncate">Diff DNS IP / Unresolved</span>
               <div className={`text-2xl font-bold mono ${dnsMismatchCount > 0 ? 'text-amber-400' : 'text-slate-400'}`}>
                 {dnsMismatchCount}
               </div>
-              <div className="text-[11px] text-amber-400 flex items-center gap-1">
-                <AlertTriangle size={11} /> Pings different IP or NXDOMAIN
+              <div className="text-[11px] text-amber-400 flex items-center gap-1 truncate">
+                <AlertTriangle size={11} className="shrink-0" /> <span>Diff IP or NXDOMAIN</span>
               </div>
             </button>
 
@@ -1152,10 +1984,10 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId }) => 
                   : 'bg-slate-900/70 border-slate-800 hover:border-slate-700'
               }`}
             >
-              <span className="text-[11px] text-slate-400 font-medium">TLS/SSL Secured (Valid)</span>
+              <span className="text-[11px] text-slate-400 font-medium block truncate">TLS/SSL Secured (Valid)</span>
               <div className="text-2xl font-bold text-emerald-400 mono">{sslValidCount}</div>
-              <div className="text-[11px] text-slate-400 flex items-center gap-1">
-                <ShieldCheck size={11} className="text-emerald-400" /> Let's Encrypt Active
+              <div className="text-[11px] text-slate-400 flex items-center gap-1 truncate">
+                <ShieldCheck size={11} className="text-emerald-400 shrink-0" /> <span>Let's Encrypt Active</span>
               </div>
             </button>
 
@@ -1168,12 +2000,12 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId }) => 
                   : 'bg-slate-900/70 border-slate-800 hover:border-slate-700'
               }`}
             >
-              <span className="text-[11px] text-slate-400 font-medium">Expiring / Missing SSL</span>
+              <span className="text-[11px] text-slate-400 font-medium block truncate">Expiring / Missing SSL</span>
               <div className={`text-2xl font-bold mono ${sslIssueCount > 0 ? 'text-rose-400' : 'text-slate-400'}`}>
                 {sslIssueCount}
               </div>
-              <div className="text-[11px] text-slate-400 flex items-center gap-1">
-                <Clock size={11} className="text-amber-400" /> Click to filter issues
+              <div className="text-[11px] text-slate-400 flex items-center gap-1 truncate">
+                <Clock size={11} className="text-amber-400 shrink-0" /> <span>Filter SSL issues</span>
               </div>
             </button>
           </div>
@@ -1196,875 +2028,149 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId }) => 
                 <button
                   type="button"
                   onClick={() => setStatusFilter('ALL')}
-                  className="px-2.5 py-1 rounded-lg bg-brand-950 text-brand-300 border border-brand-800 text-[11px] font-semibold flex items-center gap-1"
+                  className="px-2.5 py-1 rounded-lg bg-brand-950 text-brand-300 border border-brand-800 text-[11px] font-semibold flex items-center gap-1 whitespace-nowrap"
                 >
                   <span>Filter: {statusFilter}</span>
                   <X size={11} />
                 </button>
               )}
-              <span className="text-xs text-slate-400">
+              <span className="text-xs text-slate-400 whitespace-nowrap">
                 Showing <strong className="text-white">{filteredDomains.length}</strong> of {serverDomains.length} domains
               </span>
             </div>
           </div>
 
-          {/* Domains Table */}
-          <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-sm">
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs border-collapse">
-                <thead>
-                  <tr className="border-b border-slate-800 bg-slate-950/70 text-slate-400 uppercase text-[11px] tracking-wider">
-                    <th className="py-3.5 px-4 whitespace-nowrap">Domain & Application</th>
-                    <th className="py-3.5 px-4 whitespace-nowrap">Hosting Server IP</th>
-                    <th className="py-3.5 px-4 whitespace-nowrap">Resolving DNS / Ping IP</th>
-                    <th className="py-3.5 px-4 whitespace-nowrap">SSL Status</th>
-                    <th className="py-3.5 px-4 whitespace-nowrap">Issuer & Expiry</th>
-                    <th className="py-3.5 px-4 text-right whitespace-nowrap">Quick Actions</th>
+          {/* Domains Table — Fits 100% Within Viewport With Zero Horizontal Scrolling */}
+          <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-sm w-full">
+            <table className="w-full table-fixed text-left text-xs border-collapse">
+              <thead>
+                <tr className="border-b border-slate-800 bg-slate-950/70 text-slate-400 uppercase text-[11px] tracking-wider">
+                  <th className="py-3.5 px-4 w-[28%] whitespace-nowrap">Domain & Application</th>
+                  <th className="py-3.5 px-3 w-[18%] whitespace-nowrap">Hosting Server IP</th>
+                  <th className="py-3.5 px-3 w-[23%] whitespace-nowrap">Resolving DNS / Ping IP</th>
+                  <th className="py-3.5 px-3 w-[17%] whitespace-nowrap">SSL & Expiry</th>
+                  <th className="py-3.5 px-4 w-[14%] text-right whitespace-nowrap">Domain Page</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-800/60 text-slate-300">
+                {loading ? (
+                  <tr>
+                    <td colSpan={5} className="py-12 text-center text-slate-500">
+                      <RefreshCw size={20} className="animate-spin mx-auto mb-2 text-brand-400" />
+                      Loading domain registry & resolving live DNS IPs...
+                    </td>
                   </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-800/60 text-slate-300">
-                  {loading ? (
-                    <tr>
-                      <td colSpan={6} className="py-12 text-center text-slate-500">
-                        <RefreshCw size={20} className="animate-spin mx-auto mb-2 text-brand-400" />
-                        Loading domain registry & resolving live DNS IPs...
-                      </td>
-                    </tr>
-                  ) : filteredDomains.length === 0 ? (
-                    <tr>
-                      <td colSpan={6} className="py-12 text-center text-slate-500">
-                        <div className="flex flex-col items-center justify-center gap-2">
-                          <Globe size={28} className="text-slate-600" />
-                          <p className="font-medium text-slate-400">
-                            {searchQuery || statusFilter !== 'ALL'
-                              ? `No domains matching your active filter on ${selectedServer.name}.`
-                              : `No domains mapped on ${selectedServer.name} (${selectedServer.public_ip}).`}
-                          </p>
-                          <div className="flex items-center gap-2 mt-1">
-                            {statusFilter !== 'ALL' && (
-                              <Button variant="secondary" size="sm" onClick={() => setStatusFilter('ALL')}>
-                                Clear Filter
-                              </Button>
-                            )}
-                            <Button
-                              variant="primary"
-                              size="sm"
-                              onClick={() => {
-                                setNewIp(selectedServer.public_ip);
-                                setCreateModalOpen(true);
-                              }}
-                              leftIcon={<Plus size={14} />}
-                            >
-                              Add Domain on this VPS
+                ) : filteredDomains.length === 0 ? (
+                  <tr>
+                    <td colSpan={5} className="py-12 text-center text-slate-500">
+                      <div className="flex flex-col items-center justify-center gap-2">
+                        <Globe size={28} className="text-slate-600" />
+                        <p className="font-medium text-slate-400">
+                          {searchQuery || statusFilter !== 'ALL'
+                            ? `No domains matching your active filter on ${selectedServer.name}.`
+                            : `No domains mapped on ${selectedServer.name} (${selectedServer.public_ip}).`}
+                        </p>
+                        <div className="flex items-center gap-2 mt-1">
+                          {statusFilter !== 'ALL' && (
+                            <Button variant="secondary" size="sm" onClick={() => setStatusFilter('ALL')}>
+                              Clear Filter
                             </Button>
-                          </div>
+                          )}
+                          <Button
+                            variant="primary"
+                            size="sm"
+                            onClick={() => {
+                              setNewIp(selectedServer.public_ip);
+                              setCreateModalOpen(true);
+                            }}
+                            leftIcon={<Plus size={14} />}
+                          >
+                            Add Domain on this VPS
+                          </Button>
+                        </div>
+                      </div>
+                    </td>
+                  </tr>
+                ) : (
+                  filteredDomains.map((d) => (
+                    <tr
+                      key={d.id}
+                      onClick={() => openDomainPage(d.id, 'telemetry')}
+                      className="hover:bg-slate-800/50 cursor-pointer transition-colors group"
+                    >
+                      {/* Column 1: Domain Name & App */}
+                      <td className="py-3.5 px-4 min-w-0">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="mono font-bold text-white group-hover:text-brand-400 transition-colors text-[13px] truncate">
+                            {d.domain_name}
+                          </span>
+                          <a
+                            href={`https://${d.domain_name}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            onClick={(e) => e.stopPropagation()}
+                            className="text-slate-500 hover:text-brand-400 transition-colors shrink-0"
+                            title={`Open https://${d.domain_name} in new tab`}
+                          >
+                            <ExternalLink size={12} />
+                          </a>
+                        </div>
+                        <div className="text-[11px] text-slate-400 truncate mt-0.5">
+                          {d.application_name || 'Web VirtualHost'}
                         </div>
                       </td>
+
+                      {/* Column 2: Hosting Server IP */}
+                      <td className="py-3.5 px-3 min-w-0">
+                        <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-slate-950 border border-slate-800 text-slate-200 font-mono text-[11px] whitespace-nowrap">
+                          <ServerIcon size={11} className="text-brand-400 shrink-0" />
+                          <span>{d.server_ip}</span>
+                        </div>
+                        <div className="text-[10px] text-slate-500 mt-0.5 truncate">
+                          {d.server_name || selectedServer.name}
+                        </div>
+                      </td>
+
+                      {/* Column 3: Resolving DNS / Ping IP */}
+                      <td className="py-3.5 px-3 min-w-0">
+                        {renderDnsResolutionBadge(d)}
+                      </td>
+
+                      {/* Column 4: SSL Status & Expiry */}
+                      <td className="py-3.5 px-3 min-w-0">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <StatusBadge status={d.ssl_status} size="sm" />
+                        </div>
+                        <div className={`text-[11px] mono font-semibold mt-1 truncate ${
+                          d.days_remaining <= 14
+                            ? 'text-rose-400'
+                            : d.days_remaining <= 30
+                            ? 'text-amber-400'
+                            : 'text-emerald-400'
+                        }`}>
+                          {d.days_remaining}d left · {d.ssl_issuer || "Let's Encrypt"}
+                        </div>
+                      </td>
+
+                      {/* Column 5: Open Full Domain Page Button */}
+                      <td className="py-3.5 px-4 text-right whitespace-nowrap">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openDomainPage(d.id, 'telemetry');
+                          }}
+                          className="h-8 px-3 rounded-lg bg-brand-600/90 hover:bg-brand-500 text-white text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 shadow-sm transition-colors"
+                        >
+                          <span>Manage</span>
+                          <ChevronRight size={13} className="shrink-0" />
+                        </button>
+                      </td>
                     </tr>
-                  ) : (
-                    filteredDomains.map((d) => {
-                      const isDrawerOpen = activeDrawerDomainId === d.id;
-                      const isUpdating = updatingSslId === d.id;
-                      const isVerifying = verifyingId === d.id;
-                      const output = sslOutputs[d.id];
-                      const deepDive = deepDives[d.id];
-                      const isLoadingTelemetry = loadingDeepDiveId === d.id;
-                      const currentTab = drawerTabs[d.id] || 'telemetry';
-                      const activeTool = runningToolKey[d.id];
-
-                      return (
-                        <React.Fragment key={d.id}>
-                          <tr
-                            onClick={() => toggleDrawer(d.id)}
-                            className={`hover:bg-slate-800/40 cursor-pointer transition-colors ${
-                              isDrawerOpen ? 'bg-slate-800/35' : ''
-                            }`}
-                          >
-                            {/* Column 1: Domain Name & App */}
-                            <td className="py-3.5 px-4">
-                              <div className="flex items-start gap-2.5">
-                                <span className="text-slate-500 mt-0.5 shrink-0">
-                                  {isDrawerOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                                </span>
-                                <div className="min-w-0">
-                                  <div className="flex items-center gap-2">
-                                    <span className="mono font-bold text-white text-[13px] truncate">{d.domain_name}</span>
-                                    <a
-                                      href={`https://${d.domain_name}`}
-                                      target="_blank"
-                                      rel="noreferrer"
-                                      onClick={(e) => e.stopPropagation()}
-                                      className="text-slate-500 hover:text-brand-400 transition-colors shrink-0"
-                                      title={`Open https://${d.domain_name} in new tab`}
-                                    >
-                                      <ExternalLink size={12} />
-                                    </a>
-                                  </div>
-                                  <div className="text-[11px] text-slate-400 truncate mt-0.5">
-                                    {d.application_name || 'Web VirtualHost'}
-                                  </div>
-                                </div>
-                              </div>
-                            </td>
-
-                            {/* Column 2: Hosting Server IP */}
-                            <td className="py-3.5 px-4 whitespace-nowrap">
-                              <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-950 border border-slate-800 text-slate-200 font-mono text-[11px]">
-                                <ServerIcon size={12} className="text-brand-400 shrink-0" />
-                                <span>{d.server_ip}</span>
-                              </div>
-                              <div className="text-[10px] text-slate-500 mt-0.5 truncate max-w-[150px]">
-                                {d.server_name || selectedServer.name}
-                              </div>
-                            </td>
-
-                            {/* Column 3: Resolving DNS / Ping IP */}
-                            <td className="py-3.5 px-4 whitespace-nowrap">
-                              {renderDnsResolutionBadge(d)}
-                            </td>
-
-                            {/* Column 4: SSL Status */}
-                            <td className="py-3.5 px-4 whitespace-nowrap">
-                              <StatusBadge status={d.ssl_status} size="sm" />
-                            </td>
-
-                            {/* Column 5: Issuer & Expiry */}
-                            <td className="py-3.5 px-4 whitespace-nowrap">
-                              <div className="text-slate-300 font-medium text-[11px] truncate max-w-[170px]">
-                                {d.ssl_issuer || "Let's Encrypt"}
-                              </div>
-                              <div className={`text-[11px] mono font-semibold mt-0.5 ${
-                                d.days_remaining <= 14
-                                  ? 'text-rose-400'
-                                  : d.days_remaining <= 30
-                                  ? 'text-amber-400'
-                                  : 'text-emerald-400'
-                              }`}>
-                                {d.days_remaining} days remaining
-                              </div>
-                            </td>
-
-                            {/* Column 6: Well-Formatted Single-Row Action Buttons */}
-                            <td className="py-3.5 px-4 text-right whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
-                              <div className="inline-flex items-center justify-end gap-1.5 whitespace-nowrap">
-                                {/* Troubleshoot Website */}
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    toggleDrawer(d.id, 'troubleshoot');
-                                    if (!sslOutputs[d.id]) {
-                                      handleRunTroubleshootTool(d, 'dns_ping', undefined, false);
-                                    }
-                                  }}
-                                  className="h-7 px-2.5 rounded-lg bg-indigo-950/90 hover:bg-indigo-900 text-indigo-200 border border-indigo-700/70 text-[11px] font-semibold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors"
-                                  title="Open Website Troubleshooter (DNS/Ping, HTTP Probe, SSL Chain, VHost Syntax, Logs & Auto-Fix)"
-                                >
-                                  <Wrench size={12} className="text-indigo-400 shrink-0" />
-                                  <span>Troubleshoot</span>
-                                </button>
-
-                                {/* Update SSL */}
-                                <button
-                                  type="button"
-                                  disabled={isUpdating || isVerifying}
-                                  onClick={() => handleUpdateSsl(d)}
-                                  className="h-7 px-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-semibold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 shadow-sm transition-colors disabled:opacity-50"
-                                  title="Run Let's Encrypt Certbot SSL provisioning/renewal over SSH as root"
-                                >
-                                  {isUpdating ? (
-                                    <RefreshCw size={12} className="animate-spin shrink-0" />
-                                  ) : (
-                                    <ShieldCheck size={12} className="shrink-0" />
-                                  )}
-                                  <span>{isUpdating ? 'Updating...' : 'Update SSL'}</span>
-                                </button>
-
-                                {/* Verify TLS & DNS */}
-                                <button
-                                  type="button"
-                                  disabled={isUpdating || isVerifying}
-                                  onClick={() => handleVerifySsl(d)}
-                                  className="h-7 px-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-[11px] font-semibold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors disabled:opacity-50"
-                                  title="Verify live TLS certificate over port 443 and check DNS A-record resolution"
-                                >
-                                  {isVerifying ? (
-                                    <RefreshCw size={12} className="animate-spin text-sky-400 shrink-0" />
-                                  ) : (
-                                    <Lock size={12} className="text-sky-400 shrink-0" />
-                                  )}
-                                  <span>{isVerifying ? 'Verifying...' : 'Verify TLS'}</span>
-                                </button>
-
-                                {/* Delete from Server */}
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setSelectedDomainForTeardown(d);
-                                    setTeardownModalOpen(true);
-                                  }}
-                                  className="h-7 px-2.5 rounded-lg bg-rose-950/60 hover:bg-rose-900/80 text-rose-300 border border-rose-800/70 text-[11px] font-semibold inline-flex items-center gap-1 whitespace-nowrap shrink-0 transition-colors"
-                                  title="Safely tear down and delete VirtualHost config from server and reload web daemon"
-                                >
-                                  <Trash2 size={12} className="shrink-0" />
-                                  <span>Delete</span>
-                                </button>
-                              </div>
-                            </td>
-                          </tr>
-
-                          {/* Expandable Deep-Dive & Troubleshooting Drawer */}
-                          {isDrawerOpen && (
-                            <tr className="bg-slate-950 border-b border-slate-800">
-                              <td colSpan={6} className="p-4 md:p-6">
-                                <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-xl space-y-0">
-                                  {/* Drawer Navigation Bar */}
-                                  <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-3 px-4 py-3 bg-slate-950/90 border-b border-slate-800">
-                                    {/* Left Tabs */}
-                                    <div className="flex items-center gap-1.5 overflow-x-auto pb-1 xl:pb-0">
-                                      <button
-                                        type="button"
-                                        onClick={() => setDrawerTabs(prev => ({ ...prev, [d.id]: 'telemetry' }))}
-                                        className={`px-3 py-1.5 rounded-lg text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors ${
-                                          currentTab === 'telemetry'
-                                            ? 'bg-brand-600 text-white shadow-sm'
-                                            : 'text-slate-400 hover:text-white hover:bg-slate-800'
-                                        }`}
-                                      >
-                                        <Activity size={13} />
-                                        <span>Software Vitals & Analytics</span>
-                                      </button>
-
-                                      <button
-                                        type="button"
-                                        onClick={() => setDrawerTabs(prev => ({ ...prev, [d.id]: 'troubleshoot' }))}
-                                        className={`px-3 py-1.5 rounded-lg text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors ${
-                                          currentTab === 'troubleshoot'
-                                            ? 'bg-indigo-600 text-white shadow-sm'
-                                            : 'text-indigo-300 hover:text-white hover:bg-slate-800 bg-indigo-950/40 border border-indigo-800/50'
-                                        }`}
-                                      >
-                                        <Wrench size={13} />
-                                        <span>Website Troubleshooter</span>
-                                        <span className="px-1.5 py-0.2 rounded text-[10px] bg-indigo-500/30 text-indigo-200 font-mono">
-                                          8 Tools
-                                        </span>
-                                      </button>
-
-                                      <button
-                                        type="button"
-                                        onClick={() => setDrawerTabs(prev => ({ ...prev, [d.id]: 'config' }))}
-                                        className={`px-3 py-1.5 rounded-lg text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors ${
-                                          currentTab === 'config'
-                                            ? 'bg-brand-600 text-white shadow-sm'
-                                            : 'text-slate-400 hover:text-white hover:bg-slate-800'
-                                        }`}
-                                      >
-                                        <FileCode size={13} />
-                                        <span>VirtualHost Config (.conf)</span>
-                                      </button>
-
-                                      <button
-                                        type="button"
-                                        onClick={() => setDrawerTabs(prev => ({ ...prev, [d.id]: 'logs' }))}
-                                        className={`px-3 py-1.5 rounded-lg text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors ${
-                                          currentTab === 'logs'
-                                            ? 'bg-brand-600 text-white shadow-sm'
-                                            : 'text-slate-400 hover:text-white hover:bg-slate-800'
-                                        }`}
-                                      >
-                                        <Terminal size={13} />
-                                        <span>Console & SSL Logs</span>
-                                        {output && (
-                                          <span className={`w-2 h-2 rounded-full ${output.success ? 'bg-emerald-400' : 'bg-rose-400'}`} />
-                                        )}
-                                      </button>
-                                    </div>
-
-                                    {/* Right Operational Action Buttons Toolbar */}
-                                    <div className="flex items-center gap-1.5 overflow-x-auto">
-                                      <button
-                                        type="button"
-                                        disabled={!!serviceActionLoading[d.id]}
-                                        onClick={() => handleServiceAction(d, 'restart')}
-                                        className="h-7 px-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-[11px] font-semibold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors disabled:opacity-50"
-                                        title="Restart application service or web container"
-                                      >
-                                        <RotateCcw size={12} className={serviceActionLoading[d.id] === 'restart' ? 'animate-spin text-brand-400' : 'text-brand-400'} />
-                                        <span>Restart</span>
-                                      </button>
-
-                                      <button
-                                        type="button"
-                                        disabled={!!serviceActionLoading[d.id]}
-                                        onClick={() => handleServiceAction(d, 'stop')}
-                                        className="h-7 px-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-[11px] font-semibold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors disabled:opacity-50"
-                                        title="Stop application service and suspend VirtualHost"
-                                      >
-                                        <Square size={11} className="text-amber-400" />
-                                        <span>Stop</span>
-                                      </button>
-
-                                      <button
-                                        type="button"
-                                        disabled={!!serviceActionLoading[d.id]}
-                                        onClick={() => handleServiceAction(d, 'start')}
-                                        className="h-7 px-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-[11px] font-semibold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors disabled:opacity-50"
-                                        title="Start application service and activate VirtualHost"
-                                      >
-                                        <Play size={11} className="text-emerald-400" />
-                                        <span>Start</span>
-                                      </button>
-
-                                      <button
-                                        type="button"
-                                        disabled={backingUpConfigId === d.id}
-                                        onClick={() => handleBackupConfig(d)}
-                                        className="h-7 px-2.5 rounded-lg bg-sky-950/80 hover:bg-sky-900 text-sky-200 border border-sky-800/80 text-[11px] font-semibold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors disabled:opacity-50"
-                                        title="Download VirtualHost .conf file"
-                                      >
-                                        <Download size={12} className="text-sky-400" />
-                                        <span>Backup .conf</span>
-                                      </button>
-
-                                      <button
-                                        type="button"
-                                        onClick={() => {
-                                          setSelectedDomainForTeardown(d);
-                                          setTeardownModalOpen(true);
-                                        }}
-                                        className="h-7 px-2.5 rounded-lg bg-rose-950/60 hover:bg-rose-900/80 text-rose-300 border border-rose-800/70 text-[11px] font-semibold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors"
-                                        title="Delete VirtualHost from VPS and reload web server"
-                                      >
-                                        <Trash2 size={12} />
-                                        <span>Delete Config</span>
-                                      </button>
-                                    </div>
-                                  </div>
-
-                                  {/* Tab 1: Software Vitals & Analytics */}
-                                  {currentTab === 'telemetry' && (
-                                    <div className="p-5 space-y-5">
-                                      {/* DNS vs Hosting Server Quick Summary Strip */}
-                                      <div className={`p-3.5 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
-                                        d.dns_matches_server === false
-                                          ? 'bg-amber-950/20 border-amber-500/40'
-                                          : 'bg-slate-950/90 border-slate-800'
-                                      }`}>
-                                        <div className="flex items-center gap-3 flex-wrap">
-                                          <div className="flex items-center gap-2 text-xs">
-                                            <span className="text-slate-400">Hosting Server IP:</span>
-                                            <span className="px-2 py-0.5 rounded bg-slate-900 border border-slate-700 font-mono font-bold text-white">
-                                              {d.server_ip}
-                                            </span>
-                                          </div>
-                                          <ChevronRight size={14} className="text-slate-600 hidden sm:inline" />
-                                          <div className="flex items-center gap-2 text-xs">
-                                            <span className="text-slate-400">Resolving Public DNS IP:</span>
-                                            <span className={`px-2 py-0.5 rounded font-mono font-bold border ${
-                                              d.dns_matches_server
-                                                ? 'bg-emerald-950/60 border-emerald-500/40 text-emerald-300'
-                                                : d.resolved_ip
-                                                ? 'bg-amber-950/60 border-amber-500/40 text-amber-300'
-                                                : 'bg-rose-950/60 border-rose-500/40 text-rose-300'
-                                            }`}>
-                                              {d.resolved_ip || 'UNRESOLVED (NXDOMAIN)'}
-                                            </span>
-                                          </div>
-                                        </div>
-
-                                        <button
-                                          type="button"
-                                          onClick={() => handleRunTroubleshootTool(d, 'dns_ping', undefined, false)}
-                                          className="h-7 px-3 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-[11px] font-semibold inline-flex items-center gap-1.5 whitespace-nowrap self-start sm:self-auto"
-                                        >
-                                          <Network size={12} />
-                                          <span>Run Live DNS & Ping Trace</span>
-                                        </button>
-                                      </div>
-
-                                      {isLoadingTelemetry ? (
-                                        <div className="py-8 text-center text-xs text-slate-400 flex items-center justify-center gap-2">
-                                          <RefreshCw size={16} className="animate-spin text-brand-400" />
-                                          <span>Probing remote server for software stack, memory usage, and access log analytics...</span>
-                                        </div>
-                                      ) : (
-                                        <>
-                                          {/* Row 1: Software Specs, RAM, Running Uptime & Hosting Server */}
-                                          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                                            <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-2">
-                                              <div className="flex items-center justify-between text-xs text-slate-400">
-                                                <span className="font-semibold flex items-center gap-1.5">
-                                                  <Cpu size={14} className="text-brand-400" />
-                                                  Software Stack
-                                                </span>
-                                                <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-brand-950 border border-brand-800 text-brand-300">
-                                                  {deepDive?.language || 'PHP 8.2'}
-                                                </span>
-                                              </div>
-                                              <div className="text-lg font-bold text-white tracking-tight">
-                                                {deepDive?.framework || 'Apache2 VirtualHost'}
-                                              </div>
-                                              <div className="text-[11px] text-slate-400 mono truncate">
-                                                Root: {deepDive?.root_path || '/var/www/html'}
-                                              </div>
-                                            </div>
-
-                                            <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-2">
-                                              <div className="flex items-center justify-between text-xs text-slate-400">
-                                                <span className="font-semibold flex items-center gap-1.5">
-                                                  <Activity size={14} className="text-emerald-400" />
-                                                  RAM Memory Usage
-                                                </span>
-                                                <span className="text-[11px] font-mono text-emerald-400">
-                                                  {deepDive?.memory_percent?.toFixed(1) || '1.2'}% RAM
-                                                </span>
-                                              </div>
-                                              <div className="text-lg font-bold text-white tracking-tight mono">
-                                                {deepDive?.memory_mb?.toFixed(1) || '42.5'} MB
-                                              </div>
-                                              <div className="w-full bg-slate-800 rounded-full h-1.5 overflow-hidden">
-                                                <div
-                                                  className="bg-emerald-500 h-1.5 rounded-full"
-                                                  style={{ width: `${Math.min(Math.max((deepDive?.memory_percent || 1.2) * 5, 4), 100)}%` }}
-                                                />
-                                              </div>
-                                            </div>
-
-                                            <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-2">
-                                              <div className="flex items-center justify-between text-xs text-slate-400">
-                                                <span className="font-semibold flex items-center gap-1.5">
-                                                  <Clock size={14} className="text-amber-400" />
-                                                  Process Running Time
-                                                </span>
-                                                <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-950 text-emerald-400 border border-emerald-800">
-                                                  {deepDive?.status || 'ONLINE'}
-                                                </span>
-                                              </div>
-                                              <div className="text-lg font-bold text-white tracking-tight mono">
-                                                {deepDive?.uptime_formatted || 'Active'}
-                                              </div>
-                                              <div className="text-[11px] text-slate-400">
-                                                Daemon: {deepDive?.process_manager || 'systemd'} (Port {deepDive?.port || 80})
-                                              </div>
-                                            </div>
-
-                                            <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-2">
-                                              <div className="flex items-center justify-between text-xs text-slate-400">
-                                                <span className="font-semibold flex items-center gap-1.5">
-                                                  <ServerIcon size={14} className="text-sky-400" />
-                                                  Host Node Specs
-                                                </span>
-                                                <span className="px-1.5 py-0.5 rounded text-[10px] bg-slate-800 text-slate-300">
-                                                  {deepDive?.server_provider || 'Cloud VPS'}
-                                                </span>
-                                              </div>
-                                              <div className="text-lg font-bold text-white tracking-tight truncate">
-                                                {deepDive?.server_name || selectedServer.name}
-                                              </div>
-                                              <div className="text-[11px] text-slate-400 mono">
-                                                {deepDive?.server_ip || d.server_ip} · {deepDive?.server_os || 'Linux'}
-                                              </div>
-                                            </div>
-                                          </div>
-
-                                          {/* Row 2: Traffic & Web Analytics */}
-                                          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                                            <div className="p-4 rounded-xl bg-slate-950/70 border border-slate-800 space-y-1">
-                                              <span className="text-[11px] font-medium text-slate-400 flex items-center gap-1.5">
-                                                <TrendingUp size={13} className="text-brand-400" />
-                                                Total Requests / Views
-                                              </span>
-                                              <div className="text-xl font-bold text-white mono">
-                                                {deepDive?.total_views ? deepDive.total_views.toLocaleString() : '380'}
-                                              </div>
-                                              <div className="text-[10px] text-slate-500">From web server access logs</div>
-                                            </div>
-
-                                            <div className="p-4 rounded-xl bg-slate-950/70 border border-slate-800 space-y-1">
-                                              <span className="text-[11px] font-medium text-slate-400 flex items-center gap-1.5">
-                                                <Layers size={13} className="text-sky-400" />
-                                                Active Pages & Routes
-                                              </span>
-                                              <div className="text-xl font-bold text-sky-400 mono">
-                                                {deepDive?.active_pages || '18'} active
-                                              </div>
-                                              <div className="text-[10px] text-slate-500">Unique requested URL endpoints</div>
-                                            </div>
-
-                                            <div className="p-4 rounded-xl bg-slate-950/70 border border-slate-800 space-y-1">
-                                              <span className="text-[11px] font-medium text-slate-400 flex items-center gap-1.5">
-                                                <AlertTriangle size={13} className={deepDive?.broken_links_count ? 'text-rose-400' : 'text-emerald-400'} />
-                                                Broken Links & 404/500s
-                                              </span>
-                                              <div className={`text-xl font-bold mono ${deepDive?.broken_links_count ? 'text-rose-400' : 'text-emerald-400'}`}>
-                                                {deepDive?.broken_links_count || 0}
-                                              </div>
-                                              <div className="text-[10px] text-slate-500">
-                                                {deepDive?.error_rate_percent || 0}% error rate
-                                              </div>
-                                            </div>
-
-                                            <div className="p-4 rounded-xl bg-slate-950/70 border border-slate-800 space-y-1">
-                                              <span className="text-[11px] font-medium text-slate-400 flex items-center gap-1.5">
-                                                <Zap size={13} className="text-amber-400" />
-                                                Traffic Latency & Spikes
-                                              </span>
-                                              <div className="text-xl font-bold text-white mono">
-                                                {deepDive?.average_latency_ms || 35.0} ms
-                                              </div>
-                                              <div className="text-[10px] text-emerald-400 flex items-center gap-1">
-                                                <CheckCircle2 size={11} /> {deepDive?.spikes_detected ? 'Spike detected' : 'Normal throughput'}
-                                              </div>
-                                            </div>
-                                          </div>
-                                        </>
-                                      )}
-                                    </div>
-                                  )}
-
-                                  {/* Tab 2: Website Troubleshooter & Diagnostics Suite */}
-                                  {currentTab === 'troubleshoot' && (
-                                    <div className="p-5 space-y-5">
-                                      {/* DNS Comparison & Routing Diagnostic Banner */}
-                                      <div className={`p-4 rounded-xl border flex flex-col lg:flex-row lg:items-center justify-between gap-4 ${
-                                        d.dns_matches_server === false
-                                          ? 'bg-amber-950/25 border-amber-500/40'
-                                          : 'bg-slate-950 border-slate-800'
-                                      }`}>
-                                        <div className="space-y-1">
-                                          <div className="flex items-center gap-2 flex-wrap">
-                                            <span className="text-xs font-bold text-white flex items-center gap-1.5">
-                                              <Wrench size={14} className="text-indigo-400" />
-                                              <span>Website Diagnostic & Auto-Remediation Suite — {d.domain_name}</span>
-                                            </span>
-                                            {d.dns_matches_server ? (
-                                              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
-                                                DNS MATCHES HOSTING SERVER ({d.server_ip})
-                                              </span>
-                                            ) : d.resolved_ip ? (
-                                              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40">
-                                                DNS PINGS DIFFERENT IP: {d.resolved_ip} (HOSTED ON {d.server_ip})
-                                              </span>
-                                            ) : (
-                                              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/40">
-                                                DNS UNRESOLVED / NXDOMAIN (HOSTED ON {d.server_ip})
-                                              </span>
-                                            )}
-                                          </div>
-                                          <p className="text-[11px] text-slate-400">
-                                            {d.dns_matches_server === false && d.resolved_ip
-                                              ? `Public DNS for ${d.domain_name} resolves to ${d.resolved_ip}, while this VirtualHost is configured on ${d.server_ip}. Certbot HTTP-01 challenges and public traffic will route to ${d.resolved_ip} until the DNS A-record is updated.`
-                                              : `Click any diagnostic card below to execute live SSH checks on ${d.server_ip}, inspect HTTP/SSL/logs, or auto-fix permissions and web server configs.`}
-                                          </p>
-                                        </div>
-
-                                        <div className="flex items-center gap-2 shrink-0 flex-wrap">
-                                          <button
-                                            type="button"
-                                            disabled={!!activeTool}
-                                            onClick={() => handleRunTroubleshootTool(d, 'autofix_website', undefined, true)}
-                                            className="h-8 px-3 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap shadow-sm transition-colors disabled:opacity-50"
-                                          >
-                                            <Sparkles size={13} />
-                                            <span>1-Click Auto-Fix Website</span>
-                                          </button>
-                                        </div>
-                                      </div>
-
-                                      {/* 8 Diagnostic Tool Cards Grid */}
-                                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
-                                        {TROUBLESHOOT_TOOLS.map((tool) => {
-                                          const IconComp = tool.icon;
-                                          const isRunningThis = activeTool === tool.id;
-                                          return (
-                                            <div
-                                              key={tool.id}
-                                              onClick={() => !activeTool && handleRunTroubleshootTool(d, tool.id, undefined, false)}
-                                              className={`p-3.5 rounded-xl bg-slate-950 border transition-all flex flex-col justify-between gap-3 cursor-pointer ${
-                                                isRunningThis
-                                                  ? 'border-indigo-500 ring-1 ring-indigo-500/40'
-                                                  : 'border-slate-800 hover:border-indigo-500/60 hover:bg-slate-900/90'
-                                              }`}
-                                            >
-                                              <div className="space-y-1.5">
-                                                <div className="flex items-center justify-between gap-2">
-                                                  <div className="p-1.5 rounded-lg bg-slate-900 border border-slate-800 text-indigo-400">
-                                                    <IconComp size={15} />
-                                                  </div>
-                                                  <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-slate-900 text-slate-300 border border-slate-800">
-                                                    {tool.badge}
-                                                  </span>
-                                                </div>
-                                                <div className="text-xs font-bold text-white">{tool.title}</div>
-                                                <p className="text-[11px] text-slate-400 leading-relaxed">
-                                                  {tool.subtitle}
-                                                </p>
-                                              </div>
-
-                                              <div className="flex items-center justify-between pt-2 border-t border-slate-800/80">
-                                                <span className="text-[11px] font-semibold text-indigo-400 flex items-center gap-1">
-                                                  {isRunningThis ? (
-                                                    <>
-                                                      <RefreshCw size={11} className="animate-spin" />
-                                                      <span>Running on VPS...</span>
-                                                    </>
-                                                  ) : (
-                                                    <>
-                                                      <Play size={11} />
-                                                      <span>Run Diagnostic</span>
-                                                    </>
-                                                  )}
-                                                </span>
-                                                <button
-                                                  type="button"
-                                                  onClick={(e) => {
-                                                    e.stopPropagation();
-                                                    if (!activeTool) {
-                                                      handleRunTroubleshootTool(d, tool.id, undefined, true);
-                                                    }
-                                                  }}
-                                                  className="text-[10px] text-slate-400 hover:text-brand-300 underline whitespace-nowrap"
-                                                  title="Run and open directly in AI Audit & Fix Modal"
-                                                >
-                                                  Run + AI Audit
-                                                </button>
-                                              </div>
-                                            </div>
-                                          );
-                                        })}
-                                      </div>
-
-                                      {/* Custom Website SSH Diagnostic Command Input */}
-                                      <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5">
-                                        <div className="flex items-center gap-2 text-xs text-slate-400 shrink-0">
-                                          <Terminal size={14} className="text-brand-400" />
-                                          <span className="font-semibold text-slate-300">Custom Website SSH Probe:</span>
-                                        </div>
-                                        <input
-                                          type="text"
-                                          value={customDiagCmd[d.id] || ''}
-                                          onChange={(e) => setCustomDiagCmd(prev => ({ ...prev, [d.id]: e.target.value }))}
-                                          placeholder={`e.g. curl -ILs https://${d.domain_name} || apache2ctl -S | grep ${d.domain_name}`}
-                                          className="flex-1 px-3 py-1.5 bg-slate-900 border border-slate-800 rounded-lg text-xs text-white font-mono focus:outline-none focus:border-brand-500"
-                                        />
-                                        <button
-                                          type="button"
-                                          disabled={!!activeTool || !(customDiagCmd[d.id] || '').trim()}
-                                          onClick={() => handleRunTroubleshootTool(d, 'custom', customDiagCmd[d.id], true)}
-                                          className="h-8 px-3.5 rounded-lg bg-brand-600 hover:bg-brand-500 text-white text-xs font-semibold inline-flex items-center justify-center gap-1.5 whitespace-nowrap disabled:opacity-50"
-                                        >
-                                          <Play size={12} />
-                                          <span>Execute & Audit</span>
-                                        </button>
-                                      </div>
-
-                                      {/* Live Diagnostic Output Console inside Troubleshooter Tab */}
-                                      {output && (
-                                        <div className="rounded-xl border border-slate-800 overflow-hidden bg-black/95">
-                                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-4 py-2.5 bg-slate-950 border-b border-slate-800 text-xs">
-                                            <div className="flex items-center gap-2 flex-wrap">
-                                              <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                                                output.success
-                                                  ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
-                                                  : 'bg-amber-500/15 text-amber-400 border border-amber-500/30'
-                                              }`}>
-                                                {output.title || 'DIAGNOSTIC OUTPUT'}
-                                              </span>
-                                              <span className="text-slate-400 text-[11px] mono">{output.duration_ms} ms</span>
-                                              {output.message && (
-                                                <span className="text-slate-300 text-[11px]">{output.message}</span>
-                                              )}
-                                            </div>
-
-                                            <div className="flex items-center gap-2 shrink-0">
-                                              <button
-                                                type="button"
-                                                onClick={() => {
-                                                  setAuditExecutionData({
-                                                    command: output.command,
-                                                    stdout: output.stdout || '',
-                                                    stderr: output.stderr || '',
-                                                    exit_code: output.exit_code,
-                                                    duration_ms: output.duration_ms,
-                                                    server_id: d.server_id || selectedServer?.id,
-                                                    server_name: d.server_name || selectedServer?.name,
-                                                    context_type: 'WEBSITE_TROUBLESHOOT',
-                                                    title: `${output.title || 'Website Diagnostic'}: ${d.domain_name}`,
-                                                  });
-                                                  setAuditModalOpen(true);
-                                                }}
-                                                className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-500 text-white rounded text-[11px] font-semibold inline-flex items-center gap-1.5 whitespace-nowrap"
-                                              >
-                                                <Sparkles size={11} />
-                                                <span>Investigate & Fix with AI</span>
-                                              </button>
-
-                                              <button
-                                                type="button"
-                                                onClick={() => handleCopyText(d.id, `${output.command}\n\n${output.stdout}\n${output.stderr}`, 'output')}
-                                                className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-[11px] inline-flex items-center gap-1.5 border border-slate-700 whitespace-nowrap"
-                                              >
-                                                {copiedDomainId === d.id ? <Check size={11} className="text-emerald-400" /> : <Copy size={11} />}
-                                                <span>{copiedDomainId === d.id ? 'Copied' : 'Copy Output'}</span>
-                                              </button>
-                                            </div>
-                                          </div>
-
-                                          <div className="p-4 font-mono text-[11px] leading-relaxed max-h-80 overflow-y-auto space-y-1.5">
-                                            <div className="text-slate-500 break-all">$ {output.command}</div>
-                                            {output.stdout && (
-                                              <pre className="text-emerald-400/95 whitespace-pre-wrap font-mono">
-                                                {output.stdout}
-                                              </pre>
-                                            )}
-                                            {output.stderr && (
-                                              <pre className="text-amber-400/90 whitespace-pre-wrap font-mono pt-1 border-t border-slate-800/60">
-                                                {output.stderr}
-                                              </pre>
-                                            )}
-                                          </div>
-                                        </div>
-                                      )}
-                                    </div>
-                                  )}
-
-                                  {/* Tab 3: VirtualHost Config File */}
-                                  {currentTab === 'config' && (
-                                    <div className="p-5 space-y-3">
-                                      <div className="flex items-center justify-between text-xs flex-wrap gap-2">
-                                        <div className="flex items-center gap-2 font-mono text-slate-400">
-                                          <FileCode size={14} className="text-sky-400" />
-                                          <span>{deepDive?.config_file_path || `/etc/apache2/sites-available/${d.domain_name}.conf`}</span>
-                                        </div>
-                                        <div className="flex items-center gap-2">
-                                          <button
-                                            type="button"
-                                            onClick={() => handleCopyText(d.id, deepDive?.config_content || '', 'config')}
-                                            className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-[11px] flex items-center gap-1 transition-colors border border-slate-700"
-                                          >
-                                            {copiedConfigId === d.id ? <Check size={11} className="text-emerald-400" /> : <Copy size={11} />}
-                                            <span>{copiedConfigId === d.id ? 'Copied' : 'Copy Config'}</span>
-                                          </button>
-                                          <button
-                                            type="button"
-                                            onClick={() => handleBackupConfig(d)}
-                                            className="px-2.5 py-1 bg-brand-600 hover:bg-brand-500 text-white rounded text-[11px] flex items-center gap-1 transition-colors font-semibold"
-                                          >
-                                            <Download size={11} />
-                                            <span>Download .conf</span>
-                                          </button>
-                                        </div>
-                                      </div>
-
-                                      <div className="p-4 bg-black/90 rounded-lg border border-slate-800 overflow-x-auto max-h-80 font-mono text-xs text-sky-300/90 leading-relaxed">
-                                        <pre className="whitespace-pre-wrap">
-                                          {deepDive?.config_content || `# VirtualHost configuration for ${d.domain_name}\n# DocumentRoot: ${deepDive?.root_path || '/var/www/html'}\n<VirtualHost *:80>\n    ServerName ${d.domain_name}\n    ServerAdmin webmaster@localhost\n    DocumentRoot ${deepDive?.root_path || '/var/www/html'}\n</VirtualHost>`}
-                                        </pre>
-                                      </div>
-                                    </div>
-                                  )}
-
-                                  {/* Tab 4: Console & SSL Logs */}
-                                  {currentTab === 'logs' && (
-                                    <div className="space-y-0">
-                                      {isUpdating ? (
-                                        <div className="p-6 bg-slate-900 border-t border-slate-800 flex items-center gap-3 animate-pulse text-xs text-brand-300">
-                                          <RefreshCw size={18} className="animate-spin text-brand-400" />
-                                          <div className="space-y-1">
-                                            <div className="font-semibold text-white flex items-center gap-2">
-                                              <Terminal size={14} className="text-emerald-400" />
-                                              <span>Executing Let's Encrypt Certbot SSL automation on {d.server_ip}...</span>
-                                            </div>
-                                            <div className="mono text-[11px] text-slate-400">
-                                              Configuring Apache/Nginx VirtualHost and 301 HTTPS redirect for <span className="text-emerald-400 font-semibold">{d.domain_name}</span> over root SSH session...
-                                            </div>
-                                          </div>
-                                        </div>
-                                      ) : output ? (
-                                        <div className="space-y-0">
-                                          <div className="flex items-center justify-between px-4 py-2.5 bg-slate-950 border-b border-slate-800 text-xs flex-wrap gap-2">
-                                            <div className="flex items-center gap-2.5 flex-wrap">
-                                              <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                                                output.success
-                                                  ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
-                                                  : 'bg-rose-500/15 text-rose-400 border border-rose-500/30'
-                                              }`}>
-                                                {output.success ? 'EXIT 0: SUCCESS' : `EXIT ${output.exit_code}: FAILED`}
-                                              </span>
-                                              <span className="text-slate-400 text-[11px]">{output.duration_ms} ms</span>
-                                              <span className="text-slate-600">|</span>
-                                              <span className="text-slate-300 font-medium text-[11px] flex items-center gap-1">
-                                                <Lock size={11} className="text-emerald-400" />
-                                                {output.ssl_issuer || "Let's Encrypt Authority"}
-                                              </span>
-                                            </div>
-
-                                            <div className="flex items-center gap-2">
-                                              <button
-                                                type="button"
-                                                onClick={() => {
-                                                  setAuditExecutionData({
-                                                    command: output.command,
-                                                    stdout: output.stdout || '',
-                                                    stderr: output.stderr || '',
-                                                    exit_code: output.exit_code,
-                                                    duration_ms: output.duration_ms,
-                                                    server_id: d.server_id || selectedServer?.id,
-                                                    server_name: d.server_name || selectedServer?.name,
-                                                    context_type: 'DOMAIN_CONSOLE_AUDIT',
-                                                    title: `Console Audit: ${d.domain_name}`,
-                                                  });
-                                                  setAuditModalOpen(true);
-                                                }}
-                                                className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-500 text-white rounded text-[11px] font-semibold inline-flex items-center gap-1.5 whitespace-nowrap"
-                                              >
-                                                <Sparkles size={11} />
-                                                <span>Investigate & Fix with AI</span>
-                                              </button>
-
-                                              <button
-                                                type="button"
-                                                onClick={() => handleCopyText(d.id, `${output.command}\n\n${output.stdout}\n${output.stderr}`, 'output')}
-                                                className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-[11px] flex items-center gap-1.5 transition-colors border border-slate-700"
-                                              >
-                                                {copiedDomainId === d.id ? <Check size={11} className="text-emerald-400" /> : <Copy size={11} />}
-                                                <span>{copiedDomainId === d.id ? 'Copied' : 'Copy Output'}</span>
-                                              </button>
-                                            </div>
-                                          </div>
-
-                                          <div className="p-3 bg-black/90 font-mono text-[11px] leading-relaxed max-h-64 overflow-y-auto space-y-1">
-                                            <div className="text-slate-500 pb-1">$ {output.command}</div>
-                                            {output.stdout && (
-                                              <pre className="text-emerald-400/95 whitespace-pre-wrap font-mono">
-                                                {output.stdout}
-                                              </pre>
-                                            )}
-                                            {output.stderr && (
-                                              <pre className="text-amber-400/90 whitespace-pre-wrap font-mono pt-1 border-t border-slate-800/60">
-                                                {output.stderr}
-                                              </pre>
-                                            )}
-                                          </div>
-                                        </div>
-                                      ) : (
-                                        <div className="p-5 text-center text-xs text-slate-500">
-                                          No recent terminal executions. Click <strong className="text-indigo-400">Troubleshoot</strong>, <strong className="text-emerald-400">Update SSL</strong>, <strong className="text-white">Verify TLS</strong>, or <strong className="text-brand-400">Restart</strong> above to trigger live remote commands and inspect logs.
-                                        </div>
-                                      )}
-                                    </div>
-                                  )}
-                                </div>
-                              </td>
-                            </tr>
-                          )}
-                        </React.Fragment>
-                      );
-                    })
-                  )}
-                </tbody>
-              </table>
-            </div>
+                  ))
+                )}
+              </tbody>
+            </table>
           </div>
         </div>
       )}

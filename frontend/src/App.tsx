@@ -137,7 +137,9 @@ export const MainAppShell: React.FC = () => {
             />
           )}
 
-          {currentView === 'domains' && <DomainsView />}
+          {currentView === 'domains' && (
+            <DomainsView onNavigate={(v, id) => navigateTo(v, id)} />
+          )}
 
           {currentView === 'monitoring' && <MonitoringView />}
 

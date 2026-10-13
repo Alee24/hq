@@ -430,7 +430,7 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
   ] as const;
 
   return (
-    <div className="p-6 md:p-8 space-y-6 max-w-7xl mx-auto">
+    <div className="p-6 md:p-8 space-y-6 w-full max-w-full overflow-x-hidden">
       {/* Back button */}
       <div>
         <button
@@ -446,7 +446,7 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
       <div className="p-6 rounded-xl bg-slate-900 border border-slate-800 space-y-5">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
           <div className="space-y-1.5">
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 flex-wrap">
               <h1 className="text-2xl font-bold text-white tracking-tight">{app.name}</h1>
               <StatusBadge status={app.health_status} />
               <span className={`px-2 py-0.5 rounded-full text-xs font-semibold uppercase tracking-wider border ${
@@ -482,7 +482,7 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
             <button
               onClick={() => handleAction('restart')}
               disabled={actionLoading}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium rounded-lg border border-slate-700 transition-colors"
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium rounded-lg border border-slate-700 transition-colors whitespace-nowrap shrink-0"
             >
               <RotateCw size={13} className={actionLoading ? 'animate-spin' : ''} />
               <span>Restart</span>
@@ -491,7 +491,7 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
             <button
               onClick={() => handleAction(app.health_status === 'OFFLINE' ? 'start' : 'stop')}
               disabled={actionLoading}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium rounded-lg border border-slate-700 transition-colors"
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium rounded-lg border border-slate-700 transition-colors whitespace-nowrap shrink-0"
             >
               {app.health_status === 'OFFLINE' ? <Play size={13} /> : <Square size={13} />}
               <span>{app.health_status === 'OFFLINE' ? 'Start' : 'Stop'}</span>
@@ -500,7 +500,7 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
             <button
               onClick={handleToggleMaintenance}
               disabled={actionLoading}
-              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors ${
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors whitespace-nowrap shrink-0 ${
                 app.is_maintenance
                   ? 'bg-amber-950/80 text-amber-300 border-amber-800 hover:bg-amber-900/60'
                   : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'
@@ -512,7 +512,7 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
 
             <button
               onClick={onNavigateToDeployments}
-              className="flex items-center gap-1.5 px-3.5 py-1.5 bg-brand-600 hover:bg-brand-500 text-white text-xs font-medium rounded-lg shadow-sm transition-colors"
+              className="flex items-center gap-1.5 px-3.5 py-1.5 bg-brand-600 hover:bg-brand-500 text-white text-xs font-medium rounded-lg shadow-sm transition-colors whitespace-nowrap shrink-0"
             >
               <Rocket size={13} />
               <span>Deploy Release</span>
@@ -520,7 +520,7 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
 
             <button
               onClick={() => setDeleteModalOpen(true)}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-rose-950/80 hover:bg-rose-900 border border-rose-800 text-rose-300 text-xs font-medium rounded-lg transition-colors"
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-rose-950/80 hover:bg-rose-900 border border-rose-800 text-rose-300 text-xs font-medium rounded-lg transition-colors whitespace-nowrap shrink-0"
               title="Deregister Application"
             >
               <Trash2 size={13} />
@@ -530,8 +530,8 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
         </div>
 
 
-        {/* Tab Navigation */}
-        <div className="flex items-center gap-1 border-t border-slate-800 pt-3 overflow-x-auto text-xs">
+        {/* Tab Navigation — Wraps Cleanly Without Horizontal Scroll */}
+        <div className="flex items-center gap-1.5 flex-wrap border-t border-slate-800 pt-3 text-xs">
           {tabs.map((t) => {
             const Icon = t.icon;
             const isActive = activeTab === t.id;
@@ -539,14 +539,14 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
               <button
                 key={t.id}
                 onClick={() => setActiveTab(t.id)}
-                className={`flex items-center gap-2 px-3 py-2 rounded-lg font-medium whitespace-nowrap transition-colors ${
+                className={`flex items-center gap-2 px-3 py-2 rounded-lg font-medium whitespace-nowrap shrink-0 transition-colors ${
                   isActive
                     ? 'bg-brand-600 text-white shadow-sm'
                     : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
                 }`}
               >
-                <Icon size={14} />
-                <span>{t.label}</span>
+                <Icon size={14} className="shrink-0" />
+                <span className="whitespace-nowrap">{t.label}</span>
               </button>
             );
           })}
@@ -619,6 +619,146 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
               </div>
             </div>
 
+            {/* Suite Microservices & Sub-Containers Full-Page Panel (replaces old inline dropdown) */}
+            {app.is_suite && app.components && app.components.length > 0 && (
+              <div className="col-span-full p-5 rounded-xl bg-slate-900 border border-slate-800 space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-800">
+                  <div className="flex items-center gap-2.5 flex-wrap">
+                    <div className="p-2 bg-brand-950/80 border border-brand-800/80 rounded-lg text-brand-400 shrink-0">
+                      <Layers size={16} />
+                    </div>
+                    <div>
+                      <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                        <span>Suite Microservices & Sub-Containers</span>
+                        <span className="px-2 py-0.5 rounded bg-brand-950 text-brand-300 border border-brand-800 text-[10px] font-mono">
+                          {app.components.length} Services
+                        </span>
+                      </h3>
+                      <p className="text-xs text-slate-400 mt-0.5">
+                        Restart, start/stop, or inspect logs for individual microservices in this application suite.
+                      </p>
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={async () => {
+                      setActionLoading(true);
+                      try {
+                        const compNames = app.components?.map((c) => c.service_name || c.name);
+                        const res = await api.executeSuiteAction(app.id, 'restart', compNames);
+                        setActionSuccessMessage(res.message || `Suite '${app.name}' restarted.`);
+                        await loadAll();
+                      } catch (err: any) {
+                        alert(err.message || 'Failed to restart suite');
+                      } finally {
+                        setActionLoading(false);
+                      }
+                    }}
+                    disabled={actionLoading}
+                    className="h-8 px-3 rounded-lg bg-brand-600 hover:bg-brand-500 text-white text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 shadow-sm transition-colors disabled:opacity-50"
+                  >
+                    <RotateCw size={12} className={`shrink-0 ${actionLoading ? 'animate-spin' : ''}`} />
+                    <span className="whitespace-nowrap">Restart Entire Suite</span>
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                  {app.components.map((comp) => {
+                    const compServiceName = comp.service_name || comp.name;
+                    const isOnline = comp.health_status === 'ONLINE';
+                    return (
+                      <div
+                        key={comp.id || compServiceName}
+                        className="p-3.5 rounded-lg bg-slate-950 border border-slate-800 hover:border-slate-700 transition-all flex flex-col justify-between gap-3"
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-slate-900 text-brand-300 border border-slate-800 uppercase whitespace-nowrap shrink-0">
+                                {comp.role_label || comp.role || 'Service'}
+                              </span>
+                              <span
+                                className="font-mono font-semibold text-white text-xs truncate"
+                                title={compServiceName}
+                              >
+                                {compServiceName}
+                              </span>
+                            </div>
+                            <div className="text-[11px] text-slate-400 mt-1 flex items-center gap-2 font-mono">
+                              <span>{comp.process_manager || 'Docker'}</span>
+                              {comp.port ? <span>• :{comp.port}</span> : null}
+                            </div>
+                          </div>
+                          <StatusBadge status={comp.health_status} size="sm" />
+                        </div>
+
+                        <div className="flex items-center justify-end gap-1.5 pt-2 border-t border-slate-800/80 flex-wrap">
+                          <button
+                            onClick={async () => {
+                              setActionLoading(true);
+                              try {
+                                await api.executeComponentAction(app.id, compServiceName, 'restart');
+                                await loadAll();
+                              } finally {
+                                setActionLoading(false);
+                              }
+                            }}
+                            disabled={actionLoading}
+                            className="h-7 px-2.5 rounded-md bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-200 hover:text-white text-[11px] font-medium inline-flex items-center gap-1 whitespace-nowrap shrink-0 transition-colors"
+                          >
+                            <RotateCw size={11} className="text-brand-400 shrink-0" />
+                            <span>Restart</span>
+                          </button>
+
+                          <button
+                            onClick={async () => {
+                              setActionLoading(true);
+                              try {
+                                await api.executeComponentAction(
+                                  app.id,
+                                  compServiceName,
+                                  isOnline ? 'stop' : 'start'
+                                );
+                                await loadAll();
+                              } finally {
+                                setActionLoading(false);
+                              }
+                            }}
+                            disabled={actionLoading}
+                            className="h-7 px-2.5 rounded-md bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-200 hover:text-white text-[11px] font-medium inline-flex items-center gap-1 whitespace-nowrap shrink-0 transition-colors"
+                          >
+                            {isOnline ? (
+                              <>
+                                <Square size={10} className="text-rose-400 shrink-0" />
+                                <span>Stop</span>
+                              </>
+                            ) : (
+                              <>
+                                <Play size={10} className="text-emerald-400 shrink-0" />
+                                <span>Start</span>
+                              </>
+                            )}
+                          </button>
+
+                          <button
+                            onClick={() => {
+                              setSelectedContainerName(compServiceName);
+                              setActiveTab('docker');
+                              handleDockerAction('logs', { container_name: compServiceName, tail: 100 });
+                            }}
+                            className="h-7 px-2.5 rounded-md bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300 hover:text-white text-[11px] font-medium inline-flex items-center gap-1 whitespace-nowrap shrink-0 transition-colors"
+                          >
+                            <Terminal size={11} className="text-amber-400 shrink-0" />
+                            <span>Logs</span>
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             {/* Live Docker Container or Native Process Architecture Preview Banner in Overview */}
             {dockerData?.has_container && dockerData?.container ? (
               <div className="col-span-full p-5 rounded-xl bg-slate-900 border border-slate-800 flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -655,14 +795,14 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
                   <button
                     onClick={() => handleDockerAction('restart')}
                     disabled={actionLoading}
-                    className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-medium border border-slate-700 transition-colors"
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-medium border border-slate-700 transition-colors whitespace-nowrap shrink-0"
                   >
                     <RotateCw size={12} className={actionLoading ? 'animate-spin' : ''} />
                     <span>Restart Container</span>
                   </button>
                   <button
                     onClick={() => setActiveTab('docker')}
-                    className="flex items-center gap-1.5 px-3 py-1.5 bg-brand-600 hover:bg-brand-500 text-white rounded-lg text-xs font-semibold shadow-sm transition-colors"
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-brand-600 hover:bg-brand-500 text-white rounded-lg text-xs font-semibold shadow-sm transition-colors whitespace-nowrap shrink-0"
                   >
                     <Terminal size={13} />
                     <span>Manage Container & Tuning</span>
@@ -676,15 +816,15 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
                     <Cpu size={20} />
                   </div>
                   <div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
                       <span className="font-semibold text-white text-sm">
                         Native Host Architecture: {app.process_manager || 'Bare-Metal Web Service'}
                       </span>
-                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-emerald-950 text-emerald-400 border border-emerald-800">
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-emerald-950 text-emerald-400 border border-emerald-800 whitespace-nowrap shrink-0">
                         DIRECT HOST PROCESS
                       </span>
                       {app.process_manager && (
-                        <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-purple-950 text-purple-300 border border-purple-800">
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-purple-950 text-purple-300 border border-purple-800 whitespace-nowrap shrink-0">
                           {app.process_manager}
                         </span>
                       )}
@@ -711,14 +851,14 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
                       setActiveTab('docker');
                     }}
                     disabled={actionLoading}
-                    className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-medium border border-slate-700 transition-colors"
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-medium border border-slate-700 transition-colors whitespace-nowrap shrink-0"
                   >
                     <CheckCircle2 size={12} className="text-emerald-400" />
                     <span>Test Syntax</span>
                   </button>
                   <button
                     onClick={() => setActiveTab('docker')}
-                    className="flex items-center gap-1.5 px-3 py-1.5 bg-brand-600 hover:bg-brand-500 text-white rounded-lg text-xs font-semibold shadow-sm transition-colors"
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-brand-600 hover:bg-brand-500 text-white rounded-lg text-xs font-semibold shadow-sm transition-colors whitespace-nowrap shrink-0"
                   >
                     <Terminal size={13} />
                     <span>Manage Host Process & Logs</span>

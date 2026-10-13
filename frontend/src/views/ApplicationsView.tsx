@@ -5,22 +5,15 @@ import {
   Search,
   ExternalLink,
   RotateCw,
-  Square,
-  Play,
   ShieldCheck,
   ShieldAlert,
   Server,
   GitBranch,
   ChevronRight,
-  ChevronDown,
   RefreshCw,
-  AlertCircle,
-  Trash2,
   Box,
   Terminal,
-  Database,
   Cpu,
-  X,
   Sparkles,
   Activity,
   ArrowUpDown,
@@ -28,11 +21,11 @@ import {
   Network
 } from 'lucide-react';
 import { api } from '../api/client';
-import { Application, ApplicationComponent } from '../types';
+import { Application } from '../types';
 import { StatusBadge } from '../components/StatusBadge';
 import { ConfirmationModal } from '../components/ConfirmationModal';
 import { useEnvironment } from '../context/EnvironmentContext';
-import { Button, InputField, SelectField, ModalShell, EmptyState } from '../components/common';
+import { Button, InputField, SelectField, ModalShell } from '../components/common';
 import { CommandAuditModal, CommandExecutionData } from '../components/CommandAuditModal';
 
 interface ApplicationsViewProps {
@@ -45,7 +38,6 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
-  const [actionInProgress, setActionInProgress] = useState<string | null>(null);
 
   // VPS Server Filter & Sort State
   const [selectedServerId, setSelectedServerId] = useState<string>(() => {
@@ -54,13 +46,6 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
   const [sortBy, setSortBy] = useState<string>('status_errors_first');
   const [processFilter, setProcessFilter] = useState<string>('all');
   const [highlightedAppId, setHighlightedAppId] = useState<string | null>(null);
-
-  // Suite Expansion State (tracks which application suites have their components drawer expanded)
-  const [expandedSuites, setExpandedSuites] = useState<Set<string>>(new Set());
-
-  // Component & Suite Actions In-Progress State
-  const [componentActionInProgress, setComponentActionInProgress] = useState<Record<string, string>>({});
-  const [suiteActionInProgress, setSuiteActionInProgress] = useState<Record<string, string>>({});
 
   // Container Logs Modal State
   const [logsModal, setLogsModal] = useState<{
@@ -77,7 +62,7 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
   // Restart Confirmation
   const [confirmModalOpen, setConfirmModalOpen] = useState(false);
   const [selectedAppForAction, setSelectedAppForAction] = useState<Application | null>(null);
-  const [pendingAction, setPendingAction] = useState<string>('restart');
+  const [pendingAction] = useState<string>('restart');
 
   // Delete Confirmation
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
@@ -89,7 +74,7 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
   const [newDomain, setNewDomain] = useState('');
   const [newPort, setNewPort] = useState(80);
   const [newServerId, setNewServerId] = useState('');
-  const [newServiceName, setNewServiceName] = useState('');
+  const [newServiceName] = useState('');
   const [newEnvironment, setNewEnvironment] = useState('production');
   const [serversList, setServersList] = useState<any[]>([]);
 
@@ -142,9 +127,6 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
       setStatusFilter('all');
     }
     setHighlightedAppId(app.id);
-    if (app.is_suite) {
-      setExpandedSuites((prev) => new Set(prev).add(app.id));
-    }
     setTimeout(() => {
       const el = document.getElementById(`app-row-${app.id}`);
       if (el) {
@@ -333,68 +315,10 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
       });
   }, [scopedApps, search, statusFilter, processFilter, sortBy]);
 
-  const toggleSuiteExpanded = (appId: string) => {
-    setExpandedSuites((prev) => {
-      const next = new Set(prev);
-      if (next.has(appId)) {
-        next.delete(appId);
-      } else {
-        next.add(appId);
-      }
-      return next;
-    });
-  };
-
-  const handleAction = async (app: Application, action: string) => {
-    if (action === 'restart' && app.environment === 'production') {
-      setSelectedAppForAction(app);
-      setPendingAction('restart');
-      setConfirmModalOpen(true);
-      return;
-    }
-
-    setActionInProgress(app.id);
-    try {
-      const res = await api.executeAppAction(app.id, action);
-      await loadData();
-      const exitCode = res.exit_code !== undefined ? res.exit_code : (res.success ? 0 : 1);
-      setAuditExecutionData({
-        command: res.command || `systemctl ${action} "${app.service_name || app.name}"`,
-        stdout: res.stdout || res.message || `Service '${app.service_name || app.name}' ${action} executed successfully`,
-        stderr: res.stderr || '',
-        exit_code: exitCode,
-        duration_ms: res.duration_ms || 120,
-        server_id: app.server_id,
-        server_name: app.server_name,
-        server_ip: app.server_ip,
-        context_type: `APP_${action.toUpperCase()}`,
-        title: `Application Action: ${app.name} (${action})`
-      });
-      setAuditModalOpen(true);
-    } catch (err: any) {
-      setAuditExecutionData({
-        command: `systemctl ${action} "${app.service_name || app.name}"`,
-        stdout: '',
-        stderr: err.message || `Failed to execute ${action} on ${app.name}`,
-        exit_code: 1,
-        duration_ms: 0,
-        server_id: app.server_id,
-        server_name: app.server_name,
-        server_ip: app.server_ip,
-        context_type: `APP_${action.toUpperCase()}`,
-        title: `Application Action Failed: ${app.name}`
-      });
-      setAuditModalOpen(true);
-    } finally {
-      setActionInProgress(null);
-    }
-  };
-
   const executeConfirmedAction = async () => {
     if (!selectedAppForAction) return;
     const targetApp = selectedAppForAction;
     setConfirmModalOpen(false);
-    setActionInProgress(targetApp.id);
     try {
       const res = await api.executeAppAction(targetApp.id, pendingAction);
       await loadData();
@@ -427,7 +351,6 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
       });
       setAuditModalOpen(true);
     } finally {
-      setActionInProgress(null);
       setSelectedAppForAction(null);
     }
   };
@@ -442,95 +365,6 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
       alert(err.message || 'Failed to delete application');
     } finally {
       setSelectedAppForDelete(null);
-    }
-  };
-
-  // Component-level action (e.g. restart only gatepass_db, gatepass_backend, etc.)
-  const handleComponentAction = async (app: Application, componentName: string, action: string) => {
-    const key = `${app.id}-${componentName}`;
-    setComponentActionInProgress((prev) => ({ ...prev, [key]: action }));
-    try {
-      const res = await api.executeComponentAction(app.id, componentName, action);
-      await loadData();
-      setAuditExecutionData({
-        command: `docker ${action} ${componentName}`,
-        stdout: res.stdout || res.message || `Container '${componentName}' ${action} executed`,
-        stderr: res.stderr || '',
-        exit_code: res.exit_code !== undefined ? res.exit_code : (res.success ? 0 : 1),
-        duration_ms: 150,
-        server_id: app.server_id,
-        server_name: app.server_name,
-        server_ip: app.server_ip,
-        context_type: `CONTAINER_${action.toUpperCase()}`,
-        title: `Container Action: ${componentName} (${action})`
-      });
-      setAuditModalOpen(true);
-    } catch (err: any) {
-      setAuditExecutionData({
-        command: `docker ${action} ${componentName}`,
-        stdout: '',
-        stderr: err.message || `Failed to ${action} container ${componentName}`,
-        exit_code: 1,
-        duration_ms: 0,
-        server_id: app.server_id,
-        server_name: app.server_name,
-        server_ip: app.server_ip,
-        context_type: `CONTAINER_${action.toUpperCase()}`,
-        title: `Container Action Failed: ${componentName}`
-      });
-      setAuditModalOpen(true);
-    } finally {
-      setComponentActionInProgress((prev) => {
-        const next = { ...prev };
-        delete next[key];
-        return next;
-      });
-    }
-  };
-
-  // Suite-level coordinated action (e.g. restart all containers in the suite)
-  const handleSuiteAction = async (app: Application, action: string) => {
-    setSuiteActionInProgress((prev) => ({ ...prev, [app.id]: action }));
-    try {
-      const compNames = app.components?.map((c) => c.service_name || c.name);
-      const res = await api.executeSuiteAction(app.id, action, compNames);
-      await loadData();
-      const resultsText = res.results
-        ? res.results.map((r) => `[${r.component}] ${r.success ? 'SUCCESS' : 'FAILED'}: ${r.message}`).join('\n')
-        : '';
-      setAuditExecutionData({
-        command: `docker compose ${action} (Suite: ${app.name})`,
-        stdout: resultsText || res.message || `Suite '${app.name}' ${action} executed`,
-        stderr: res.success ? '' : (res.message || ''),
-        exit_code: res.success ? 0 : 1,
-        duration_ms: 350,
-        server_id: app.server_id,
-        server_name: app.server_name,
-        server_ip: app.server_ip,
-        context_type: `SUITE_${action.toUpperCase()}`,
-        title: `Suite Action: ${app.name} (${action})`
-      });
-      setAuditModalOpen(true);
-    } catch (err: any) {
-      setAuditExecutionData({
-        command: `docker compose ${action} (Suite: ${app.name})`,
-        stdout: '',
-        stderr: err.message || `Failed to ${action} suite ${app.name}`,
-        exit_code: 1,
-        duration_ms: 0,
-        server_id: app.server_id,
-        server_name: app.server_name,
-        server_ip: app.server_ip,
-        context_type: `SUITE_${action.toUpperCase()}`,
-        title: `Suite Action Failed: ${app.name}`
-      });
-      setAuditModalOpen(true);
-    } finally {
-      setSuiteActionInProgress((prev) => {
-        const next = { ...prev };
-        delete next[app.id];
-        return next;
-      });
     }
   };
 
@@ -586,61 +420,8 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
     }
   };
 
-  const getRoleBadge = (role: string, label: string) => {
-    switch (role) {
-      case 'frontend':
-        return (
-          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-sky-950 text-sky-300 border border-sky-800 whitespace-nowrap shrink-0">
-            🌐 {label}
-          </span>
-        );
-      case 'backend':
-        return (
-          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-purple-950 text-purple-300 border border-purple-800 whitespace-nowrap shrink-0">
-            ⚙️ {label}
-          </span>
-        );
-      case 'database':
-        return (
-          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-950 text-emerald-300 border border-emerald-800 whitespace-nowrap shrink-0">
-            🗄️ {label}
-          </span>
-        );
-      case 'cache':
-        return (
-          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-950 text-amber-300 border border-amber-800 whitespace-nowrap shrink-0">
-            ⚡ {label}
-          </span>
-        );
-      case 'certbot':
-        return (
-          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-teal-950 text-teal-300 border border-teal-800 whitespace-nowrap shrink-0">
-            🔒 {label}
-          </span>
-        );
-      case 'agent':
-        return (
-          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-indigo-950 text-indigo-300 border border-indigo-800 whitespace-nowrap shrink-0">
-            📡 {label}
-          </span>
-        );
-      case 'worker':
-        return (
-          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-slate-900 text-slate-300 border border-slate-700 whitespace-nowrap shrink-0">
-            ⏳ {label}
-          </span>
-        );
-      default:
-        return (
-          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-slate-900 text-slate-300 border border-slate-800 whitespace-nowrap shrink-0">
-            📦 {label || 'Service'}
-          </span>
-        );
-    }
-  };
-
   return (
-    <div className="p-6 md:p-8 space-y-6 max-w-7xl mx-auto">
+    <div className="p-6 md:p-8 space-y-6 w-full max-w-full overflow-x-hidden">
       {/* Header Bar */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-2 border-b border-slate-800">
         <div className="min-w-0 flex-1">
@@ -648,7 +429,7 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
             Applications Inventory
           </h1>
           <p className="text-xs text-slate-400 mt-1">
-            Unified view of applications and multi-container Docker suites. Sibling microservices (frontend, backend, database) are consolidated into one application per line with dropdown controls.
+            Unified view of applications and multi-container Docker suites. Click any application row to open its full management page.
           </p>
         </div>
 
@@ -700,7 +481,7 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
           )}
         </div>
 
-        <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-thin">
+        <div className="flex items-center gap-2 flex-wrap pb-1">
           <button
             onClick={() => handleServerSelect('all')}
             className={`px-3 py-2 rounded-lg text-xs font-semibold transition-all whitespace-nowrap shrink-0 flex items-center gap-2 border ${
@@ -1035,488 +816,226 @@ export const ApplicationsView: React.FC<ApplicationsViewProps> = ({ onSelectApp 
         </div>
       </div>
 
-      {/* Applications Data Table */}
-      <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-sm">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse text-xs">
-            <thead>
-              <tr className="border-b border-slate-800 bg-slate-950/60 text-slate-400 font-semibold uppercase tracking-wider text-[11px]">
-                <th className="py-3 px-4 whitespace-nowrap">Application</th>
-                <th className="py-3 px-4 whitespace-nowrap">Environment</th>
-                <th className="py-3 px-4 whitespace-nowrap">Server & IP</th>
-                <th className="py-3 px-4 whitespace-nowrap">Process / Port</th>
-                <th className="py-3 px-4 whitespace-nowrap">Git Head</th>
-                <th className="py-3 px-4 whitespace-nowrap">Uptime</th>
-                <th className="py-3 px-4 whitespace-nowrap">Health</th>
-                <th className="py-3 px-4 text-right whitespace-nowrap">Actions</th>
+      {/* Applications Data Table — Fits 100% Within Viewport With Zero Horizontal Scrolling */}
+      <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-sm w-full">
+        <table className="w-full table-fixed text-left border-collapse text-xs">
+          <thead>
+            <tr className="border-b border-slate-800 bg-slate-950/60 text-slate-400 font-semibold uppercase tracking-wider text-[11px]">
+              <th className="py-3.5 px-4 w-[29%] whitespace-nowrap">Application & Domain</th>
+              <th className="py-3.5 px-3 w-[23%] whitespace-nowrap">Server & Runtime</th>
+              <th className="py-3.5 px-3 w-[20%] whitespace-nowrap">Git Head</th>
+              <th className="py-3.5 px-3 w-[15%] whitespace-nowrap">Health & Uptime</th>
+              <th className="py-3.5 px-4 w-[13%] text-right whitespace-nowrap">App Page</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-800/60 text-slate-200">
+            {loading ? (
+              <tr>
+                <td colSpan={5} className="py-12 text-center text-slate-500">
+                  Loading applications directory...
+                </td>
               </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-800/60 text-slate-200">
-              {loading ? (
-                <tr>
-                  <td colSpan={8} className="py-12 text-center text-slate-500">
-                    Loading applications directory...
-                  </td>
-                </tr>
-              ) : sortedFilteredApps.length === 0 ? (
-                <tr>
-                  <td colSpan={8} className="py-16 text-center text-slate-400">
-                    <div className="space-y-3 max-w-sm mx-auto">
-                      <div className="p-3 bg-slate-950 border border-slate-800 w-12 h-12 rounded-xl mx-auto flex items-center justify-center text-slate-400">
-                        <Layers size={24} />
-                      </div>
-                      <div className="font-semibold text-white text-sm">No Applications Found</div>
-                      <p className="text-xs text-slate-500">
-                        No applications match your active server, search, or status filter.
-                      </p>
-                      <button
-                        onClick={() => {
-                          setSelectedServerId('all');
-                          setSearch('');
-                          setStatusFilter('all');
-                          setProcessFilter('all');
-                        }}
-                        className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-xs font-semibold shadow-sm transition-colors whitespace-nowrap shrink-0"
-                      >
-                        <RefreshCw size={12} className="shrink-0" />
-                        <span className="whitespace-nowrap">Reset All Filters</span>
-                      </button>
+            ) : sortedFilteredApps.length === 0 ? (
+              <tr>
+                <td colSpan={5} className="py-16 text-center text-slate-400">
+                  <div className="space-y-3 max-w-sm mx-auto">
+                    <div className="p-3 bg-slate-950 border border-slate-800 w-12 h-12 rounded-xl mx-auto flex items-center justify-center text-slate-400">
+                      <Layers size={24} />
                     </div>
-                  </td>
-                </tr>
-              ) : (
-                sortedFilteredApps.map((app) => {
-                  const isSuite = Boolean(app.is_suite && app.components && app.components.length > 1);
-                  const isExpanded = expandedSuites.has(app.id);
-                  const isSuiteBusy = Boolean(suiteActionInProgress[app.id]);
-                  const hasGitCommit = Boolean(app.current_commit && app.current_commit !== 'HEAD');
-                  const repoFolder =
-                    app.root_path && !app.root_path.startsWith('/var/lib/docker')
-                      ? app.root_path.split('/').filter(Boolean).pop()
-                      : null;
+                    <div className="font-semibold text-white text-sm">No Applications Found</div>
+                    <p className="text-xs text-slate-500">
+                      No applications match your active server, search, or status filter.
+                    </p>
+                    <button
+                      onClick={() => {
+                        setSelectedServerId('all');
+                        setSearch('');
+                        setStatusFilter('all');
+                        setProcessFilter('all');
+                      }}
+                      className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-xs font-semibold shadow-sm transition-colors whitespace-nowrap shrink-0"
+                    >
+                      <RefreshCw size={12} className="shrink-0" />
+                      <span className="whitespace-nowrap">Reset All Filters</span>
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            ) : (
+              sortedFilteredApps.map((app) => {
+                const isSuite = Boolean(app.is_suite && app.components && app.components.length > 1);
+                const hasGitCommit = Boolean(app.current_commit && app.current_commit !== 'HEAD');
+                const repoFolder =
+                  app.root_path && !app.root_path.startsWith('/var/lib/docker')
+                    ? app.root_path.split('/').filter(Boolean).pop()
+                    : null;
 
-                  return (
-                    <React.Fragment key={app.id}>
-                      {/* Main Application Row (Strictly ONE per line) */}
-                      <tr
-                        id={`app-row-${app.id}`}
-                        onClick={() => {
-                          if (isSuite) {
-                            toggleSuiteExpanded(app.id);
-                          } else {
-                            onSelectApp(app.id);
-                          }
-                        }}
-                        className={`hover:bg-slate-800/50 cursor-pointer transition-colors group ${
-                          isExpanded ? 'bg-slate-800/30' : ''
-                        } ${
-                          highlightedAppId === app.id
-                            ? 'ring-2 ring-rose-500 bg-rose-950/40 shadow-lg shadow-rose-950/50 animate-pulse'
-                            : ''
-                        }`}
-                      >
-                        {/* App Name, Suite Indicator & Domain */}
-                        <td className="py-3 px-4 font-medium">
-                          <div className="flex items-center gap-2 whitespace-nowrap">
-                            {isSuite && (
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  toggleSuiteExpanded(app.id);
-                                }}
-                                className="p-1 hover:bg-slate-800 rounded text-slate-400 hover:text-white transition-colors shrink-0"
-                                title={isExpanded ? 'Collapse microservices' : 'Expand microservices dropdown'}
-                              >
-                                {isExpanded ? (
-                                  <ChevronDown size={14} className="text-brand-400" />
-                                ) : (
-                                  <ChevronRight size={14} />
-                                )}
-                              </button>
-                            )}
+                return (
+                  <tr
+                    key={app.id}
+                    id={`app-row-${app.id}`}
+                    onClick={() => onSelectApp(app.id)}
+                    className={`hover:bg-slate-800/50 cursor-pointer transition-colors group ${
+                      highlightedAppId === app.id
+                        ? 'ring-2 ring-rose-500 bg-rose-950/40 shadow-lg shadow-rose-950/50 animate-pulse'
+                        : ''
+                    }`}
+                  >
+                    {/* Column 1: App Name, Suite Indicator, Environment & Domain */}
+                    <td className="py-3.5 px-4 font-medium min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-semibold text-white group-hover:text-brand-400 transition-colors truncate">
+                          {app.name}
+                        </span>
 
-                            <span className="font-semibold text-white group-hover:text-brand-400 transition-colors whitespace-nowrap">
-                              {app.name}
+                        {isSuite && (
+                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-brand-950/80 text-brand-300 border border-brand-800/80 whitespace-nowrap shrink-0">
+                            <Box size={10} className="shrink-0" />
+                            <span className="whitespace-nowrap">
+                              {app.components?.length || app.component_count || 1} Services
                             </span>
-
-                            {isSuite && (
-                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-brand-950/80 text-brand-300 border border-brand-800/80 whitespace-nowrap shrink-0">
-                                <Box size={10} className="shrink-0" />
-                                <span className="whitespace-nowrap">
-                                  {app.components?.length || app.component_count || 1} Services
-                                </span>
-                              </span>
-                            )}
-
-                            {app.is_maintenance && (
-                              <span className="text-[10px] font-mono px-1 py-0.2 bg-blue-950 text-blue-300 border border-blue-800 rounded whitespace-nowrap shrink-0">
-                                MAINT
-                              </span>
-                            )}
-                          </div>
-
-                          <div className="flex items-center gap-1.5 text-slate-400 mt-0.5 mono whitespace-nowrap">
-                            <span>{app.domain || `${app.service_name}.local`}</span>
-                            {app.domain && !app.domain.endsWith('.local') && (
-                              <a
-                                href={`https://${app.domain}`}
-                                target="_blank"
-                                rel="noreferrer"
-                                onClick={(e) => e.stopPropagation()}
-                                className="hover:text-white shrink-0"
-                              >
-                                <ExternalLink size={10} />
-                              </a>
-                            )}
-                          </div>
-                        </td>
-
-                        {/* Environment */}
-                        <td className="py-3 px-4 whitespace-nowrap">
-                          <span
-                            className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wider border whitespace-nowrap shrink-0 ${
-                              app.environment === 'production'
-                                ? 'bg-purple-950/80 text-purple-300 border-purple-800/80'
-                                : app.environment === 'staging'
-                                ? 'bg-amber-950/80 text-amber-300 border-amber-800/80'
-                                : 'bg-blue-950/80 text-blue-300 border-blue-800/80'
-                            }`}
-                          >
-                            {app.environment}
                           </span>
-                        </td>
+                        )}
 
-                        {/* Server & IP */}
-                        <td className="py-3 px-4 whitespace-nowrap">
+                        <span
+                          className={`inline-block px-1.5 py-0.2 rounded text-[10px] font-semibold uppercase tracking-wider border whitespace-nowrap shrink-0 ${
+                            app.environment === 'production'
+                              ? 'bg-purple-950/80 text-purple-300 border-purple-800/80'
+                              : app.environment === 'staging'
+                              ? 'bg-amber-950/80 text-amber-300 border-amber-800/80'
+                              : 'bg-blue-950/80 text-blue-300 border-blue-800/80'
+                          }`}
+                        >
+                          {app.environment}
+                        </span>
+
+                        {app.is_maintenance && (
+                          <span className="text-[10px] font-mono px-1 py-0.2 bg-blue-950 text-blue-300 border border-blue-800 rounded whitespace-nowrap shrink-0">
+                            MAINT
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="flex items-center gap-1.5 text-slate-400 mt-1 mono min-w-0">
+                        <span className="truncate">{app.domain || `${app.service_name}.local`}</span>
+                        {app.domain && !app.domain.endsWith('.local') && (
+                          <a
+                            href={`https://${app.domain}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            onClick={(e) => e.stopPropagation()}
+                            className="hover:text-white shrink-0"
+                            title={`Open https://${app.domain}`}
+                          >
+                            <ExternalLink size={11} />
+                          </a>
+                        )}
+                      </div>
+                    </td>
+
+                    {/* Column 2: Server & Runtime */}
+                    <td className="py-3.5 px-3 min-w-0">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (app.server_id) handleServerSelect(app.server_id);
+                        }}
+                        className="inline-flex items-center gap-1.5 text-slate-200 hover:text-brand-300 transition-colors text-left group/srv max-w-full"
+                        title={`Click to filter apps to ${app.server_name || 'this server'}`}
+                      >
+                        <Server size={12} className="text-brand-400 shrink-0" />
+                        <span className="truncate font-medium">{app.server_name || 'VPS Node'}</span>
+                      </button>
+                      <div className="text-slate-400 mono text-[11px] mt-0.5 truncate">
+                        {app.server_ip || '185.192.97.84'} · {isSuite ? 'Docker Compose' : app.process_manager} (:{app.port})
+                      </div>
+                    </td>
+
+                    {/* Column 3: Git Head */}
+                    <td className="py-3.5 px-3 min-w-0">
+                      {hasGitCommit ? (
+                        <>
+                          <div className="inline-flex items-center gap-1.5 mono whitespace-nowrap">
+                            <GitBranch size={12} className="text-brand-400 shrink-0" />
+                            <span className="text-slate-300 whitespace-nowrap">{app.git_branch || 'main'}</span>
+                            <span
+                              className="text-brand-400 font-semibold px-1.5 py-0.5 bg-slate-950 rounded border border-slate-800 text-[11px] whitespace-nowrap shrink-0"
+                              title={`Commit: ${app.current_commit}${app.root_path ? ` | Repo: ${app.root_path}` : ''}`}
+                            >
+                              {app.current_commit!.slice(0, 7)}
+                            </span>
+                          </div>
+                          {app.latest_repo_commit && app.current_commit !== app.latest_repo_commit ? (
+                            <div className="text-[10px] text-amber-400 font-semibold mt-0.5 whitespace-nowrap">
+                              Update Available
+                            </div>
+                          ) : repoFolder ? (
+                            <div
+                              className="text-[10px] text-slate-500 mono mt-0.5 truncate"
+                              title={app.root_path}
+                            >
+                              /{repoFolder}
+                            </div>
+                          ) : null}
+                        </>
+                      ) : (
+                        <span
+                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-slate-950/80 text-slate-500 border border-slate-800/80 text-[11px] font-mono whitespace-nowrap shrink-0"
+                          title={
+                            app.root_path
+                              ? `No Git repository found in ${app.root_path}`
+                              : 'No Git repository tracked for this site'
+                          }
+                        >
+                          <GitBranch size={11} className="text-slate-600 shrink-0" />
+                          <span className="whitespace-nowrap">No Git Repo</span>
+                        </span>
+                      )}
+                    </td>
+
+                    {/* Column 4: Health & Uptime */}
+                    <td className="py-3.5 px-3 min-w-0">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <StatusBadge status={app.health_status} size="sm" />
+                        {(app.health_status === 'OFFLINE' || app.health_status === 'DEGRADED') && (
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
-                              if (app.server_id) handleServerSelect(app.server_id);
+                              handleInvestigateError(app);
                             }}
-                            className="inline-flex items-center gap-1.5 text-slate-300 hover:text-brand-300 transition-colors text-left group/srv whitespace-nowrap"
-                            title={`Click to filter apps to ${app.server_name || 'this server'}`}
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-rose-950 text-rose-300 border border-rose-800 hover:bg-rose-900 transition-colors shadow-sm whitespace-nowrap shrink-0"
+                            title="Click to audit outage reason and run AI fix on VPS"
                           >
-                            <Server size={13} className="text-slate-500 group-hover/srv:text-brand-400 shrink-0" />
-                            <span className="truncate max-w-[140px] font-medium whitespace-nowrap">{app.server_name || 'VPS Node'}</span>
+                            <Sparkles size={10} className="text-rose-400 shrink-0" />
+                            <span className="whitespace-nowrap">Fix with AI</span>
                           </button>
-                          <div className="text-slate-400 mono text-[11px] mt-0.5 whitespace-nowrap">
-                            {app.server_ip || '185.192.97.84'}
-                          </div>
-                        </td>
+                        )}
+                      </div>
+                      <div className="text-[11px] mono text-emerald-400 font-medium mt-1 whitespace-nowrap">
+                        {app.uptime_percent || 99.98}% uptime
+                      </div>
+                    </td>
 
-                        {/* Process / Port */}
-                        <td className="py-3 px-4 whitespace-nowrap">
-                          <div className="text-slate-300 font-medium whitespace-nowrap">
-                            {isSuite ? 'Docker Compose' : app.process_manager}
-                          </div>
-                          <div className="text-slate-400 mono text-[11px] mt-0.5 whitespace-nowrap">
-                            {isSuite ? (
-                              <span>
-                                Ports:{' '}
-                                {app.components
-                                  ?.map((c) => c.port)
-                                  .filter((p) => p && p !== 80)
-                                  .slice(0, 3)
-                                  .join(', ') || 'Internal'}
-                              </span>
-                            ) : (
-                              `Port :${app.port}`
-                            )}
-                          </div>
-                        </td>
-
-                        {/* Git Head */}
-                        <td className="py-3 px-4 whitespace-nowrap">
-                          {hasGitCommit ? (
-                            <>
-                              <div className="inline-flex items-center gap-1.5 mono whitespace-nowrap">
-                                <GitBranch size={12} className="text-brand-400 shrink-0" />
-                                <span className="text-slate-300 whitespace-nowrap">{app.git_branch || 'main'}</span>
-                                <span
-                                  className="text-brand-400 font-semibold px-1.5 py-0.5 bg-slate-950 rounded border border-slate-800 text-[11px] whitespace-nowrap shrink-0"
-                                  title={`Commit: ${app.current_commit}${app.root_path ? ` | Repo: ${app.root_path}` : ''}`}
-                                >
-                                  {app.current_commit!.slice(0, 7)}
-                                </span>
-                              </div>
-                              {app.latest_repo_commit && app.current_commit !== app.latest_repo_commit ? (
-                                <div className="text-[10px] text-amber-400 font-semibold mt-0.5 whitespace-nowrap">
-                                  Update Available
-                                </div>
-                              ) : repoFolder ? (
-                                <div
-                                  className="text-[10px] text-slate-500 mono mt-0.5 truncate max-w-[140px] whitespace-nowrap"
-                                  title={app.root_path}
-                                >
-                                  /{repoFolder}
-                                </div>
-                              ) : null}
-                            </>
-                          ) : (
-                            <span
-                              className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-slate-950/80 text-slate-500 border border-slate-800/80 text-[11px] font-mono whitespace-nowrap shrink-0"
-                              title={
-                                app.root_path
-                                  ? `No Git repository found in ${app.root_path}`
-                                  : 'No Git repository tracked for this site'
-                              }
-                            >
-                              <GitBranch size={11} className="text-slate-600 shrink-0" />
-                              <span className="whitespace-nowrap">No Git Repo</span>
-                            </span>
-                          )}
-                        </td>
-
-                        {/* Uptime */}
-                        <td className="py-3 px-4 mono text-emerald-400 font-medium whitespace-nowrap">
-                          {app.uptime_percent || 99.98}%
-                        </td>
-
-                        {/* Health Status */}
-                        <td className="py-3 px-4 whitespace-nowrap">
-                          <div className="inline-flex items-center gap-1.5 whitespace-nowrap">
-                            <StatusBadge status={app.health_status} size="sm" />
-                            {(app.health_status === 'OFFLINE' || app.health_status === 'DEGRADED') && (
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleInvestigateError(app);
-                                }}
-                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-rose-950 text-rose-300 border border-rose-800 hover:bg-rose-900 transition-colors shadow-sm whitespace-nowrap shrink-0"
-                                title="Click to audit outage reason and run AI fix on VPS"
-                              >
-                                <Sparkles size={10} className="text-rose-400 shrink-0" />
-                                <span className="whitespace-nowrap">Fix with AI</span>
-                              </button>
-                            )}
-                          </div>
-                        </td>
-
-                        {/* Operational Quick Actions */}
-                        <td className="py-3 px-4 text-right whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
-                          <div className="inline-flex items-center justify-end gap-1.5 whitespace-nowrap">
-                            {isSuite ? (
-                              <>
-                                <button
-                                  onClick={() => toggleSuiteExpanded(app.id)}
-                                  className={`px-2 py-1 rounded text-[11px] font-semibold border transition-colors inline-flex items-center gap-1 whitespace-nowrap shrink-0 ${
-                                    isExpanded
-                                      ? 'bg-brand-950 text-brand-300 border-brand-800'
-                                      : 'bg-slate-950 hover:bg-slate-800 text-slate-300 border-slate-800'
-                                  }`}
-                                  title={isExpanded ? 'Hide services dropdown' : 'View microservices dropdown'}
-                                >
-                                  <span className="whitespace-nowrap">{isExpanded ? 'Hide' : 'Services'}</span>
-                                  {isExpanded ? <ChevronDown size={12} className="shrink-0" /> : <ChevronRight size={12} className="shrink-0" />}
-                                </button>
-
-                                <button
-                                  onClick={() => handleSuiteAction(app, 'restart')}
-                                  disabled={isSuiteBusy}
-                                  className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded transition-colors whitespace-nowrap shrink-0"
-                                  title="Restart Entire Suite (All Containers)"
-                                >
-                                  <RotateCw
-                                    size={13}
-                                    className={isSuiteBusy ? 'animate-spin text-brand-400' : ''}
-                                  />
-                                </button>
-                              </>
-                            ) : (
-                              <>
-                                <button
-                                  onClick={() => handleAction(app, 'restart')}
-                                  disabled={actionInProgress === app.id}
-                                  className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded transition-colors whitespace-nowrap shrink-0"
-                                  title="Graceful Restart"
-                                >
-                                  <RotateCw
-                                    size={13}
-                                    className={actionInProgress === app.id ? 'animate-spin' : ''}
-                                  />
-                                </button>
-                                <button
-                                  onClick={() =>
-                                    handleAction(app, app.health_status === 'OFFLINE' ? 'start' : 'stop')
-                                  }
-                                  disabled={actionInProgress === app.id}
-                                  className="p-1.5 text-slate-400 hover:text-rose-400 hover:bg-slate-800 rounded transition-colors whitespace-nowrap shrink-0"
-                                  title={app.health_status === 'OFFLINE' ? 'Start Service' : 'Stop Service'}
-                                >
-                                  {app.health_status === 'OFFLINE' ? <Play size={13} /> : <Square size={13} />}
-                                </button>
-                              </>
-                            )}
-
-                            <button
-                              onClick={() => {
-                                setSelectedAppForDelete(app);
-                                setDeleteModalOpen(true);
-                              }}
-                              className="p-1.5 text-slate-400 hover:text-rose-400 hover:bg-slate-800 rounded transition-colors whitespace-nowrap shrink-0"
-                              title="Delete Application"
-                            >
-                              <Trash2 size={13} />
-                            </button>
-
-                            <button
-                              onClick={() => onSelectApp(app.id)}
-                              className="p-1.5 text-brand-400 hover:text-brand-300 hover:bg-slate-800 rounded transition-colors whitespace-nowrap shrink-0"
-                              title="View Full Dashboard"
-                            >
-                              <ChevronRight size={14} />
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-
-                      {/* Expandable Dropdown Drawer for Microservice Containers */}
-                      {isSuite && isExpanded && (
-                        <tr className="bg-slate-950/80 border-b border-slate-800">
-                          <td colSpan={8} className="p-4 pl-6 md:pl-10">
-                            <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-4 space-y-3.5 shadow-inner">
-                              {/* Drawer Header */}
-                              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-800/80">
-                                <div className="min-w-0 flex-1">
-                                  <div className="text-xs font-bold text-white flex items-center gap-2 flex-wrap">
-                                    <Box size={14} className="text-brand-400 shrink-0" />
-                                    <span className="truncate">{app.name} &mdash; Microservices & Sub-Containers</span>
-                                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 font-mono font-medium whitespace-nowrap shrink-0">
-                                      {app.components?.length || 0} Components
-                                    </span>
-                                  </div>
-                                  <p className="text-[11px] text-slate-400 mt-0.5">
-                                    Individually manage, restart, or inspect any container (Database, API, Frontend, Cache, etc.) independently without stopping the rest of the application.
-                                  </p>
-                                </div>
-
-                                <div className="flex items-center gap-2 shrink-0">
-                                  <button
-                                    onClick={() => handleSuiteAction(app, 'restart')}
-                                    disabled={isSuiteBusy}
-                                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-brand-600 hover:bg-brand-500 text-white rounded-lg text-xs font-semibold transition-colors shadow-sm disabled:opacity-50 shrink-0 whitespace-nowrap"
-                                    title="Restart all containers in coordinated order (DB -> Backend -> Frontend)"
-                                  >
-                                    <RotateCw
-                                      size={12}
-                                      className={`shrink-0 ${isSuiteBusy ? 'animate-spin' : ''}`}
-                                    />
-                                    <span className="whitespace-nowrap">Restart Entire Suite</span>
-                                  </button>
-                                </div>
-                              </div>
-
-                              {/* Component Grid */}
-                              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-                                {app.components?.map((comp) => {
-                                  const actionKey = `${app.id}-${comp.name}`;
-                                  const isBusy = Boolean(componentActionInProgress[actionKey]);
-
-                                  return (
-                                    <div
-                                      key={comp.id || comp.name}
-                                      className="p-3 bg-slate-950 border border-slate-800/90 rounded-lg hover:border-slate-700 transition-all flex flex-col justify-between gap-2.5 min-w-0"
-                                    >
-                                      <div className="flex items-start justify-between gap-2 min-w-0">
-                                        <div className="min-w-0 flex-1">
-                                          <div className="flex items-center gap-1.5 flex-wrap">
-                                            {getRoleBadge(comp.role, comp.role_label)}
-                                          </div>
-                                          <div
-                                            className="font-mono text-xs font-semibold text-white mt-1 truncate max-w-[150px] sm:max-w-[200px]"
-                                            title={comp.name}
-                                          >
-                                            {comp.name}
-                                          </div>
-                                          <div className="flex items-center gap-2 mt-0.5 text-[11px] text-slate-400 flex-wrap">
-                                            <span className="font-mono whitespace-nowrap">Port :{comp.port}</span>
-                                            <span>&bull;</span>
-                                            <span className="whitespace-nowrap">{comp.process_manager || 'Docker'}</span>
-                                          </div>
-                                        </div>
-                                        <StatusBadge status={comp.health_status} size="sm" />
-                                      </div>
-
-                                      {/* Individual Component Controls */}
-                                      <div className="flex items-center justify-between gap-1.5 pt-2 border-t border-slate-800/80 whitespace-nowrap">
-                                        <div className="inline-flex items-center gap-1.5 whitespace-nowrap">
-                                          <button
-                                            onClick={() => handleComponentAction(app, comp.name, 'restart')}
-                                            disabled={isBusy}
-                                            className="inline-flex items-center gap-1 px-2 py-1 bg-slate-900 hover:bg-slate-800 border border-slate-700/80 text-slate-200 hover:text-white rounded text-[11px] font-medium transition-colors disabled:opacity-50 whitespace-nowrap shrink-0"
-                                            title={`Restart ${comp.name} container only`}
-                                          >
-                                            <RotateCw
-                                              size={11}
-                                              className={`shrink-0 ${
-                                                componentActionInProgress[actionKey] === 'restart'
-                                                  ? 'animate-spin text-brand-400'
-                                                  : ''
-                                              }`}
-                                            />
-                                            <span className="whitespace-nowrap">Restart</span>
-                                          </button>
-
-                                          <button
-                                            onClick={() =>
-                                              handleComponentAction(
-                                                app,
-                                                comp.name,
-                                                comp.health_status === 'OFFLINE' || comp.health_status === 'STOPPED'
-                                                  ? 'start'
-                                                  : 'stop'
-                                              )
-                                            }
-                                            disabled={isBusy}
-                                            className={`inline-flex items-center gap-1 px-2 py-1 border rounded text-[11px] font-medium transition-colors disabled:opacity-50 whitespace-nowrap shrink-0 ${
-                                              comp.health_status === 'OFFLINE' || comp.health_status === 'STOPPED'
-                                                ? 'bg-emerald-950/60 hover:bg-emerald-900/60 border-emerald-800 text-emerald-300'
-                                                : 'bg-rose-950/40 hover:bg-rose-900/40 border-rose-800/80 text-rose-300'
-                                            }`}
-                                            title={`${
-                                              comp.health_status === 'OFFLINE' || comp.health_status === 'STOPPED'
-                                                ? 'Start'
-                                                : 'Stop'
-                                            } ${comp.name}`}
-                                          >
-                                            {comp.health_status === 'OFFLINE' || comp.health_status === 'STOPPED' ? (
-                                              <>
-                                                <Play size={11} className="shrink-0" />
-                                                <span className="whitespace-nowrap">Start</span>
-                                              </>
-                                            ) : (
-                                              <>
-                                                <Square size={11} className="shrink-0" />
-                                                <span className="whitespace-nowrap">Stop</span>
-                                              </>
-                                            )}
-                                          </button>
-                                        </div>
-
-                                        <button
-                                          onClick={() => handleViewComponentLogs(app, comp.name)}
-                                          className="inline-flex items-center gap-1 px-2 py-1 text-slate-400 hover:text-sky-300 hover:bg-slate-800 rounded transition-colors text-[11px] whitespace-nowrap shrink-0"
-                                          title={`View logs for ${comp.name}`}
-                                        >
-                                          <Terminal size={12} className="shrink-0" />
-                                          <span className="whitespace-nowrap">Logs</span>
-                                        </button>
-                                      </div>
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            </div>
-                          </td>
-                        </tr>
-                      )}
-                    </React.Fragment>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
+                    {/* Column 5: Open Full Application Detail Page */}
+                    <td className="py-3.5 px-4 text-right whitespace-nowrap">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onSelectApp(app.id);
+                        }}
+                        className="h-8 px-3 rounded-lg bg-brand-600/90 hover:bg-brand-500 text-white text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 shadow-sm transition-colors"
+                      >
+                        <span>Manage</span>
+                        <ChevronRight size={13} className="shrink-0" />
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })
+            )}
+          </tbody>
+        </table>
       </div>
 
       {/* Container Logs Viewer Modal */}
