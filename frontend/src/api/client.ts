@@ -1187,6 +1187,23 @@ class ApiClient {
     return this.request<any>(`/licenses/${id}/renew?additional_days=${additionalDays}`, { method: 'POST' });
   }
 
+  async deleteLicense(id: string) {
+    return this.request<{
+      success: boolean;
+      message: string;
+      license_id: string;
+    }>(`/licenses/${id}`, { method: 'DELETE' });
+  }
+
+  async deleteActivation(id: string | number) {
+    return this.request<{
+      success: boolean;
+      message: string;
+      activation_id: string;
+    }>(`/licenses/activations/${id}`, { method: 'DELETE' });
+  }
+
+
   async licenseAndActivateAlert(alertId: string | number, data: {
     customer?: string;
     email?: string;

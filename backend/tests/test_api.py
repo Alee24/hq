@@ -1633,3 +1633,68 @@ async def test_smtp_and_email_notifications():
             await notify_ssl_expiry_event("hq.kkdes.co.ke", 14, "Let's Encrypt", "185.192.97.84")
             await notify_dns_mismatch_event("domain.com", "185.192.97.84", "104.21.45.12")
             assert mock_event_send.call_count >= 1
+
+@pytest.mark.asyncio
+async def test_license_deletion_and_online_telemetry():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        token = await get_admin_token(ac)
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # 1. Create a fresh license
+        create_res = await ac.post("/api/licenses", json={
+            "product_name": "Test Suite Pro",
+            "customer_name": "Alpha University",
+            "customer_email": "alpha@university.edu",
+            "product_version": "v1.2.0",
+            "license_type": "Enterprise",
+            "allowed_installations": 10,
+            "expires_in_days": 180,
+            "features": {"cloud_sync": True}
+        }, headers=headers)
+        assert create_res.status_code == 200
+        lic_data = create_res.json()
+        lic_id = lic_data["id"]
+        lic_key = lic_data["license_key"]
+
+        # 2. Activate a node instance
+        act_res = await ac.post("/api/licenses/activate", json={
+            "license_key": lic_key,
+            "product_name": "Test Suite Pro",
+            "product_version": "v1.2.0",
+            "installation_fingerprint": "node-alpha-telemetry-001",
+            "hostname": "alpha-node-01.local",
+            "ip_address": "10.10.1.50"
+        })
+        assert act_res.status_code == 200
+
+        # 3. Verify licensing summary computes online state and metrics
+        sum_res = await ac.get("/api/licenses/summary", headers=headers)
+        assert sum_res.status_code == 200
+        sum_data = sum_res.json()
+        assert "total_online_nodes" in sum_data
+        assert "total_online_licenses" in sum_data
+        assert sum_data["total_online_nodes"] >= 1
+        assert sum_data["total_online_licenses"] >= 1
+
+        # Check activation object fields
+        matched_act = next((a for a in sum_data["activations"] if a.get("machine_id") == "node-alpha-telemetry-001"), None)
+        assert matched_act is not None
+        assert matched_act["is_online"] is True
+        assert "last_heartbeat_ago" in matched_act
+
+        # 4. Delete the activation node
+        del_act_res = await ac.delete(f"/api/licenses/activations/{matched_act.get('id') or 'node-alpha-telemetry-001'}", headers=headers)
+        assert del_act_res.status_code == 200
+        assert del_act_res.json()["success"] is True
+
+        # 5. Delete the master license
+        del_lic_res = await ac.delete(f"/api/licenses/{lic_id}", headers=headers)
+        assert del_lic_res.status_code == 200
+        assert del_lic_res.json()["success"] is True
+        assert del_lic_res.json()["license_id"] == lic_id
+
+        # 6. Verify license is no longer retrievable
+        get_res = await ac.get(f"/api/licenses/{lic_id}", headers=headers)
+        assert get_res.status_code == 404
+

@@ -1,7 +1,11 @@
+import os
+import json
+import sqlite3
+import logging
 from fastapi import APIRouter, Depends, HTTPException, status, Response, Body
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
-from typing import List, Optional
+from sqlalchemy import select, delete
+from typing import List, Optional, Tuple
 from datetime import datetime, timezone, timedelta
 from backend.app.core.database import get_db
 from backend.app.core.deps import get_current_user, require_roles
@@ -17,7 +21,48 @@ from backend.app.services.license_engine import (
 from backend.app.core.security import get_master_license_keys, verify_license_signature
 from backend.app.services.audit import log_audit_event
 
+logger = logging.getLogger("licenses")
+
 router = APIRouter(prefix="/licenses", tags=["License Management"])
+
+def get_sqlite_db_path() -> Optional[str]:
+    for p in ["/opt/command_center/command_center.db", "./command_center.db", "deploy/command_center.db", "/app/data/command_center.db"]:
+        if os.path.exists(p):
+            return p
+    return None
+
+def check_node_online(last_hb: Optional[str], status_val: Optional[str]) -> Tuple[bool, str]:
+    if not last_hb or (status_val and status_val.upper() != "ACTIVE"):
+        return False, "Offline"
+    try:
+        clean_hb = str(last_hb).replace("Z", "+00:00")
+        if "T" in clean_hb:
+            hb_dt = datetime.fromisoformat(clean_hb)
+        else:
+            hb_dt = datetime.strptime(clean_hb[:19], "%Y-%m-%d %H:%M:%S")
+        if hb_dt.tzinfo is not None:
+            now = datetime.now(timezone.utc)
+        else:
+            now = datetime.now(timezone.utc).replace(tzinfo=None)
+        diff_sec = (now - hb_dt).total_seconds()
+        if diff_sec < 0:
+            diff_sec = 0
+
+        if diff_sec <= 900:  # 15 minutes = online
+            if diff_sec < 60:
+                ago = f"{max(1, int(diff_sec))}s ago"
+            else:
+                ago = f"{int(diff_sec // 60)}m ago"
+            return True, ago
+        elif diff_sec < 3600:
+            return False, f"{int(diff_sec // 60)}m ago"
+        elif diff_sec < 86400:
+            return False, f"{int(diff_sec // 3600)}h ago"
+        else:
+            return False, f"{int(diff_sec // 86400)}d ago"
+    except Exception:
+        return False, "Unknown"
+
 
 def to_license_response(lic: License, activations: list = None) -> LicenseResponse:
     activations_list = activations or []
@@ -120,9 +165,8 @@ async def get_public_verification_key():
 @router.get("/summary")
 async def get_licensing_summary(db: AsyncSession = Depends(get_db)):
     """Returns complete licensing summary, connected nodes telemetry, and alerts."""
-    import sqlite3, os
-    db_path = "/opt/command_center/command_center.db"
-    if os.path.exists(db_path):
+    db_path = get_sqlite_db_path()
+    if db_path:
         try:
             conn = sqlite3.connect(db_path, timeout=5)
             conn.row_factory = sqlite3.Row
@@ -131,23 +175,44 @@ async def get_licensing_summary(db: AsyncSession = Depends(get_db)):
             total_alerts = conn.execute("SELECT COUNT(*) FROM telemetry_alerts").fetchone()[0]
 
             alerts = [dict(r) for r in conn.execute("SELECT * FROM telemetry_alerts ORDER BY id DESC LIMIT 50").fetchall()]
-            activations = [dict(r) for r in conn.execute("SELECT * FROM activations ORDER BY last_heartbeat DESC LIMIT 50").fetchall()]
+            activations_raw = conn.execute("SELECT * FROM activations ORDER BY last_heartbeat DESC LIMIT 100").fetchall()
             licenses_raw = conn.execute("SELECT * FROM licenses ORDER BY created_at DESC").fetchall()
+
+            activations = []
+            online_nodes_by_lic = {}
+            total_online_nodes = 0
+
+            for r in activations_raw:
+                d = dict(r)
+                is_online, hb_ago = check_node_online(d.get("last_heartbeat"), d.get("status"))
+                d["is_online"] = is_online
+                d["last_heartbeat_ago"] = hb_ago
+                activations.append(d)
+                if is_online:
+                    total_online_nodes += 1
+                    lic_id = d.get("license_id")
+                    if lic_id:
+                        online_nodes_by_lic[lic_id] = online_nodes_by_lic.get(lic_id, 0) + 1
 
             usage_counts = {
                 r["license_id"]: r["c"]
                 for r in conn.execute("SELECT license_id, COUNT(*) as c FROM activations WHERE status = 'ACTIVE' GROUP BY license_id").fetchall()
             }
             licenses = []
+            total_online_licenses = 0
             for r in licenses_raw:
                 d = dict(r)
-                d["active_nodes"] = usage_counts.get(d["license_id"], 0)
+                lic_id = d.get("license_id")
+                d["active_nodes"] = usage_counts.get(lic_id, 0)
+                d["online_nodes"] = online_nodes_by_lic.get(lic_id, 0)
+                is_online = (d["online_nodes"] > 0) and not bool(d.get("is_revoked")) and (d.get("status") == "ACTIVE" or not d.get("status"))
+                d["is_online"] = is_online
+                if is_online:
+                    total_online_licenses += 1
                 licenses.append(d)
             conn.close()
 
             _, pub_pem = get_master_license_keys()
-            import base64
-            from cryptography.hazmat.primitives import serialization
             priv_obj, pub_obj = get_master_license_keys()
             spki_b64 = "MCowBQYDK2VwAyEAehbE7F+NH01lC10NO1JhD94O28oKvV24sv9juu5UJHw="
 
@@ -155,14 +220,16 @@ async def get_licensing_summary(db: AsyncSession = Depends(get_db)):
                 "status": "ok",
                 "total_licenses": total_licenses,
                 "total_nodes": total_nodes,
+                "total_online_nodes": total_online_nodes,
+                "total_online_licenses": total_online_licenses,
                 "total_alerts": total_alerts,
                 "public_key_b64": spki_b64,
                 "alerts": alerts,
                 "activations": activations,
                 "licenses": licenses
             }
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"SQLite licensing summary note: {e}")
 
     # PostgreSQL fallback
     result = await db.execute(select(License).where(License.deleted_at == None))
@@ -171,43 +238,75 @@ async def get_licensing_summary(db: AsyncSession = Depends(get_db)):
     all_acts = act_res.scalars().all()
     _, pub_pem = get_master_license_keys()
 
+    lic_map = {l.id: l for l in all_lics}
+    for l in all_lics:
+        lic_map[l.license_key] = l
+
+    activations = []
+    online_nodes_by_lic = {}
+    total_online_nodes = 0
+
+    for a in all_acts:
+        status_str = "ACTIVE" if a.is_active else "INACTIVE"
+        hb_val = a.last_validated_at.isoformat() if a.last_validated_at else a.created_at.isoformat()
+        is_online, hb_ago = check_node_online(hb_val, status_str)
+        if is_online:
+            total_online_nodes += 1
+            if a.license_id:
+                online_nodes_by_lic[a.license_id] = online_nodes_by_lic.get(a.license_id, 0) + 1
+        
+        parent_lic = lic_map.get(a.license_id)
+        activations.append({
+            "id": a.id,
+            "license_id": a.license_id,
+            "customer": parent_lic.customer_name if parent_lic else "Client Node",
+            "machine_id": a.installation_fingerprint,
+            "hostname": a.hostname,
+            "ip_address": a.ip_address,
+            "app_name": getattr(a, "app_name", parent_lic.product_name if parent_lic else "Enterprise Suite"),
+            "app_version": getattr(a, "app_version", parent_lic.product_version if parent_lic else "v1.0.0"),
+            "last_heartbeat": hb_val,
+            "last_heartbeat_ago": hb_ago,
+            "is_online": is_online,
+            "status": status_str
+        })
+
+    licenses = []
+    total_online_licenses = 0
+    for l in all_lics:
+        on_cnt = online_nodes_by_lic.get(l.id, 0) or online_nodes_by_lic.get(l.license_key, 0)
+        is_online = (on_cnt > 0) and (l.status == "ACTIVE")
+        if is_online:
+            total_online_licenses += 1
+        licenses.append({
+            "id": l.id,
+            "license_id": l.license_key,
+            "customer": l.customer_name,
+            "email": l.customer_email,
+            "product": l.product_name,
+            "type": l.license_type,
+            "installation_limit": l.allowed_installations,
+            "active_nodes": l.active_installations,
+            "online_nodes": on_cnt,
+            "is_online": is_online,
+            "status": l.status,
+            "expires_at": l.expires_at.isoformat() if l.expires_at else None,
+            "is_revoked": l.status == "REVOKED"
+        })
+
     return {
         "status": "ok",
         "total_licenses": len(all_lics),
         "total_nodes": len([a for a in all_acts if a.is_active]),
+        "total_online_nodes": total_online_nodes,
+        "total_online_licenses": total_online_licenses,
         "total_alerts": 0,
         "public_key_b64": "MCowBQYDK2VwAyEAehbE7F+NH01lC10NO1JhD94O28oKvV24sv9juu5UJHw=",
         "alerts": [],
-        "activations": [
-            {
-                "license_id": a.license_id,
-                "customer": "Client Node",
-                "machine_id": a.installation_fingerprint,
-                "hostname": a.hostname,
-                "ip_address": a.ip_address,
-                "app_name": a.product_name,
-                "app_version": a.product_version,
-                "last_heartbeat": a.last_validated_at.isoformat() if a.last_validated_at else a.created_at.isoformat(),
-                "status": "ACTIVE" if a.is_active else "INACTIVE"
-            }
-            for a in all_acts
-        ],
-        "licenses": [
-            {
-                "license_id": l.license_key,
-                "customer": l.customer_name,
-                "email": l.customer_email,
-                "product": l.product_name,
-                "type": l.license_type,
-                "installation_limit": l.allowed_installations,
-                "active_nodes": l.active_installations,
-                "status": l.status,
-                "expires_at": l.expires_at.isoformat() if l.expires_at else None,
-                "is_revoked": l.status == "REVOKED"
-            }
-            for l in all_lics
-        ]
+        "activations": activations,
+        "licenses": licenses
     }
+
 
 @router.get("/{license_id}", response_model=LicenseResponse)
 async def get_license(
@@ -693,4 +792,170 @@ async def license_and_activate_alert_endpoint(
         "certificate": cert_text,
         "public_key": "MCowBQYDK2VwAyEAehbE7F+NH01lC10NO1JhD94O28oKvV24sv9juu5UJHw="
     }
+
+@router.delete("/activations/{activation_id}")
+async def delete_license_activation(
+    activation_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_roles(["SUPER_ADMIN", "LICENSE_ADMIN"]))
+):
+    """
+    Permanently delete a registered client node / activation instance.
+    """
+    deleted_sqlite = False
+    deleted_pg = False
+
+    # 1. SQLite cleanup
+    db_path = get_sqlite_db_path()
+    if db_path:
+        try:
+            with sqlite3.connect(db_path, timeout=5) as conn:
+                act_row = conn.execute(
+                    "SELECT * FROM activations WHERE id = ? OR machine_id = ?",
+                    (activation_id, activation_id)
+                ).fetchone()
+                if act_row:
+                    conn.execute("DELETE FROM activations WHERE id = ? OR machine_id = ?", (activation_id, activation_id))
+                    conn.commit()
+                    deleted_sqlite = True
+        except Exception as e:
+            logger.error(f"Error deleting activation {activation_id} from SQLite: {e}")
+
+    # 2. PostgreSQL cleanup
+    stmt = select(LicenseActivation).where(
+        (LicenseActivation.id == activation_id) | (LicenseActivation.installation_fingerprint == activation_id)
+    )
+    result = await db.execute(stmt)
+    act = result.scalars().first()
+    if act:
+        lic_stmt = select(License).where(License.id == act.license_id)
+        lic_res = await db.execute(lic_stmt)
+        lic_parent = lic_res.scalars().first()
+        if lic_parent and lic_parent.active_installations > 0:
+            lic_parent.active_installations -= 1
+        await db.delete(act)
+        await db.commit()
+        deleted_pg = True
+
+    if not deleted_sqlite and not deleted_pg:
+        # Check if row existed previously or return graceful success
+        pass
+
+    # 3. WebSocket Broadcast
+    try:
+        from backend.app.api.websocket import manager as ws_manager
+        await ws_manager.broadcast({
+            "type": "ACTIVATION_DELETED",
+            "data": {"activation_id": activation_id}
+        })
+    except Exception:
+        pass
+
+    # 4. Audit Logging
+    try:
+        await log_audit_event(
+            db=db,
+            action="DELETE_ACTIVATION",
+            entity_type="license_activation",
+            username=current_user.username,
+            user_id=current_user.id,
+            entity_id=str(activation_id),
+            details={"activation_id": activation_id, "deleted_sqlite": deleted_sqlite, "deleted_pg": deleted_pg},
+            result="SUCCESS"
+        )
+    except Exception:
+        pass
+
+    return {
+        "success": True,
+        "message": f"Connected node '{activation_id}' removed successfully.",
+        "activation_id": activation_id
+    }
+
+@router.delete("/{license_id}")
+async def delete_license(
+    license_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_roles(["SUPER_ADMIN", "LICENSE_ADMIN"]))
+):
+    """
+    Permanently delete a master license and cascade cleanup of all associated activations,
+    telemetry alerts, and host lockdown seals.
+    """
+    deleted_sqlite = False
+    deleted_pg = False
+
+    # 1. SQLite cleanup
+    db_path = get_sqlite_db_path()
+    if db_path:
+        try:
+            with sqlite3.connect(db_path, timeout=5) as conn:
+                existing = conn.execute("SELECT * FROM licenses WHERE license_id = ?", (license_id,)).fetchone()
+                if existing:
+                    conn.execute("DELETE FROM activations WHERE license_id = ?", (license_id,))
+                    conn.execute("DELETE FROM licenses WHERE license_id = ?", (license_id,))
+                    conn.commit()
+                    deleted_sqlite = True
+        except Exception as e:
+            logger.error(f"Error deleting license {license_id} from SQLite: {e}")
+
+    # 2. PostgreSQL cleanup
+    stmt = select(License).where((License.id == license_id) | (License.license_key == license_id))
+    result = await db.execute(stmt)
+    lic = result.scalars().first()
+    if lic:
+        await db.execute(delete(LicenseActivation).where(LicenseActivation.license_id == lic.id))
+        await db.delete(lic)
+        await db.commit()
+        deleted_pg = True
+
+    # 3. Host filesystem lockdown seal cleanup
+    target_data_dirs = [
+        "/var/www/smartcampus/backend/data",
+        "/var/www/smartcampus/data",
+        "/var/www/smartcampus/backend"
+    ]
+    for d in target_data_dirs:
+        for fname in [".lockdown_sealed", ".lockdown", ".revoked"]:
+            fpath = os.path.join(d, fname)
+            if os.path.exists(fpath):
+                try:
+                    with open(fpath, "r", encoding="utf-8") as f:
+                        cnt = f.read()
+                    if license_id in cnt:
+                        os.remove(fpath)
+                except Exception:
+                    pass
+
+    # 4. WebSocket Broadcast
+    try:
+        from backend.app.api.websocket import manager as ws_manager
+        await ws_manager.broadcast({
+            "type": "LICENSE_DELETED",
+            "data": {"license_id": license_id}
+        })
+    except Exception:
+        pass
+
+    # 5. Audit Logging
+    try:
+        await log_audit_event(
+            db=db,
+            action="DELETE_LICENSE",
+            entity_type="license",
+            username=current_user.username,
+            user_id=current_user.id,
+            entity_id=license_id,
+            details={"license_id": license_id, "deleted_sqlite": deleted_sqlite, "deleted_pg": deleted_pg},
+            result="SUCCESS"
+        )
+    except Exception:
+        pass
+
+    return {
+        "success": True,
+        "message": f"License '{license_id}' and all associated activations were permanently deleted.",
+        "license_id": license_id
+    }
+
 

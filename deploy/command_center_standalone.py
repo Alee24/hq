@@ -719,6 +719,38 @@ def toggle_license_revoke(license_id: str, req: RevokeRequest):
 # 5b. JSON API Endpoints for Dashboard Licensing Module
 # ==============================================================================
 
+def check_node_online(last_hb: Optional[str], status_val: Optional[str]):
+    if not last_hb or (status_val and status_val.upper() != "ACTIVE"):
+        return False, "Offline"
+    try:
+        clean_hb = str(last_hb).replace("Z", "+00:00")
+        if "T" in clean_hb:
+            hb_dt = datetime.fromisoformat(clean_hb)
+        else:
+            hb_dt = datetime.strptime(clean_hb[:19], "%Y-%m-%d %H:%M:%S")
+        if hb_dt.tzinfo is not None:
+            now = datetime.now(timezone.utc)
+        else:
+            now = datetime.utcnow()
+        diff_sec = (now - hb_dt).total_seconds()
+        if diff_sec < 0:
+            diff_sec = 0
+
+        if diff_sec <= 900:  # 15 minutes = online
+            if diff_sec < 60:
+                ago = f"{max(1, int(diff_sec))}s ago"
+            else:
+                ago = f"{int(diff_sec // 60)}m ago"
+            return True, ago
+        elif diff_sec < 3600:
+            return False, f"{int(diff_sec // 60)}m ago"
+        elif diff_sec < 86400:
+            return False, f"{int(diff_sec // 3600)}h ago"
+        else:
+            return False, f"{int(diff_sec // 86400)}d ago"
+    except Exception:
+        return False, "Unknown"
+
 @app.get("/api/licenses/summary")
 @app.get("/api/v1/licenses/summary")
 def get_licensing_summary():
@@ -728,8 +760,24 @@ def get_licensing_summary():
         total_alerts = conn.execute("SELECT COUNT(*) FROM telemetry_alerts").fetchone()[0]
 
         alerts_raw = conn.execute("SELECT * FROM telemetry_alerts ORDER BY id DESC LIMIT 50").fetchall()
-        activations_raw = conn.execute("SELECT * FROM activations ORDER BY last_heartbeat DESC LIMIT 50").fetchall()
+        activations_raw = conn.execute("SELECT * FROM activations ORDER BY last_heartbeat DESC LIMIT 100").fetchall()
         licenses_raw = conn.execute("SELECT * FROM licenses ORDER BY created_at DESC").fetchall()
+
+        activations = []
+        online_nodes_by_lic = {}
+        total_online_nodes = 0
+
+        for r in activations_raw:
+            d = dict(r)
+            is_online, hb_ago = check_node_online(d.get("last_heartbeat"), d.get("status"))
+            d["is_online"] = is_online
+            d["last_heartbeat_ago"] = hb_ago
+            activations.append(d)
+            if is_online:
+                total_online_nodes += 1
+                lic_id = d.get("license_id")
+                if lic_id:
+                    online_nodes_by_lic[lic_id] = online_nodes_by_lic.get(lic_id, 0) + 1
 
         usage_counts = {
             r["license_id"]: r["c"]
@@ -737,17 +785,25 @@ def get_licensing_summary():
         }
 
         alerts = [dict(r) for r in alerts_raw]
-        activations = [dict(r) for r in activations_raw]
         licenses = []
+        total_online_licenses = 0
         for r in licenses_raw:
             d = dict(r)
-            d["active_nodes"] = usage_counts.get(d["license_id"], 0)
+            lic_id = d.get("license_id")
+            d["active_nodes"] = usage_counts.get(lic_id, 0)
+            d["online_nodes"] = online_nodes_by_lic.get(lic_id, 0)
+            is_online = (d["online_nodes"] > 0) and not bool(d.get("is_revoked"))
+            d["is_online"] = is_online
+            if is_online:
+                total_online_licenses += 1
             licenses.append(d)
 
     return {
         "status": "ok",
         "total_licenses": total_licenses,
         "total_nodes": total_nodes,
+        "total_online_nodes": total_online_nodes,
+        "total_online_licenses": total_online_licenses,
         "total_alerts": total_alerts,
         "public_key_b64": spki_pub_b64,
         "raw_public_key_b64": raw_pub_b64,
@@ -799,6 +855,64 @@ def get_public_key_json():
         "raw_public_key_b64": raw_pub_b64
     }
 
+@app.delete("/api/v1/licenses/activations/{activation_id}")
+@app.delete("/api/licenses/activations/{activation_id}")
+def delete_activation_endpoint(activation_id: str):
+    with get_db() as conn:
+        conn.execute("DELETE FROM activations WHERE id = ? OR machine_id = ?", (activation_id, activation_id))
+        conn.commit()
+
+    broadcast_sync({
+        "type": "ACTIVATION_DELETED",
+        "data": {"activation_id": activation_id}
+    })
+
+    return {
+        "status": "ok",
+        "message": f"Activation node '{activation_id}' deleted successfully.",
+        "activation_id": activation_id
+    }
+
+@app.delete("/api/v1/licenses/{license_id}")
+@app.delete("/api/licenses/{license_id}")
+def delete_license_endpoint(license_id: str):
+    with get_db() as conn:
+        lic = conn.execute("SELECT * FROM licenses WHERE license_id = ?", (license_id,)).fetchone()
+        if not lic:
+            raise HTTPException(status_code=404, detail=f"License '{license_id}' not found.")
+        conn.execute("DELETE FROM activations WHERE license_id = ?", (license_id,))
+        conn.execute("DELETE FROM licenses WHERE license_id = ?", (license_id,))
+        conn.commit()
+
+    # Clear disk lock seal if it was placed for this license
+    target_data_dirs = [
+        "/var/www/smartcampus/backend/data",
+        "/var/www/smartcampus/data",
+        "/var/www/smartcampus/backend"
+    ]
+    for d in target_data_dirs:
+        for fname in [".lockdown_sealed", ".lockdown", ".revoked"]:
+            fpath = os.path.join(d, fname)
+            if os.path.exists(fpath):
+                try:
+                    with open(fpath, "r", encoding="utf-8") as f:
+                        cnt = f.read()
+                    if license_id in cnt:
+                        os.remove(fpath)
+                except Exception:
+                    pass
+
+    broadcast_sync({
+        "type": "LICENSE_DELETED",
+        "data": {"license_id": license_id}
+    })
+
+    return {
+        "status": "ok",
+        "message": f"License '{license_id}' and all associated nodes deleted permanently.",
+        "license_id": license_id
+    }
+
 @app.post("/api/licenses/generate")
 def generate_license_alias(req: GenerateLicenseRequest):
     return generate_license(req)
@@ -806,6 +920,7 @@ def generate_license_alias(req: GenerateLicenseRequest):
 @app.post("/api/licenses/{license_id}/revoke")
 def revoke_license_alias(license_id: str, req: RevokeRequest):
     return toggle_license_revoke(license_id, req)
+
 
 class LicenseAlertRequest(BaseModel):
     customer: Optional[str] = None
@@ -1537,6 +1652,36 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 alert('Connection error: ' + e.message);
             }
         }
+
+        async function deleteLicense(licId) {
+            if (!confirm('⚠️ PERMANENT DELETION WARNING:\\n\\nAre you sure you want to permanently delete license ' + licId + '?\\nAll connected node activations under this license will also be deleted.')) return;
+            try {
+                const res = await fetch('/api/v1/licenses/' + licId, { method: 'DELETE' });
+                if (res.ok) {
+                    window.location.reload();
+                } else {
+                    const d = await res.json();
+                    alert('Error deleting license: ' + (d.detail || 'Server error'));
+                }
+            } catch (e) {
+                alert('Connection error: ' + e.message);
+            }
+        }
+
+        async function deleteActivation(actId) {
+            if (!confirm('Remove connected node ' + actId + ' from telemetry registry?')) return;
+            try {
+                const res = await fetch('/api/v1/licenses/activations/' + actId, { method: 'DELETE' });
+                if (res.ok) {
+                    window.location.reload();
+                } else {
+                    const d = await res.json();
+                    alert('Error removing node: ' + (d.detail || 'Server error'));
+                }
+            } catch (e) {
+                alert('Connection error: ' + e.message);
+            }
+        }
     </script>
 </body>
 </html>"""
@@ -1560,7 +1705,7 @@ def admin_dashboard():
         limit = l["installation_limit"]
         is_revoked = bool(l["is_revoked"])
         status_badge = '<span class="badge badge-danger">REVOKED</span>' if is_revoked else '<span class="badge badge-success">ACTIVE</span>'
-        kill_action = f"""<button onclick="toggleRevoke('{l['license_id']}', '{'reinstate' if is_revoked else 'revoke'}')" class="btn {'btn-success' if is_revoked else 'btn-danger'} btn-sm">{'Reinstate' if is_revoked else 'Kill-Switch'}</button>"""
+        kill_action = f"""<button onclick="toggleRevoke('{l['license_id']}', '{'reinstate' if is_revoked else 'revoke'}')" class="btn {'btn-success' if is_revoked else 'btn-danger'} btn-sm">{'Reinstate' if is_revoked else 'Kill-Switch'}</button><button onclick="deleteLicense('{l['license_id']}')" class="btn btn-danger btn-sm" style="margin-left:6px;" title="Permanently delete license">🗑️ Delete</button>"""
 
         lic_rows += f"""<tr>
             <td class="mono font-bold text-white">{l['license_id']}</td>
@@ -1569,12 +1714,20 @@ def admin_dashboard():
             <td><span class="mono font-bold { 'text-warning' if used >= limit else 'text-success' }">{used}</span> / {limit}</td>
             <td>{status_badge}</td>
             <td class="mono text-muted text-xs">{str(l['expires_at'])[:10]}</td>
-            <td class="text-right">{kill_action}</td>
+            <td class="text-right" style="white-space:nowrap;">{kill_action}</td>
         </tr>"""
 
     # Active nodes rows
     act_rows = ""
     for a in activations:
+        is_online, hb_ago = check_node_online(a['last_heartbeat'], a['status'])
+        if is_online:
+            st_badge = f'<span class="badge badge-success">🟢 ONLINE ({hb_ago})</span>'
+        elif a['status'] == 'REVOKED':
+            st_badge = '<span class="badge badge-danger">🔴 REVOKED</span>'
+        else:
+            st_badge = f'<span class="badge" style="background:#1e293b; color:#94a3b8;">⚪ IDLE ({hb_ago})</span>'
+
         act_rows += f"""<tr>
             <td class="mono font-bold text-brand">{a['license_id']}</td>
             <td><strong>{a['customer'] or a['client_name'] or 'Node'}</strong></td>
@@ -1582,7 +1735,8 @@ def admin_dashboard():
             <td>{a['hostname'] or 'N/A'}<br><small class="mono text-muted">{a['ip_address']}</small></td>
             <td class="text-xs">{a['app_name'] or 'Suite'}<br><small class="text-muted">{a['app_version'] or ''}</small></td>
             <td class="mono text-xs text-muted">{str(a['last_heartbeat'])[:19]}</td>
-            <td><span class="badge badge-success">● {a['status']}</span></td>
+            <td style="white-space:nowrap;">{st_badge}</td>
+            <td class="text-right"><button onclick="deleteActivation('{a['id'] if 'id' in a.keys() else a['machine_id']}')" class="btn btn-danger btn-sm" title="Remove connected node">🗑️</button></td>
         </tr>"""
 
     # Security alert rows
@@ -1613,8 +1767,9 @@ def admin_dashboard():
     html = html.replace("__ALERT_COLOR__", "#ef4444" if total_alerts > 0 else "#94a3b8")
     html = html.replace("__PUBKEY_PREVIEW__", f"{spki_pub_b64[:30]}...")
     html = html.replace("__LIC_ROWS__", lic_rows or '<tr><td colspan="7" class="text-muted text-center" style="padding:24px;">No licenses issued yet. Click "Generate New License" to create one.</td></tr>')
-    html = html.replace("__ACT_ROWS__", act_rows or '<tr><td colspan="7" class="text-muted text-center" style="padding:24px;">No active client installations registered yet. When a client activates a license, it will appear here instantly.</td></tr>')
+    html = html.replace("__ACT_ROWS__", act_rows or '<tr><td colspan="8" class="text-muted text-center" style="padding:24px;">No active client installations registered yet. When a client activates a license, it will appear here instantly.</td></tr>')
     html = html.replace("__ALERT_ROWS__", alert_rows or '<tr><td colspan="6" class="text-muted text-center" style="padding:24px;">No security alerts recorded. All connected instances are running within authorized limits.</td></tr>')
+
 
 
     return HTMLResponse(content=html)
