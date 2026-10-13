@@ -774,6 +774,9 @@ class ApiClient {
       server_name?: string;
       server_os?: string;
       server_provider?: string;
+      resolved_ip?: string | null;
+      resolved_ips?: string[];
+      dns_matches_server?: boolean | null;
       application_id?: string;
       application_name?: string;
       language: string;
@@ -802,6 +805,43 @@ class ApiClient {
       ssl_issuer?: string;
       days_remaining: number;
     }>(`/domains/${id}/deep-dive`);
+  }
+
+  async verifyAllDomainsDns(serverId?: string) {
+    const q = serverId && serverId !== 'all' ? `?server_id=${encodeURIComponent(serverId)}` : '';
+    return this.request<{
+      success: boolean;
+      total: number;
+      matched: number;
+      mismatched: number;
+      unresolved: number;
+      message: string;
+    }>(`/domains/verify-dns-all${q}`, {
+      method: 'POST',
+    });
+  }
+
+  async troubleshootDomain(id: string, tool: string, customCommand?: string) {
+    return this.request<{
+      success: boolean;
+      domain_id: string;
+      domain_name: string;
+      tool: string;
+      title: string;
+      server_ip: string;
+      resolved_ip?: string | null;
+      dns_matches_server?: boolean | null;
+      command: string;
+      stdout: string;
+      stderr: string;
+      exit_code: number;
+      duration_ms: number;
+      summary: string;
+      status_badge: string;
+    }>(`/domains/${id}/troubleshoot`, {
+      method: 'POST',
+      body: JSON.stringify({ tool, custom_command: customCommand }),
+    });
   }
 
   async executeDomainServiceAction(id: string, action: string) {

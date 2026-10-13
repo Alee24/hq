@@ -1388,4 +1388,60 @@ async def test_system_database_export_restore_and_persistent_auth():
         assert me_data["role"] == "SUPER_ADMIN"
 
 
+@pytest.mark.asyncio
+async def test_domain_dns_resolution_and_website_troubleshooting():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        token = await get_admin_token(ac)
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # 1. Register a domain with a local/test IP to verify DNS resolution fields
+        dom_res = await ac.post("/api/domains", json={
+            "domain_name": "metto-dns-test.local",
+            "server_ip": "62.171.190.16",
+            "redirect_status": "HTTP_TO_HTTPS",
+            "auto_renew": True
+        }, headers=headers)
+        assert dom_res.status_code == 200
+        dom_data = dom_res.json()
+        dom_id = dom_data["id"]
+        assert "resolved_ip" in dom_data
+        assert "dns_matches_server" in dom_data
+        assert dom_data["server_ip"] == "62.171.190.16"
+        assert dom_data["resolved_ip"] == "127.0.0.1"
+        assert dom_data["dns_matches_server"] is False
+
+        # 2. List domains and verify resolved_ip & dns_matches_server are populated
+        list_res = await ac.get("/api/domains", headers=headers)
+        assert list_res.status_code == 200
+        domains_list = list_res.json()
+        matched_dom = next((d for d in domains_list if d["id"] == dom_id), None)
+        assert matched_dom is not None
+        assert "resolved_ip" in matched_dom
+        assert "dns_matches_server" in matched_dom
+
+        # 3. Verify All Domains DNS endpoint
+        verify_all_res = await ac.post("/api/domains/verify-dns-all", headers=headers)
+        assert verify_all_res.status_code == 200
+        v_data = verify_all_res.json()
+        assert v_data["success"] is True
+        assert "matched" in v_data
+        assert "mismatched" in v_data
+        assert "unresolved" in v_data
+
+        # 4. Run Website Troubleshooting tools on the domain
+        for tool_name in ["dns_ping", "http_probe", "vhost_syntax"]:
+            tb_res = await ac.post(f"/api/domains/{dom_id}/troubleshoot", json={
+                "tool": tool_name
+            }, headers=headers)
+            assert tb_res.status_code == 200
+            tb_data = tb_res.json()
+            assert tb_data["domain_id"] == dom_id
+            assert tb_data["tool"] == tool_name
+            assert "command" in tb_data
+            assert "stdout" in tb_data
+            assert "summary" in tb_data
+            assert "resolved_ip" in tb_data
+
+
+
 

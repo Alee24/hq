@@ -1,23 +1,67 @@
+import asyncio
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from datetime import datetime, timezone
 from backend.app.core.database import get_db
 from backend.app.core.deps import get_current_user, require_roles
 from backend.app.models.entities import User, Domain, Application, Server, ServerTerminalLog, AppLog
 from backend.app.schemas.api_schemas import (
     DomainCreate, DomainResponse, DomainSslActionResponse,
-    DomainDeepDiveResponse, DomainServiceActionRequest, DomainDeleteFromServerResponse
+    DomainDeepDiveResponse, DomainServiceActionRequest, DomainDeleteFromServerResponse,
+    DomainTroubleshootRequest, DomainTroubleshootResponse
 )
 from backend.app.services.audit import log_audit_event
 from backend.app.services.remote_executor import (
     probe_domain_tls, issue_or_renew_remote_ssl,
     inspect_remote_domain_deep_dive, execute_remote_domain_service_action,
-    delete_remote_domain_vhost_config
+    delete_remote_domain_vhost_config, resolve_domain_dns_live,
+    clear_domain_dns_cache, execute_domain_troubleshoot_tool
 )
 
 router = APIRouter(prefix="/domains", tags=["Domains & SSL"])
+
+
+async def _resolve_domain_server_and_app(
+    db: AsyncSession,
+    domain: Domain
+) -> tuple[Optional[Server], Optional[Application]]:
+    """Safely resolves the Application and hosting Server for a Domain without raising MultipleResultsFound."""
+    app = None
+    server = None
+    if domain.application_id:
+        app_res = await db.execute(select(Application).where(Application.id == domain.application_id))
+        app = app_res.scalars().first()
+        if app and app.server_id:
+            srv_res = await db.execute(select(Server).where(Server.id == app.server_id, Server.deleted_at == None))
+            server = srv_res.scalars().first()
+
+    if not server and domain.server_ip:
+        clean_ip = domain.server_ip.strip()
+        srv_res = await db.execute(
+            select(Server).where(
+                (Server.public_ip == clean_ip) | (Server.hostname == clean_ip) | (Server.hostname == domain.domain_name),
+                Server.deleted_at == None
+            )
+        )
+        server = srv_res.scalars().first()
+
+    if not server:
+        srv_res = await db.execute(
+            select(Server).where(
+                Server.deleted_at == None,
+                (Server.ssh_password != None) | (Server.ssh_key != None)
+            )
+        )
+        server = srv_res.scalars().first()
+
+    if not server:
+        srv_res = await db.execute(select(Server).where(Server.deleted_at == None))
+        server = srv_res.scalars().first()
+
+    return server, app
+
 
 @router.get("", response_model=List[DomainResponse])
 async def list_domains(
@@ -39,8 +83,17 @@ async def list_domains(
     app_res = await db.execute(app_stmt)
     all_apps = {a.id: a for a in app_res.scalars().all()}
 
+    # Resolve live DNS IPs concurrently across all domains
+    dns_results = await asyncio.gather(
+        *[
+            asyncio.to_thread(resolve_domain_dns_live, d.domain_name, d.server_ip)
+            for d in domains
+        ],
+        return_exceptions=True
+    )
+
     enriched = []
-    for d in domains:
+    for idx, d in enumerate(domains):
         d_resp = DomainResponse.model_validate(d)
         app = all_apps.get(d.application_id) if d.application_id else None
         if app:
@@ -58,8 +111,73 @@ async def list_domains(
             d_resp.server_id = all_servers[0].id
             d_resp.server_name = all_servers[0].name
 
+        dns_info = dns_results[idx] if idx < len(dns_results) and isinstance(dns_results[idx], dict) else {}
+        if dns_info:
+            d_resp.resolved_ip = dns_info.get("resolved_ip")
+            d_resp.resolved_ips = dns_info.get("resolved_ips", [])
+            d_resp.dns_matches_server = dns_info.get("dns_matches_server")
+            if dns_info.get("dns_status"):
+                d_resp.dns_status = dns_info["dns_status"]
+
         enriched.append(d_resp)
     return enriched
+
+
+@router.post("/verify-dns-all")
+async def verify_all_domains_dns(
+    server_id: Optional[str] = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Flushes the DNS cache and performs a fresh live DNS A-record & IP match audit across all active domains.
+    """
+    clear_domain_dns_cache()
+    stmt = select(Domain).where(Domain.is_active == True).order_by(Domain.domain_name.asc())
+    res = await db.execute(stmt)
+    domains = res.scalars().all()
+
+    if server_id:
+        srv_res = await db.execute(select(Server).where(Server.id == server_id))
+        target_srv = srv_res.scalars().first()
+        if target_srv and target_srv.public_ip:
+            domains = [d for d in domains if (d.server_ip or "").strip() == target_srv.public_ip.strip()]
+
+    dns_results = await asyncio.gather(
+        *[
+            asyncio.to_thread(resolve_domain_dns_live, d.domain_name, d.server_ip, True)
+            for d in domains
+        ],
+        return_exceptions=True
+    )
+
+    matched = 0
+    mismatched = 0
+    unresolved = 0
+    now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
+
+    for idx, d in enumerate(domains):
+        info = dns_results[idx] if idx < len(dns_results) and isinstance(dns_results[idx], dict) else {}
+        status = info.get("dns_status", "UNRESOLVED")
+        d.dns_status = status
+        d.last_checked_at = now_naive
+        if status == "RESOLVED":
+            matched += 1
+        elif status == "MISMATCH":
+            mismatched += 1
+        else:
+            unresolved += 1
+
+    await db.commit()
+    return {
+        "success": True,
+        "total": len(domains),
+        "matched": matched,
+        "mismatched": mismatched,
+        "unresolved": unresolved,
+        "message": f"DNS audit complete across {len(domains)} domains: {matched} matched hosting server IP, {mismatched} pointing to a different IP, {unresolved} unresolved/local."
+    }
+
 
 @router.get("/{domain_id}/deep-dive", response_model=DomainDeepDiveResponse)
 async def get_domain_deep_dive(
@@ -69,42 +187,30 @@ async def get_domain_deep_dive(
 ):
     """
     Returns deep-dive statistics, software framework/language, RAM memory usage,
-    running uptime, web traffic metrics, and VirtualHost configurations for a domain.
+    running uptime, web traffic metrics, live DNS resolution, and VirtualHost configurations for a domain.
     """
     res = await db.execute(select(Domain).where(Domain.id == domain_id))
-    domain = res.scalar_one_or_none()
+    domain = res.scalars().first()
     if not domain:
         raise HTTPException(status_code=404, detail="Domain not found.")
 
-    app = None
-    server = None
-    if domain.application_id:
-        app_res = await db.execute(select(Application).where(Application.id == domain.application_id))
-        app = app_res.scalar_one_or_none()
-        if app and app.server_id:
-            srv_res = await db.execute(select(Server).where(Server.id == app.server_id, Server.deleted_at == None))
-            server = srv_res.scalar_one_or_none()
-
-    if not server and domain.server_ip:
-        srv_res = await db.execute(select(Server).where(Server.public_ip == domain.server_ip, Server.deleted_at == None))
-        server = srv_res.scalar_one_or_none()
+    server, app = await _resolve_domain_server_and_app(db, domain)
+    dns_info = await asyncio.to_thread(resolve_domain_dns_live, domain.domain_name, domain.server_ip)
 
     if not server:
-        srv_res = await db.execute(select(Server).where(Server.deleted_at == None))
-        server = srv_res.scalars().first()
-
-    if not server:
-        # Standalone default response
         return DomainDeepDiveResponse(
             domain_id=domain.id,
             domain_name=domain.domain_name,
             server_ip=domain.server_ip,
+            resolved_ip=dns_info.get("resolved_ip"),
+            resolved_ips=dns_info.get("resolved_ips", []),
+            dns_matches_server=dns_info.get("dns_matches_server"),
             ssl_status=domain.ssl_status,
             ssl_issuer=domain.ssl_issuer,
             days_remaining=domain.days_remaining
         )
 
-    telemetry = inspect_remote_domain_deep_dive(server, domain.domain_name, app)
+    telemetry = await asyncio.to_thread(inspect_remote_domain_deep_dive, server, domain.domain_name, app)
 
     return DomainDeepDiveResponse(
         domain_id=domain.id,
@@ -114,6 +220,9 @@ async def get_domain_deep_dive(
         server_name=server.name,
         server_os=getattr(server, "os", None) or "Ubuntu 22.04 LTS",
         server_provider=server.provider or "Cloud VPS",
+        resolved_ip=dns_info.get("resolved_ip"),
+        resolved_ips=dns_info.get("resolved_ips", []),
+        dns_matches_server=dns_info.get("dns_matches_server"),
         application_id=app.id if app else None,
         application_name=app.name if app else (telemetry.get("framework") or "Web VirtualHost"),
         language=telemetry.get("language", "PHP"),
@@ -143,6 +252,68 @@ async def get_domain_deep_dive(
         days_remaining=domain.days_remaining
     )
 
+
+@router.post("/{domain_id}/troubleshoot", response_model=DomainTroubleshootResponse)
+async def troubleshoot_domain_website(
+    domain_id: str,
+    payload: DomainTroubleshootRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Runs a live Website Troubleshooting & Diagnostics tool over SSH on the hosting VPS
+    (dns_ping, http_probe, ssl_chain, vhost_syntax, error_logs, port_process, docroot_audit, autofix_website).
+    """
+    res = await db.execute(select(Domain).where(Domain.id == domain_id))
+    domain = res.scalars().first()
+    if not domain:
+        raise HTTPException(status_code=404, detail="Domain not found.")
+
+    server, app = await _resolve_domain_server_and_app(db, domain)
+
+    diag_res = await asyncio.to_thread(
+        execute_domain_troubleshoot_tool,
+        server,
+        domain.domain_name,
+        domain.server_ip,
+        payload.tool,
+        app,
+        payload.custom_command
+    )
+
+    if server:
+        term_user_id = current_user.id if not str(current_user.id).startswith("apikey-") else None
+        term_log = ServerTerminalLog(
+            server_id=server.id,
+            user_id=term_user_id,
+            username=current_user.username,
+            command=diag_res.get("command", f"troubleshoot {payload.tool} {domain.domain_name}")[:1000],
+            output=(diag_res.get("stdout", "") or diag_res.get("stderr", ""))[:4000],
+            exit_code=diag_res.get("exit_code", 0),
+            execution_duration_ms=diag_res.get("duration_ms", 0)
+        )
+        db.add(term_log)
+        await db.commit()
+
+    return DomainTroubleshootResponse(
+        success=diag_res.get("success", True),
+        domain_id=domain.id,
+        domain_name=domain.domain_name,
+        tool=diag_res.get("tool", payload.tool),
+        title=diag_res.get("title", "Website Diagnostic"),
+        server_ip=domain.server_ip,
+        resolved_ip=diag_res.get("resolved_ip"),
+        dns_matches_server=diag_res.get("dns_matches_server"),
+        command=diag_res.get("command", ""),
+        stdout=diag_res.get("stdout", ""),
+        stderr=diag_res.get("stderr", ""),
+        exit_code=diag_res.get("exit_code", 0),
+        duration_ms=diag_res.get("duration_ms", 0),
+        summary=diag_res.get("summary", ""),
+        status_badge=diag_res.get("status_badge", "HEALTHY")
+    )
+
+
 @router.post("/{domain_id}/service-action")
 async def execute_domain_service_action(
     domain_id: str,
@@ -154,37 +325,21 @@ async def execute_domain_service_action(
     Restarts, stops, starts, or reloads the application service mapped to this domain.
     """
     res = await db.execute(select(Domain).where(Domain.id == domain_id))
-    domain = res.scalar_one_or_none()
+    domain = res.scalars().first()
     if not domain:
         raise HTTPException(status_code=404, detail="Domain not found.")
 
-    app = None
-    server = None
-    if domain.application_id:
-        app_res = await db.execute(select(Application).where(Application.id == domain.application_id))
-        app = app_res.scalar_one_or_none()
-        if app and app.server_id:
-            srv_res = await db.execute(select(Server).where(Server.id == app.server_id, Server.deleted_at == None))
-            server = srv_res.scalar_one_or_none()
-
-    if not server and domain.server_ip:
-        clean_ip = domain.server_ip.strip()
-        srv_res = await db.execute(
-            select(Server).where(
-                (Server.public_ip == clean_ip) | (Server.hostname == clean_ip) | (Server.hostname == domain.domain_name),
-                Server.deleted_at == None
-            )
-        )
-        server = srv_res.scalar_one_or_none()
-
-    if not server:
-        srv_res = await db.execute(select(Server).where(Server.deleted_at == None))
-        server = srv_res.scalars().first()
-
+    server, app = await _resolve_domain_server_and_app(db, domain)
     if not server:
         raise HTTPException(status_code=400, detail="No active server found hosting this domain.")
 
-    exec_res = execute_remote_domain_service_action(server, domain.domain_name, payload.action, app)
+    exec_res = await asyncio.to_thread(
+        execute_remote_domain_service_action,
+        server,
+        domain.domain_name,
+        payload.action,
+        app
+    )
 
     # Log terminal and application audit logs
     term_user_id = current_user.id if not str(current_user.id).startswith("apikey-") else None
@@ -223,6 +378,7 @@ async def execute_domain_service_action(
 
     return exec_res
 
+
 @router.get("/{domain_id}/backup-config")
 async def backup_domain_config(
     domain_id: str,
@@ -233,22 +389,15 @@ async def backup_domain_config(
     Captures and returns the Apache/Nginx VirtualHost configuration file for download.
     """
     res = await db.execute(select(Domain).where(Domain.id == domain_id))
-    domain = res.scalar_one_or_none()
+    domain = res.scalars().first()
     if not domain:
         raise HTTPException(status_code=404, detail="Domain not found.")
 
-    server = None
-    if domain.server_ip:
-        srv_res = await db.execute(select(Server).where(Server.public_ip == domain.server_ip, Server.deleted_at == None))
-        server = srv_res.scalar_one_or_none()
-
-    if not server:
-        srv_res = await db.execute(select(Server).where(Server.deleted_at == None))
-        server = srv_res.scalars().first()
+    server, _ = await _resolve_domain_server_and_app(db, domain)
 
     conf_content = f"# Configuration for {domain.domain_name}\n# Host IP: {domain.server_ip}\n<VirtualHost *:80>\n    ServerName {domain.domain_name}\n</VirtualHost>"
     if server:
-        telemetry = inspect_remote_domain_deep_dive(server, domain.domain_name)
+        telemetry = await asyncio.to_thread(inspect_remote_domain_deep_dive, server, domain.domain_name)
         if telemetry.get("config_content"):
             conf_content = telemetry["config_content"]
 
@@ -257,6 +406,7 @@ async def backup_domain_config(
         media_type="text/plain",
         headers={"Content-Disposition": f"attachment; filename={domain.domain_name}.conf"}
     )
+
 
 @router.delete("/{domain_id}/delete-from-server", response_model=DomainDeleteFromServerResponse)
 @router.post("/{domain_id}/delete-from-server", response_model=DomainDeleteFromServerResponse)
@@ -271,26 +421,20 @@ async def delete_domain_from_server(
     and removes the domain from active count in the database.
     """
     res = await db.execute(select(Domain).where(Domain.id == domain_id))
-    domain = res.scalar_one_or_none()
+    domain = res.scalars().first()
     if not domain:
         raise HTTPException(status_code=404, detail="Domain record not found.")
 
-    server = None
-    if domain.server_ip:
-        srv_res = await db.execute(select(Server).where(Server.public_ip == domain.server_ip, Server.deleted_at == None))
-        server = srv_res.scalar_one_or_none()
+    server, _ = await _resolve_domain_server_and_app(db, domain)
 
-    if not server:
-        srv_res = await db.execute(select(Server).where(Server.deleted_at == None))
-        server = srv_res.scalars().first()
-
-    teardown_res = {}
+    teardown_res: Dict[str, Any] = {}
     if server:
-        teardown_res = delete_remote_domain_vhost_config(server, domain.domain_name)
+        teardown_res = await asyncio.to_thread(delete_remote_domain_vhost_config, server, domain.domain_name)
 
+        term_user_id = current_user.id if not str(current_user.id).startswith("apikey-") else None
         term_log = ServerTerminalLog(
             server_id=server.id,
-            user_id=current_user.id,
+            user_id=term_user_id,
             username=current_user.username,
             command=f"teardown-vhost {domain.domain_name}",
             output=teardown_res.get("stdout", "")[:4000],
@@ -339,19 +483,21 @@ async def delete_domain_from_server(
         output=teardown_res.get("stdout")
     )
 
+
 @router.post("", response_model=DomainResponse)
 async def create_domain(
     payload: DomainCreate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_roles(["SUPER_ADMIN", "INFRASTRUCTURE_ADMIN"]))
 ):
+    dns_info = await asyncio.to_thread(resolve_domain_dns_live, payload.domain_name, payload.server_ip, True)
     domain = Domain(
         domain_name=payload.domain_name,
         application_id=payload.application_id,
         server_ip=payload.server_ip,
         redirect_status=payload.redirect_status,
         auto_renew=payload.auto_renew,
-        dns_status="RESOLVED",
+        dns_status=dns_info.get("dns_status", "RESOLVED"),
         ssl_status="VALID",
         ssl_issuer="Let's Encrypt Authority X3",
         days_remaining=82
@@ -372,7 +518,12 @@ async def create_domain(
 
     await db.commit()
     await db.refresh(domain)
-    return DomainResponse.model_validate(domain)
+    resp = DomainResponse.model_validate(domain)
+    resp.resolved_ip = dns_info.get("resolved_ip")
+    resp.resolved_ips = dns_info.get("resolved_ips", [])
+    resp.dns_matches_server = dns_info.get("dns_matches_server")
+    return resp
+
 
 @router.post("/{domain_id}/verify-ssl")
 async def verify_domain_ssl(
@@ -381,13 +532,19 @@ async def verify_domain_ssl(
     current_user: User = Depends(require_roles(["SUPER_ADMIN", "INFRASTRUCTURE_ADMIN", "MONITORING_ADMIN"]))
 ):
     result = await db.execute(select(Domain).where(Domain.id == domain_id))
-    domain = result.scalar_one_or_none()
+    domain = result.scalars().first()
     if not domain:
         raise HTTPException(status_code=404, detail="Domain not found.")
 
-    # Probe live TLS certificate via HTTPS socket probe
-    probe = probe_domain_tls(domain.domain_name)
+    # Probe live TLS certificate & live DNS resolution concurrently
+    probe, dns_info = await asyncio.gather(
+        asyncio.to_thread(probe_domain_tls, domain.domain_name),
+        asyncio.to_thread(resolve_domain_dns_live, domain.domain_name, domain.server_ip, True)
+    )
+
     domain.last_checked_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    domain.dns_status = dns_info.get("dns_status", probe.get("dns_status", "RESOLVED"))
+
     if probe.get("valid"):
         domain.ssl_status = probe.get("ssl_status", "VALID")
         domain.ssl_issuer = probe.get("ssl_issuer", domain.ssl_issuer or "Let's Encrypt Authority X3")
@@ -403,7 +560,6 @@ async def verify_domain_ssl(
                     pass
             else:
                 domain.ssl_expires_at = exp_val
-        domain.dns_status = probe.get("dns_status", "RESOLVED")
     else:
         if domain.ssl_status not in ["VALID", "EXPIRING"]:
             domain.ssl_status = probe.get("ssl_status", "NONE")
@@ -413,14 +569,37 @@ async def verify_domain_ssl(
     await db.commit()
     await db.refresh(domain)
 
+    resolved_ip = dns_info.get("resolved_ip")
+    matches = dns_info.get("dns_matches_server", False)
+    stdout_report = (
+        f"=== LIVE TLS & DNS VERIFICATION REPORT ===\n"
+        f"Domain            : {domain.domain_name}\n"
+        f"Hosting Server IP : {domain.server_ip}\n"
+        f"Resolving DNS IP  : {resolved_ip or 'UNRESOLVED (NXDOMAIN)'}\n"
+        f"DNS IP Match      : {'MATCH (Points to Hosting Server)' if matches else 'MISMATCH / UNRESOLVED'}\n"
+        f"SSL Status        : {domain.ssl_status}\n"
+        f"Certificate Issuer: {domain.ssl_issuer}\n"
+        f"Days Remaining    : {domain.days_remaining} days\n"
+        f"Verified At (UTC) : {domain.last_checked_at.isoformat()}\n"
+    )
+
     return {
+        "success": True,
         "domain": domain.domain_name,
         "ssl_status": domain.ssl_status,
         "dns_status": domain.dns_status,
+        "resolved_ip": resolved_ip,
+        "resolved_ips": dns_info.get("resolved_ips", []),
+        "dns_matches_server": matches,
         "days_remaining": domain.days_remaining,
         "issuer": domain.ssl_issuer,
-        "verified_at": domain.last_checked_at.isoformat()
+        "verified_at": domain.last_checked_at.isoformat(),
+        "command": f"openssl s_client -servername {domain.domain_name} -connect {domain.domain_name}:443 && dig +short {domain.domain_name}",
+        "stdout": stdout_report,
+        "stderr": "" if matches else f"Notice: {domain.domain_name} resolves to {resolved_ip or 'NXDOMAIN'} instead of hosting server {domain.server_ip}.",
+        "exit_code": 0
     }
+
 
 @router.post("/{domain_id}/update-ssl", response_model=DomainSslActionResponse)
 async def update_domain_ssl(
@@ -433,54 +612,24 @@ async def update_domain_ssl(
     to issue or renew the SSL certificate and automatically configure web server HTTPS redirects.
     """
     result = await db.execute(select(Domain).where(Domain.id == domain_id))
-    domain = result.scalar_one_or_none()
+    domain = result.scalars().first()
     if not domain:
         raise HTTPException(status_code=404, detail="Domain not found.")
 
-    # 1. Resolve host server
-    server = None
-    if domain.application_id:
-        app_res = await db.execute(select(Application).where(Application.id == domain.application_id))
-        app_obj = app_res.scalars().first()
-        if app_obj and app_obj.server_id:
-            srv_res = await db.execute(select(Server).where(Server.id == app_obj.server_id, Server.deleted_at == None))
-            server = srv_res.scalars().first()
-
-    if not server and domain.server_ip:
-        clean_ip = domain.server_ip.strip()
-        srv_res = await db.execute(
-            select(Server).where(
-                (Server.public_ip == clean_ip) | (Server.hostname == clean_ip) | (Server.hostname == domain.domain_name),
-                Server.deleted_at == None
-            )
-        )
-        server = srv_res.scalars().first()
-
-    if not server:
-        # Fallback to any registered active server with SSH credentials
-        srv_res = await db.execute(
-            select(Server).where(
-                Server.deleted_at == None,
-                (Server.ssh_password != None) | (Server.ssh_key != None)
-            )
-        )
-        server = srv_res.scalars().first()
-
-    if not server:
-        srv_res = await db.execute(select(Server).where(Server.deleted_at == None))
-        server = srv_res.scalars().first()
-
+    server, _ = await _resolve_domain_server_and_app(db, domain)
     if not server:
         raise HTTPException(
             status_code=400,
             detail=f"No reachable VPS server node found with SSH credentials for domain '{domain.domain_name}' ({domain.server_ip}). Please configure SSH credentials on the server first."
         )
 
-    # 2. Run remote Let's Encrypt automation
-    exec_res = issue_or_renew_remote_ssl(server, domain.domain_name)
+    # 2. Run remote Let's Encrypt automation in thread pool
+    exec_res = await asyncio.to_thread(issue_or_renew_remote_ssl, server, domain.domain_name)
+    dns_info = await asyncio.to_thread(resolve_domain_dns_live, domain.domain_name, domain.server_ip, True)
 
     # 3. Update Domain record in database
     domain.last_checked_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    domain.dns_status = dns_info.get("dns_status", domain.dns_status)
     if exec_res.get("success"):
         domain.ssl_status = exec_res.get("ssl_status", "VALID")
         domain.ssl_issuer = exec_res.get("ssl_issuer", "Let's Encrypt Authority X3")
@@ -496,10 +645,9 @@ async def update_domain_ssl(
                     domain.ssl_expires_at = exp_val
             except Exception:
                 pass
-        domain.dns_status = "RESOLVED"
     else:
         # Check if local TLS probe finds active cert
-        tls_probe = probe_domain_tls(domain.domain_name)
+        tls_probe = await asyncio.to_thread(probe_domain_tls, domain.domain_name)
         if tls_probe.get("valid"):
             domain.ssl_status = tls_probe.get("ssl_status", "VALID")
             domain.ssl_issuer = tls_probe.get("ssl_issuer", "Let's Encrypt Authority X3")
@@ -517,9 +665,10 @@ async def update_domain_ssl(
                     domain.ssl_expires_at = exp_val
 
     # 4. Record execution log in server terminal audit history
+    term_user_id = current_user.id if not str(current_user.id).startswith("apikey-") else None
     term_log = ServerTerminalLog(
         server_id=server.id,
-        user_id=current_user.id,
+        user_id=term_user_id,
         username=current_user.username,
         command=exec_res.get("command", f"certbot -d {domain.domain_name}"),
         output=(exec_res.get("stdout", "") or exec_res.get("stderr", "") or "")[:4000],
@@ -567,6 +716,7 @@ async def update_domain_ssl(
         message=exec_res.get("message", f"Let's Encrypt configuration completed for {domain.domain_name}")
     )
 
+
 @router.delete("/{domain_id}")
 async def delete_domain(
     domain_id: str,
@@ -574,7 +724,7 @@ async def delete_domain(
     current_user: User = Depends(require_roles(["SUPER_ADMIN", "INFRASTRUCTURE_ADMIN"]))
 ):
     result = await db.execute(select(Domain).where(Domain.id == domain_id))
-    domain = result.scalar_one_or_none()
+    domain = result.scalars().first()
     if not domain:
         raise HTTPException(status_code=404, detail="Domain record not found.")
 
@@ -592,4 +742,3 @@ async def delete_domain(
     await db.delete(domain)
     await db.commit()
     return {"success": True, "message": f"Domain '{domain.domain_name}' deleted successfully."}
-

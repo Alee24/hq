@@ -329,6 +329,9 @@ class DomainResponse(BaseModel):
     server_ip: str
     server_id: Optional[str] = None
     server_name: Optional[str] = None
+    resolved_ip: Optional[str] = None
+    resolved_ips: Optional[List[str]] = None
+    dns_matches_server: Optional[bool] = None
     dns_status: str
     ssl_status: str
     ssl_issuer: str
@@ -356,6 +359,27 @@ class DomainSslActionResponse(BaseModel):
     duration_ms: int
     message: str
 
+class DomainTroubleshootRequest(BaseModel):
+    tool: str  # "dns_ping", "http_probe", "ssl_chain", "vhost_syntax", "error_logs", "port_process", "docroot_audit", "autofix_website"
+    custom_command: Optional[str] = None
+
+class DomainTroubleshootResponse(BaseModel):
+    success: bool
+    domain_id: str
+    domain_name: str
+    tool: str
+    title: str
+    server_ip: str
+    resolved_ip: Optional[str] = None
+    dns_matches_server: Optional[bool] = None
+    command: str
+    stdout: str
+    stderr: str
+    exit_code: int
+    duration_ms: int
+    summary: str
+    status_badge: str = "HEALTHY"  # "HEALTHY", "WARNING", "CRITICAL"
+
 class DomainDeepDiveResponse(BaseModel):
     domain_id: str
     domain_name: str
@@ -364,6 +388,9 @@ class DomainDeepDiveResponse(BaseModel):
     server_name: Optional[str] = None
     server_os: Optional[str] = None
     server_provider: Optional[str] = None
+    resolved_ip: Optional[str] = None
+    resolved_ips: Optional[List[str]] = None
+    dns_matches_server: Optional[bool] = None
     application_id: Optional[str] = None
     application_name: Optional[str] = None
     language: str = "PHP"

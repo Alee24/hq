@@ -126,6 +126,9 @@ export interface DomainItem {
   server_ip: string;
   server_id?: string;
   server_name?: string;
+  resolved_ip?: string | null;
+  resolved_ips?: string[];
+  dns_matches_server?: boolean | null;
   dns_status: string;
   ssl_status: string;
   ssl_issuer: string;

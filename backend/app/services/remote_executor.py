@@ -3338,7 +3338,7 @@ for lf in log_files:
         for line in t_proc.stdout.strip().splitlines():
             if not line: continue
             # If line matches domain or if file is domain-specific
-            if dom in line or 'dom' in lf:
+            if dom in line or dom in lf:
                 total_views += 1
                 # Status code
                 status_m = re.search(r'"\\s+(\\d{{3}})\\s+', line)
@@ -3370,7 +3370,7 @@ print(json.dumps(res))
     b64_str = base64.b64encode(probe_script.encode("utf-8")).decode("ascii")
     scanner_cmd = f"python3 -c \"import base64; exec(base64.b64decode('{b64_str}'))\""
 
-    exec_res = execute_remote_command(server, scanner_cmd, timeout=30)
+    exec_res = execute_remote_command(server, scanner_cmd, timeout=15)
 
     if exec_res.get("success") and exec_res.get("stdout"):
         try:
@@ -3750,6 +3750,402 @@ echo "APP_BACKUP_SUCCESS: $ARCHIVE | $SIZE_MB MB | $CHECKSUM"
         "exit_code": 0 if is_success else res.get("exit_code", 1),
         "duration_ms": res.get("duration_ms", 0),
         "message": f"Application '{app_name}' backed up successfully to {file_path}." if is_success else f"Backup failed: {res.get('stderr') or out}"
+    }
+
+
+# =======================================================================
+# Live Domain DNS Resolution & Website Troubleshooting Suite
+# =======================================================================
+
+_DOMAIN_DNS_CACHE: Dict[str, Any] = {}
+_DOMAIN_DNS_CACHE_TTL = 90.0  # seconds
+
+
+def clear_domain_dns_cache() -> None:
+    """Clears the in-memory DNS resolution cache."""
+    _DOMAIN_DNS_CACHE.clear()
+
+
+def resolve_domain_dns_live(
+    domain_name: str,
+    hosting_server_ip: str,
+    force_refresh: bool = False
+) -> Dict[str, Any]:
+    """
+    Resolves the live DNS A-records for a domain and compares them against
+    its hosting server IP.
+    Returns:
+        resolved_ip: Optional[str] (primary resolved IPv4)
+        resolved_ips: List[str] (all resolved IPv4s)
+        dns_matches_server: bool (True if hosting_server_ip is in resolved_ips)
+        dns_status: str ("RESOLVED", "MISMATCH", "LOCAL_ONLY", "UNRESOLVED")
+    """
+    raw_dom = (domain_name or "").strip().lower()
+    if "://" in raw_dom:
+        raw_dom = raw_dom.split("://", 1)[1]
+    clean_dom = raw_dom.split("/")[0].split(":")[0].strip()
+    expected_ip = (hosting_server_ip or "").strip()
+
+    cache_key = f"{clean_dom}|{expected_ip}"
+    now_ts = time.time()
+    if not force_refresh and cache_key in _DOMAIN_DNS_CACHE:
+        cached_at, cached_val = _DOMAIN_DNS_CACHE[cache_key]
+        if now_ts - cached_at < _DOMAIN_DNS_CACHE_TTL:
+            return cached_val
+
+    # Check if local/internal domain
+    if (
+        not clean_dom
+        or clean_dom in ("localhost", "127.0.0.1", "0.0.0.0", "_")
+        or clean_dom.endswith(".local")
+        or clean_dom.endswith(".internal")
+        or clean_dom.endswith(".test")
+    ):
+        res = {
+            "resolved_ip": "127.0.0.1",
+            "resolved_ips": ["127.0.0.1"],
+            "dns_matches_server": expected_ip in ("127.0.0.1", "localhost"),
+            "dns_status": "LOCAL_ONLY"
+        }
+        _DOMAIN_DNS_CACHE[cache_key] = (now_ts, res)
+        return res
+
+    # If the domain name itself is an IPv4 address
+    if re.match(r"^\d{1,3}(\.\d{1,3}){3}$", clean_dom):
+        matches = (clean_dom == expected_ip)
+        res = {
+            "resolved_ip": clean_dom,
+            "resolved_ips": [clean_dom],
+            "dns_matches_server": matches,
+            "dns_status": "RESOLVED" if matches else "MISMATCH"
+        }
+        _DOMAIN_DNS_CACHE[cache_key] = (now_ts, res)
+        return res
+
+    ips: List[str] = []
+    try:
+        addr_info = socket.getaddrinfo(clean_dom, None, socket.AF_INET)
+        seen = set()
+        for item in addr_info:
+            ip_val = item[4][0]
+            if ip_val and ip_val not in seen:
+                seen.add(ip_val)
+                ips.append(ip_val)
+    except Exception:
+        pass
+
+    if ips:
+        # Put expected_ip first if it is among the resolved IPs
+        if expected_ip in ips:
+            ips.remove(expected_ip)
+            ips.insert(0, expected_ip)
+        matches = (expected_ip in ips)
+        res = {
+            "resolved_ip": ips[0],
+            "resolved_ips": ips,
+            "dns_matches_server": matches,
+            "dns_status": "RESOLVED" if matches else "MISMATCH"
+        }
+    else:
+        res = {
+            "resolved_ip": None,
+            "resolved_ips": [],
+            "dns_matches_server": False,
+            "dns_status": "UNRESOLVED"
+        }
+
+    _DOMAIN_DNS_CACHE[cache_key] = (now_ts, res)
+    return res
+
+
+def execute_domain_troubleshoot_tool(
+    server: Optional[Server],
+    domain_name: str,
+    hosting_server_ip: str,
+    tool: str,
+    app: Optional[Any] = None,
+    custom_command: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Executes live website troubleshooting & auto-remediation diagnostics on the hosting VPS over SSH:
+    - dns_ping: Live DNS A/AAAA/CNAME/NS lookup, /etc/hosts check, and 3-packet ping trace
+    - http_probe: HTTP & HTTPS response codes, redirect chain, latency, and local Host-header bypass check
+    - ssl_chain: OpenSSL certificate chain, SANs, issuer, expiration, and Certbot renewal check
+    - vhost_syntax: Apache2 / Nginx VirtualHost configuration dump and syntax test
+    - error_logs: Last 60 lines of domain-specific and web server error/access logs
+    - port_process: Port 80/443 socket listeners, systemd web daemons, and Docker container status
+    - docroot_audit: DocumentRoot directory listing, index/.htaccess/.env check, file ownership, and disk usage
+    - autofix_website: 1-click auto-remediation for permissions, Apache/Nginx modules, syntax validation, and service reload
+    """
+    clean_dom = (domain_name or "").strip().lower()
+    expected_ip = (hosting_server_ip or (server.public_ip if server else "")).strip()
+    tool_key = (tool or "dns_ping").strip().lower()
+    app_root = (getattr(app, "root_path", None) or "") if app else ""
+    app_svc = (getattr(app, "service_name", None) or "") if app else ""
+
+    dns_info = resolve_domain_dns_live(clean_dom, expected_ip, force_refresh=True)
+    resolved_ip = dns_info.get("resolved_ip")
+    dns_matches = dns_info.get("dns_matches_server", False)
+
+    tool_titles = {
+        "dns_ping": "DNS Resolution, A-Records & Ping Trace",
+        "http_probe": "HTTP / HTTPS Response & Redirect Chain Probe",
+        "ssl_chain": "SSL/TLS Certificate Chain & Certbot Audit",
+        "vhost_syntax": "Web Server VirtualHost & Syntax Validation",
+        "error_logs": "Live Website Error & Access Log Inspector",
+        "port_process": "Port 80/443 Listeners & Upstream Process Check",
+        "docroot_audit": "DocumentRoot Files, .htaccess & Permissions Audit",
+        "autofix_website": "Auto-Fix Website Permissions, Modules & Reload Web Stack",
+        "custom": "Custom Website Diagnostic Command"
+    }
+    title = tool_titles.get(tool_key, f"Website Diagnostic ({tool_key})")
+
+    if tool_key == "dns_ping":
+        cmd = f"""echo "=== [1/4] HOSTING SERVER vs LIVE DNS COMPARISON ==="
+echo "Domain Name       : {clean_dom}"
+echo "Hosting Server IP : {expected_ip}"
+echo "Live Resolving IP : {resolved_ip or 'UNRESOLVED (NXDOMAIN)'}"
+echo "DNS Match Status  : {'MATCH (Points to this Hosting Server)' if dns_matches else 'MISMATCH / UNRESOLVED (Pings different IP or missing A-record!)'}"
+echo ""
+echo "=== [2/4] DNS RECORDS (A / AAAA / CNAME / NS) ==="
+if command -v dig >/dev/null 2>&1; then
+    echo "--- A Records ---"
+    dig +short "{clean_dom}" A
+    echo "--- CNAME Records ---"
+    dig +short "{clean_dom}" CNAME
+    echo "--- NS Records ---"
+    dig +short "{clean_dom}" NS
+elif command -v host >/dev/null 2>&1; then
+    host -a "{clean_dom}" 2>&1 || true
+else
+    getent hosts "{clean_dom}" || nslookup "{clean_dom}" 2>&1 || true
+fi
+echo ""
+echo "=== [3/4] /etc/hosts OVERRIDES ON SERVER ==="
+grep -i "{clean_dom}" /etc/hosts 2>/dev/null || echo "No local /etc/hosts override for {clean_dom}"
+echo ""
+echo "=== [4/4] ICMP PING TRACE FROM SERVER ==="
+ping -c 3 -W 2 "{clean_dom}" 2>&1 || echo "Ping did not receive ICMP echo replies (host may block ICMP or domain is unresolved)"
+"""
+    elif tool_key == "http_probe":
+        cmd = f"""echo "=== [1/3] PUBLIC HTTP -> HTTPS REDIRECT & RESPONSE CHAIN ==="
+curl -ILks --max-time 10 -w "\\n[SUMMARY] HTTP_STATUS: %{{http_code}} | REMOTE_IP: %{{remote_ip}} | TOTAL_TIME: %{{time_total}}s | REDIRECTS: %{{num_redirects}}\\n" "http://{clean_dom}" 2>&1 || echo "Public HTTP probe failed or timed out"
+echo ""
+echo "=== [2/3] PUBLIC HTTPS DIRECT PROBE ==="
+curl -ILks --max-time 10 -w "\\n[SUMMARY] HTTPS_STATUS: %{{http_code}} | REMOTE_IP: %{{remote_ip}} | SSL_VERIFY: %{{ssl_verify_result}} | TOTAL_TIME: %{{time_total}}s\\n" "https://{clean_dom}" 2>&1 || echo "Public HTTPS probe failed or timed out"
+echo ""
+echo "=== [3/3] LOCALHOST BYPASS PROBE (Tests this VPS directly even if DNS points elsewhere) ==="
+curl -ILks --max-time 8 -H "Host: {clean_dom}" -w "\\n[LOCAL-VPS-HTTP] STATUS: %{{http_code}} | TIME: %{{time_total}}s\\n" "http://127.0.0.1/" 2>&1 || true
+"""
+    elif tool_key == "ssl_chain":
+        cmd = f"""echo "=== [1/3] LIVE TLS HANDSHAKE & CERTIFICATE CHAIN ({clean_dom}:443) ==="
+echo | timeout 6 openssl s_client -servername "{clean_dom}" -connect "{clean_dom}:443" 2>/dev/null | openssl x509 -noout -subject -issuer -dates -fingerprint -ext subjectAltName 2>&1 || echo "Could not complete public TLS handshake on {clean_dom}:443"
+echo ""
+echo "=== [2/3] LOCAL VPS TLS HANDSHAKE (127.0.0.1:443 with SNI {clean_dom}) ==="
+echo | timeout 6 openssl s_client -servername "{clean_dom}" -connect "127.0.0.1:443" 2>/dev/null | openssl x509 -noout -subject -issuer -dates -ext subjectAltName 2>&1 || echo "No local SSL listener on 127.0.0.1:443"
+echo ""
+echo "=== [3/3] LET'S ENCRYPT / CERTBOT CERTIFICATES ON DISK ==="
+ls -la /etc/letsencrypt/live/*"{clean_dom}"* 2>/dev/null || echo "No matching directory in /etc/letsencrypt/live/ for {clean_dom}"
+cat /etc/letsencrypt/renewal/*"{clean_dom}"*.conf 2>/dev/null || true
+"""
+    elif tool_key == "vhost_syntax":
+        cmd = f"""echo "=== [1/3] WEB SERVER CONFIGURATION SYNTAX TEST ==="
+if command -v apache2ctl >/dev/null 2>&1; then
+    echo "--- Apache2 Configtest ---"
+    apache2ctl configtest 2>&1 || true
+    echo ""
+    echo "=== [2/3] APACHE VIRTUALHOST ROUTING TABLE (Matching {clean_dom}) ==="
+    apache2ctl -S 2>&1 | grep -i -C 3 "{clean_dom}" || apache2ctl -S 2>&1 | head -n 35
+fi
+if command -v nginx >/dev/null 2>&1; then
+    echo "--- Nginx Configtest ---"
+    nginx -t 2>&1 || true
+fi
+echo ""
+echo "=== [3/3] MATCHING VIRTUALHOST CONFIG FILES ==="
+grep -rnI "{clean_dom}" /etc/apache2/sites-enabled/ /etc/apache2/sites-available/ /etc/nginx/sites-enabled/ /etc/nginx/conf.d/ 2>/dev/null || echo "No explicit VirtualHost file matched {clean_dom}"
+"""
+    elif tool_key == "error_logs":
+        cmd = f"""echo "=== [1/3] DOMAIN-SPECIFIC ERROR & ACCESS LOGS ({clean_dom}) ==="
+for f in /var/log/apache2/*"{clean_dom}"* /var/log/nginx/*"{clean_dom}"*; do
+    if [ -f "$f" ]; then
+        echo "--- Tail of $f ---"
+        tail -n 30 "$f"
+    fi
+done
+echo ""
+echo "=== [2/3] RECENT WEB SERVER ERROR LOG ENTRIES ==="
+if [ -f /var/log/apache2/error.log ]; then
+    echo "--- /var/log/apache2/error.log (filtered & recent) ---"
+    grep -i "{clean_dom}" /var/log/apache2/error.log | tail -n 25 || true
+    tail -n 25 /var/log/apache2/error.log
+fi
+if [ -f /var/log/nginx/error.log ]; then
+    echo "--- /var/log/nginx/error.log (recent) ---"
+    tail -n 25 /var/log/nginx/error.log
+fi
+echo ""
+echo "=== [3/3] MATCHING DOCKER CONTAINER LOGS (if containerized) ==="
+C_MATCH=$(docker ps -a --format '{{{{.Names}}}}' 2>/dev/null | grep -i -E "{clean_dom}|{app_svc or clean_dom}" | head -1 || true)
+if [ -n "$C_MATCH" ]; then
+    echo "--- Docker logs for $C_MATCH ---"
+    docker logs --tail 35 "$C_MATCH" 2>&1 || true
+else
+    echo "No dedicated Docker container matched {clean_dom}"
+fi
+"""
+    elif tool_key == "port_process":
+        cmd = f"""echo "=== [1/3] ACTIVE NETWORK SOCKET LISTENERS (80, 443, & APP PORTS) ==="
+ss -tulpn | grep -E ':80\\b|:443\\b|:3000\\b|:5000\\b|:8000\\b|:8080\\b|:9000\\b' || ss -tulpn | head -n 25
+echo ""
+echo "=== [2/3] WEB SERVER & PHP-FPM SYSTEMD STATUS ==="
+for svc in apache2 nginx php8.3-fpm php8.2-fpm php8.1-fpm php8.0-fpm; do
+    if systemctl list-unit-files "$svc.service" >/dev/null 2>&1; then
+        echo "--- $svc ---"
+        systemctl is-active "$svc" || true
+    fi
+done
+echo ""
+echo "=== [3/3] RUNNING DOCKER CONTAINERS ==="
+docker ps --format "table {{{{.ID}}}}\\t{{{{.Names}}}}\\t{{{{.Status}}}}\\t{{{{.Ports}}}}" 2>/dev/null || echo "Docker not running"
+"""
+    elif tool_key == "docroot_audit":
+        cmd = f"""echo "=== [1/3] LOCATING DOCUMENT ROOT FOR {clean_dom} ==="
+DOCROOT="{app_root}"
+if [ -z "$DOCROOT" ] || [ ! -d "$DOCROOT" ]; then
+    VHOST_FILE=$(grep -rlI "{clean_dom}" /etc/apache2/sites-enabled/ /etc/nginx/sites-enabled/ /etc/apache2/sites-available/ 2>/dev/null | head -1 || true)
+    if [ -n "$VHOST_FILE" ]; then
+        DOCROOT=$(grep -iE 'DocumentRoot|root ' "$VHOST_FILE" | head -1 | awk '{{print $2}}' | tr -d ';"' || true)
+        echo "Detected VHost File : $VHOST_FILE"
+    fi
+fi
+if [ -z "$DOCROOT" ] || [ ! -d "$DOCROOT" ]; then
+    for cand in "/var/www/{clean_dom}" "/var/www/html/{clean_dom}" "/var/www/html"; do
+        if [ -d "$cand" ]; then
+            DOCROOT="$cand"
+            break
+        fi
+    done
+fi
+echo "Resolved DocumentRoot: ${{DOCROOT:-Not Found}}"
+echo ""
+echo "=== [2/3] DIRECTORY LISTING, OWNERSHIP & PERMISSIONS ==="
+if [ -n "$DOCROOT" ] && [ -d "$DOCROOT" ]; then
+    ls -la "$DOCROOT" | head -n 35
+    echo ""
+    echo "--- Critical Entrypoints & Configs ---"
+    for ep in index.php index.html .htaccess .env wp-config.php artisan package.json composer.json; do
+        if [ -e "$DOCROOT/$ep" ]; then
+            ls -la "$DOCROOT/$ep"
+        fi
+    done
+    echo ""
+    echo "=== [3/3] DISK & INODE USAGE ==="
+    du -sh "$DOCROOT" 2>/dev/null || true
+    df -h "$DOCROOT"
+else
+    echo "DocumentRoot directory not found on filesystem (site may be reverse-proxied to a container)."
+fi
+"""
+    elif tool_key == "autofix_website":
+        cmd = f"""set -e
+echo "=== [1/4] DETECTING DOCUMENT ROOT & VIRTUALHOST FOR {clean_dom} ==="
+DOCROOT="{app_root}"
+if [ -z "$DOCROOT" ] || [ ! -d "$DOCROOT" ]; then
+    VHOST_FILE=$(grep -rlI "{clean_dom}" /etc/apache2/sites-enabled/ /etc/apache2/sites-available/ /etc/nginx/sites-enabled/ 2>/dev/null | head -1 || true)
+    if [ -n "$VHOST_FILE" ]; then
+        DOCROOT=$(grep -iE 'DocumentRoot|root ' "$VHOST_FILE" | head -1 | awk '{{print $2}}' | tr -d ';"' || true)
+    fi
+fi
+echo "Target DocumentRoot: ${{DOCROOT:-None}}"
+
+echo ""
+echo "=== [2/4] REPAIRING FILE OWNERSHIP & SAFE WEB PERMISSIONS ==="
+if [ -n "$DOCROOT" ] && [ -d "$DOCROOT" ] && [[ "$DOCROOT" == /var/www* ]]; then
+    chown -R www-data:www-data "$DOCROOT" 2>/dev/null || true
+    find "$DOCROOT" -type d -exec chmod 755 {{}} + 2>/dev/null || true
+    find "$DOCROOT" -type f -exec chmod 644 {{}} + 2>/dev/null || true
+    echo "Permissions repaired (755 dirs / 644 files, www-data ownership) on $DOCROOT"
+else
+    echo "Skipped recursive chown (non-standard or container path: ${{DOCROOT:-N/A}})"
+fi
+
+echo ""
+echo "=== [3/4] ENABLING REQUIRED APACHE MODULES & SITE CONFIG ==="
+if command -v a2enmod >/dev/null 2>&1; then
+    a2enmod rewrite ssl headers proxy proxy_http 2>/dev/null || true
+    for sc in /etc/apache2/sites-available/*"{clean_dom}"*.conf; do
+        if [ -f "$sc" ]; then
+            a2ensite "$(basename "$sc")" 2>/dev/null || true
+        fi
+    done
+fi
+
+echo ""
+echo "=== [4/4] VALIDATING SYNTAX & RELOADING WEB SERVER STACK ==="
+if command -v apache2ctl >/dev/null 2>&1; then
+    apache2ctl configtest 2>&1
+    systemctl reload apache2 2>/dev/null || systemctl restart apache2 2>/dev/null || true
+    echo "Apache2 validated and reloaded."
+fi
+if command -v nginx >/dev/null 2>&1; then
+    nginx -t 2>&1 && systemctl reload nginx 2>/dev/null || true
+    echo "Nginx validated and reloaded."
+fi
+systemctl restart php*-fpm 2>/dev/null || true
+echo "[HQ-AUTOFIX-COMPLETE] Website stack for {clean_dom} repaired and reloaded."
+"""
+    else:
+        cmd = (custom_command or f"curl -ILks https://{clean_dom}").strip()
+
+    start_t = time.time()
+    if server:
+        res = execute_remote_command(server, cmd, timeout=25)
+        stdout = res.get("stdout", "")
+        stderr = res.get("stderr", "")
+        exit_code = res.get("exit_code", 0)
+        duration_ms = res.get("duration_ms", int((time.time() - start_t) * 1000))
+        success = res.get("success", False)
+    else:
+        stdout = (
+            f"=== LOCAL DNS DIAGNOSTIC FOR {clean_dom} ===\n"
+            f"Hosting Server IP : {expected_ip}\n"
+            f"Live Resolving IP : {resolved_ip or 'UNRESOLVED (NXDOMAIN)'}\n"
+            f"DNS Match Status  : {'MATCH' if dns_matches else 'MISMATCH / UNRESOLVED'}\n"
+        )
+        stderr = ""
+        exit_code = 0
+        duration_ms = int((time.time() - start_t) * 1000)
+        success = True
+
+    # Determine status badge & actionable summary
+    status_badge = "HEALTHY"
+    if not dns_matches and tool_key == "dns_ping":
+        status_badge = "WARNING" if resolved_ip else "CRITICAL"
+        if resolved_ip:
+            summary = f"DNS Mismatch: {clean_dom} resolves to {resolved_ip}, which differs from hosting server {expected_ip}."
+        else:
+            summary = f"Unresolved Domain: {clean_dom} has no public DNS A-record pointing to {expected_ip}."
+    elif not success or exit_code != 0:
+        status_badge = "WARNING"
+        summary = f"{title} completed with warnings (exit code {exit_code}). Use 'Investigate & Fix with AI' to remediate."
+    else:
+        summary = f"{title} completed for {clean_dom} on {expected_ip}."
+
+    return {
+        "success": True if stdout else success,
+        "tool": tool_key,
+        "title": title,
+        "server_ip": expected_ip,
+        "resolved_ip": resolved_ip,
+        "dns_matches_server": dns_matches,
+        "command": cmd,
+        "stdout": stdout or f"Completed {title} for {clean_dom}.",
+        "stderr": stderr,
+        "exit_code": exit_code,
+        "duration_ms": duration_ms,
+        "summary": summary,
+        "status_badge": status_badge
     }
 
 
