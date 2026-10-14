@@ -2310,8 +2310,15 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId, initi
                       </div>
 
                       <div className="p-4 font-mono text-xs max-h-96 overflow-y-auto space-y-1.5">
-                        <div className="text-slate-400 font-semibold break-all">
-                          root@{selectedServer?.public_ip || d.server_ip}:{terminalOutput.working_dir}# {terminalOutput.command}
+                        <div className="text-slate-400 font-semibold break-all flex items-center flex-wrap gap-2">
+                          <span>
+                            {selectedServer?.use_sudo ? `${selectedServer?.ssh_user || 'user'} (sudo root)` : 'root'}@{selectedServer?.public_ip || d.server_ip}:{terminalOutput.working_dir}# {terminalOutput.command}
+                          </span>
+                          {selectedServer?.use_sudo && (
+                            <span className="px-1.5 py-0.5 rounded text-[10px] bg-amber-950/80 text-amber-300 border border-amber-800 font-normal">
+                              sudo su root escalated
+                            </span>
+                          )}
                         </div>
                         {terminalOutput.stdout && (
                           <pre className="text-emerald-400/95 whitespace-pre-wrap break-words font-mono">

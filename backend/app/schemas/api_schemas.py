@@ -65,6 +65,8 @@ class ServerCreate(BaseModel):
     ssh_user: str = "root"
     ssh_auth_type: str = "PASSWORD"
     ssh_key: Optional[str] = None
+    use_sudo: bool = False
+    sudo_password: Optional[str] = None
 
 class ServerUpdate(BaseModel):
     name: Optional[str] = None
@@ -76,6 +78,12 @@ class ServerUpdate(BaseModel):
     cpu_cores: Optional[int] = None
     ram_total_mb: Optional[int] = None
     disk_total_gb: Optional[int] = None
+    ssh_user: Optional[str] = None
+    ssh_port: Optional[int] = None
+    ssh_password: Optional[str] = None
+    ssh_key: Optional[str] = None
+    use_sudo: Optional[bool] = None
+    sudo_password: Optional[str] = None
 
 class ServerMetricResponse(BaseModel):
     id: str
@@ -117,6 +125,8 @@ class ServerResponse(BaseModel):
     agent_token: Optional[str] = None
     has_ssh_key: bool = False
     has_ssh_password: bool = False
+    use_sudo: bool = False
+    has_sudo_password: bool = False
     status: str
     last_heartbeat: datetime
     agent_version: str
@@ -134,6 +144,8 @@ class ServerConnectionConfig(BaseModel):
     ssh_key: Optional[str] = None
     ssh_password: Optional[str] = None
     connection_type: str = "SSH" # SSH, AGENT
+    use_sudo: bool = False
+    sudo_password: Optional[str] = None
 
 class ServerConnectionTestResponse(BaseModel):
     success: bool

@@ -759,8 +759,18 @@ export const ServerDetailView: React.FC<ServerDetailViewProps> = ({
                 {server.provider}
               </span>
             </div>
-            <div className="flex items-center gap-3 text-xs text-slate-400 mono mt-1">
+            <div className="flex items-center flex-wrap gap-2.5 text-xs text-slate-400 mono mt-1">
               <span>{server.public_ip}:{server.ssh_port || 22}</span>
+              <span>•</span>
+              <span className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 font-mono text-[11px]">
+                user: {server.ssh_user || 'root'}
+              </span>
+              {server.use_sudo && (
+                <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-950/80 text-amber-300 border border-amber-800 flex items-center gap-1" title="Privilege Escalation Active">
+                  <ShieldAlert size={11} />
+                  sudo su (root escalated)
+                </span>
+              )}
               <span>•</span>
               <span>{server.os} {server.os_version}</span>
               <span>•</span>

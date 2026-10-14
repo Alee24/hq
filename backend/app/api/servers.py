@@ -30,6 +30,8 @@ def serialize_server(srv: Server, latest_metric: Optional[ServerMetric] = None) 
     s_resp = ServerResponse.model_validate(srv)
     s_resp.has_ssh_key = bool(srv.ssh_key and srv.ssh_key.strip())
     s_resp.has_ssh_password = bool(srv.ssh_password and srv.ssh_password.strip())
+    s_resp.use_sudo = bool(srv.use_sudo)
+    s_resp.has_sudo_password = bool(srv.sudo_password and srv.sudo_password.strip())
     if latest_metric:
         s_resp.latest_metric = ServerMetricResponse.model_validate(latest_metric)
     return s_resp
@@ -332,6 +334,10 @@ async def create_server(
     server_hostname = payload.hostname.strip() if payload.hostname and payload.hostname.strip() else ip_clean
     auth_type = "PASSWORD" if payload.ssh_password and payload.ssh_password.strip() else (payload.ssh_auth_type or "PASSWORD")
 
+    ssh_user_clean = (payload.ssh_user or "root").strip()
+    use_sudo_flag = payload.use_sudo if payload.use_sudo is not None else (ssh_user_clean != "root")
+    sudo_pwd = payload.sudo_password.strip() if payload.sudo_password and payload.sudo_password.strip() else None
+
     srv = Server(
         name=server_name,
         hostname=server_hostname,
@@ -345,10 +351,12 @@ async def create_server(
         ram_total_mb=payload.ram_total_mb or 8192,
         disk_total_gb=payload.disk_total_gb or 160,
         ssh_port=payload.ssh_port or 22,
-        ssh_user=payload.ssh_user or "root",
+        ssh_user=ssh_user_clean,
         ssh_auth_type=auth_type,
         ssh_password=payload.ssh_password.strip() if payload.ssh_password else None,
         ssh_key=payload.ssh_key.strip() if payload.ssh_key else None,
+        use_sudo=use_sudo_flag,
+        sudo_password=sudo_pwd,
         connection_type="SSH",
         status="ONLINE",
         agent_status="CONNECTED"
@@ -776,6 +784,12 @@ async def configure_server_connection(
         srv.ssh_key = payload.ssh_key.strip() if payload.ssh_key.strip() else None
     if payload.ssh_password is not None:
         srv.ssh_password = payload.ssh_password if payload.ssh_password else None
+    if payload.use_sudo is not None:
+        srv.use_sudo = payload.use_sudo
+    elif payload.ssh_user and payload.ssh_user != "root":
+        srv.use_sudo = True
+    if payload.sudo_password is not None:
+        srv.sudo_password = payload.sudo_password.strip() if payload.sudo_password.strip() else None
 
     await log_audit_event(
         db=db,
@@ -791,6 +805,41 @@ async def configure_server_connection(
     await db.commit()
     await db.refresh(srv)
 
+    return serialize_server(srv)
+    
+@router.patch("/{server_id}", response_model=ServerResponse)
+async def update_server(
+    server_id: str,
+    payload: ServerUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_roles(["SUPER_ADMIN", "INFRASTRUCTURE_ADMIN"]))
+):
+    result = await db.execute(select(Server).where(Server.id == server_id, Server.deleted_at == None))
+    srv = result.scalar_one_or_none()
+    if not srv:
+        raise HTTPException(status_code=404, detail="Server not found.")
+
+    data = payload.model_dump(exclude_unset=True)
+    for field, val in data.items():
+        if field in ["ssh_password", "sudo_password", "ssh_key"] and val is not None:
+            val = val.strip() if isinstance(val, str) else val
+        setattr(srv, field, val)
+
+    if "ssh_user" in data and data["ssh_user"] != "root" and srv.use_sudo is None:
+        srv.use_sudo = True
+
+    await log_audit_event(
+        db=db,
+        action="SERVER_UPDATE",
+        entity_type="server",
+        username=current_user.username,
+        user_id=current_user.id,
+        entity_id=srv.id,
+        details={"updated_fields": list(data.keys())},
+        result="SUCCESS"
+    )
+    await db.commit()
+    await db.refresh(srv)
     return serialize_server(srv)
 
 @router.post("/{server_id}/terminal/exec", response_model=TerminalExecResponse)

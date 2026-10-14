@@ -14,10 +14,72 @@ from datetime import datetime, timezone
 from typing import Dict, Any, Optional, Tuple, List
 from backend.app.models.entities import Server, Application
 
+def should_escalate_sudo(server: Server) -> bool:
+    """
+    Returns True if remote execution should be elevated to root via sudo su / sudo.
+    - If ssh_user is 'root', no escalation needed (already root).
+    - If server.use_sudo is True or (ssh_user is non-root and use_sudo is not explicitly False): escalate!
+    """
+    if not server:
+        return False
+    user = (getattr(server, "ssh_user", None) or "root").strip().lower()
+    if user == "root":
+        return False
+    use_sudo = getattr(server, "use_sudo", None)
+    if use_sudo is False:
+        return False
+    return True
+
+def sanitize_sudo_output(text: str) -> str:
+    """Removes [sudo] password prompts and noisy privilege escalation artifacts."""
+    if not text:
+        return ""
+    lines = text.splitlines(keepends=True)
+    filtered = []
+    for line in lines:
+        cleaned = line.strip()
+        # Filter out "[sudo] password for <user>:" prompts
+        if re.match(r"^\[sudo\]\s+password\s+for\s+.*:\s*$", cleaned, re.IGNORECASE):
+            continue
+        if cleaned.lower().startswith("password:") or cleaned.lower().startswith("[sudo]"):
+            continue
+        filtered.append(line)
+    return "".join(filtered)
+
+def build_escalated_command(server: Server, full_cmd: str, working_dir: Optional[str] = None) -> str:
+    """
+    Wraps an arbitrary shell command into a root-escalated execution via sudo su / sudo.
+    Base64 encodes the inner command to guarantee 100% quote, pipe, newline and syntax safety.
+    Feeds sudo password via clean base64 pipe if configured, or uses passwordless sudo -n.
+    """
+    if working_dir and working_dir.strip():
+        full_cmd = f"cd {working_dir.strip()} && {full_cmd}"
+
+    if not should_escalate_sudo(server):
+        return full_cmd
+
+    sudo_pwd = getattr(server, "sudo_password", None) or getattr(server, "ssh_password", None)
+    sudo_pwd = sudo_pwd.strip() if sudo_pwd and isinstance(sudo_pwd, str) else None
+
+    b64_cmd = base64.b64encode(full_cmd.encode("utf-8")).decode("ascii")
+
+    if sudo_pwd:
+        b64_pwd = base64.b64encode(sudo_pwd.encode("utf-8")).decode("ascii")
+        return (
+            f'echo "{b64_pwd}" | base64 -d | sudo -S -p "" su - root -s /bin/bash -c "eval \\"\\$(echo \'{b64_cmd}\' | base64 -d)\\"" 2>/dev/null || '
+            f'echo "{b64_pwd}" | base64 -d | sudo -S -p "" bash -l -c "eval \\"\\$(echo \'{b64_cmd}\' | base64 -d)\\""'
+        )
+    else:
+        return (
+            f'sudo -n su - root -s /bin/bash -c "eval \\"\\$(echo \'{b64_cmd}\' | base64 -d)\\"" 2>/dev/null || '
+            f'sudo -n bash -l -c "eval \\"\\$(echo \'{b64_cmd}\' | base64 -d)\\""'
+        )
+
 def test_server_connection(server: Server) -> Dict[str, Any]:
     """
     Tests TCP connectivity and SSH / Agent handshake to the server.
     Measures latency in milliseconds and verifies SSH service availability.
+    If non-root or use_sudo is enabled, verifies root escalation via sudo su.
     """
     start_time = time.time()
     target_ip = server.public_ip
@@ -74,7 +136,22 @@ def test_server_connection(server: Server) -> Dict[str, Any]:
                         password=server.ssh_password,
                         timeout=5.0
                     )
-                auth_status = "AUTHENTICATED"
+                
+                # Test privilege escalation if non-root user or use_sudo enabled
+                if should_escalate_sudo(server):
+                    test_cmd = build_escalated_command(server, "id -u")
+                    stdin_t, stdout_t, stderr_t = client.exec_command(test_cmd, timeout=6.0)
+                    sudo_out = stdout_t.read().decode("utf-8", errors="replace").strip()
+                    sudo_err = stderr_t.read().decode("utf-8", errors="replace").strip()
+                    sudo_code = stdout_t.channel.recv_exit_status()
+                    if sudo_code == 0 and ("0" in sudo_out or "root" in sudo_out):
+                        auth_status = f"AUTHENTICATED (User: {server.ssh_user}, Sudo: ROOT ESCALATED)"
+                    else:
+                        err_sample = (sudo_err or sudo_out or "Sudo escalation rejected")[:80].strip()
+                        auth_status = f"AUTHENTICATED (User: {server.ssh_user}, Sudo FAILED: {err_sample})"
+                else:
+                    auth_status = f"AUTHENTICATED (User: {server.ssh_user or 'root'})"
+
                 client.close()
             except paramiko.AuthenticationException:
                 auth_status = "AUTH_FAILED"
@@ -191,11 +268,15 @@ def execute_remote_command(server: Server, command: str, working_dir: Optional[s
                     banner_timeout=conn_timeout
                 )
 
-            stdin, stdout, stderr = client.exec_command(full_cmd, timeout=float(timeout))
+            escalated_cmd = build_escalated_command(server, full_cmd)
+            stdin, stdout, stderr = client.exec_command(escalated_cmd, timeout=float(timeout))
             out_str = stdout.read().decode("utf-8", errors="replace")
             err_str = stderr.read().decode("utf-8", errors="replace")
             exit_code = stdout.channel.recv_exit_status()
             client.close()
+
+            out_str = sanitize_sudo_output(out_str)
+            err_str = sanitize_sudo_output(err_str)
 
             duration_ms = int((time.time() - start_time) * 1000)
             return {

@@ -59,7 +59,7 @@ export const ServerTerminalModal: React.FC<ServerTerminalModalProps> = ({
           {
             id: 'init-banner',
             command: 'system-connect',
-            stdout: `[CONNECTED] Secure Terminal Session Initialized\nTarget Node : ${server.name} (${server.hostname})\nAddress     : ${server.public_ip}:${server.ssh_port || 22} (${server.connection_type || 'SSH'})\nUser        : ${server.ssh_user || 'root'}\nSession     : Direct Interactive Console (Paramiko SSH / Agent Engine)\nType commands below or click Quick Actions for common system inspections.`,
+            stdout: `[CONNECTED] Secure Terminal Session Initialized\nTarget Node : ${server.name} (${server.hostname})\nAddress     : ${server.public_ip}:${server.ssh_port || 22} (${server.connection_type || 'SSH'})\nUser        : ${server.ssh_user || 'root'}${server.use_sudo ? ' (Sudo su Root Escalated)' : ''}\nPrivilege   : ${server.use_sudo ? 'ELEVATED ROOT PRIVILEGES (sudo su)' : (server.ssh_user === 'root' ? 'DIRECT ROOT' : 'STANDARD USER')}\nSession     : Direct Interactive Console (Paramiko SSH / Agent Engine)\nType commands below or click Quick Actions for common system inspections.`,
             stderr: '',
             exit_code: 0,
             duration_ms: 1,
@@ -204,6 +204,11 @@ export const ServerTerminalModal: React.FC<ServerTerminalModalProps> = ({
             <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-950 text-emerald-400 border border-emerald-800">
               {server.connection_type || 'SSH'} LIVE
             </span>
+            {server.use_sudo && (
+              <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-950 text-amber-300 border border-amber-800 flex items-center gap-1" title="Sudo Privilege Escalation Active">
+                <Shield size={10} /> sudo su root
+              </span>
+            )}
           </div>
 
           <div className="flex items-center gap-2">

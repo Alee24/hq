@@ -11,7 +11,9 @@ import {
   RefreshCw,
   Download,
   Wifi,
-  Lock
+  Lock,
+  Eye,
+  EyeOff
 } from 'lucide-react';
 import { api } from '../api/client';
 import { Server } from '../types';
@@ -35,6 +37,9 @@ export const ServerConnectionModal: React.FC<ServerConnectionModalProps> = ({
   const [authType, setAuthType] = useState<'KEY' | 'PASSWORD'>(server.ssh_auth_type || 'KEY');
   const [sshKey, setSshKey] = useState('');
   const [sshPassword, setSshPassword] = useState('');
+  const [useSudo, setUseSudo] = useState<boolean>(server.use_sudo ?? (server.ssh_user ? server.ssh_user !== 'root' : false));
+  const [sudoPassword, setSudoPassword] = useState('');
+  const [showSudoPassword, setShowSudoPassword] = useState(false);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<any | null>(null);
@@ -69,7 +74,9 @@ export const ServerConnectionModal: React.FC<ServerConnectionModalProps> = ({
         ssh_auth_type: authType,
         ssh_key: authType === 'KEY' ? sshKey : undefined,
         ssh_password: authType === 'PASSWORD' ? sshPassword : undefined,
-        connection_type: 'SSH'
+        connection_type: 'SSH',
+        use_sudo: useSudo,
+        sudo_password: sudoPassword ? sudoPassword.trim() : undefined,
       });
       onUpdated(updated);
       onClose();
@@ -142,10 +149,36 @@ export const ServerConnectionModal: React.FC<ServerConnectionModalProps> = ({
                   type="text"
                   required
                   value={sshUser}
-                  onChange={(e) => setSshUser(e.target.value)}
+                  onChange={(e) => {
+                    const u = e.target.value;
+                    setSshUser(u);
+                    if (u.trim() !== 'root' && !useSudo) {
+                      setUseSudo(true);
+                    }
+                  }}
                   placeholder="e.g. root or ubuntu"
                   className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-slate-100 font-mono"
                 />
+                <div className="flex items-center gap-1.5 mt-1.5">
+                  <span className="text-[10px] text-slate-500">Quick:</span>
+                  {['root', 'ubuntu', 'debian', 'admin', 'deploy'].map((u) => (
+                    <button
+                      key={u}
+                      type="button"
+                      onClick={() => {
+                        setSshUser(u);
+                        if (u !== 'root') setUseSudo(true);
+                      }}
+                      className={`px-1.5 py-0.5 rounded text-[10px] font-mono transition-colors ${
+                        sshUser === u
+                          ? 'bg-brand-500/20 text-brand-300 border border-brand-500/40'
+                          : 'bg-slate-800/80 text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      {u}
+                    </button>
+                  ))}
+                </div>
               </div>
 
               <div>
@@ -158,7 +191,68 @@ export const ServerConnectionModal: React.FC<ServerConnectionModalProps> = ({
                   placeholder="22"
                   className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-slate-100 font-mono"
                 />
+                <p className="text-[10px] text-slate-500 mt-1.5">
+                  Standard OpenSSH port (default: 22).
+                </p>
               </div>
+            </div>
+
+            {/* Privilege Escalation (sudo su) Section */}
+            <div className="p-3.5 bg-slate-950/80 border border-slate-800 rounded-xl space-y-3">
+              <div className="flex items-start justify-between gap-3">
+                <div className="space-y-0.5">
+                  <div className="flex items-center gap-2">
+                    <Shield size={14} className={useSudo ? 'text-indigo-400' : 'text-slate-500'} />
+                    <span className="font-semibold text-slate-200">
+                      Privilege Escalation (<code className="text-brand-300 font-mono">sudo su</code>)
+                    </span>
+                    {useSudo && (
+                      <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
+                        Active
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-slate-400">
+                    Required for hosts where direct SSH login as root is disabled (e.g. AWS EC2, DigitalOcean, Debian). All administrative tasks run with elevated root privileges.
+                  </p>
+                </div>
+                <label className="relative inline-flex items-center cursor-pointer shrink-0 mt-1">
+                  <input
+                    type="checkbox"
+                    checked={useSudo}
+                    onChange={(e) => setUseSudo(e.target.checked)}
+                    className="sr-only peer"
+                  />
+                  <div className="w-9 h-5 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-indigo-600"></div>
+                </label>
+              </div>
+
+              {useSudo && (
+                <div className="pt-2 border-t border-slate-800/80 space-y-2 animate-in fade-in duration-100">
+                  <label className="block text-slate-300 font-semibold text-[11px]">
+                    Sudo Password <span className="text-slate-500 font-normal">(Optional)</span>
+                  </label>
+                  <div className="relative">
+                    <input
+                      type={showSudoPassword ? 'text' : 'password'}
+                      value={sudoPassword}
+                      onChange={(e) => setSudoPassword(e.target.value)}
+                      placeholder="Leave blank if passwordless sudo (NOPASSWD) or same as SSH password"
+                      className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-lg text-slate-100 text-xs pr-10 font-mono placeholder:text-slate-600"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowSudoPassword(!showSudoPassword)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 transition-colors"
+                    >
+                      {showSudoPassword ? <EyeOff size={14} /> : <Eye size={14} />}
+                    </button>
+                  </div>
+                  <p className="text-[10px] text-slate-500">
+                    If left blank, HQ will try passwordless sudo (<code className="text-slate-400">sudo -n</code>) and fall back to the SSH password.
+                  </p>
+                </div>
+              )}
             </div>
 
             <div>

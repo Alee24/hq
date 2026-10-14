@@ -120,6 +120,8 @@ async def apply_schema_migrations():
             ("ssh_auth_type", "VARCHAR(20) DEFAULT 'KEY'"),
             ("ssh_key", "TEXT"),
             ("ssh_password", "VARCHAR(255)"),
+            ("use_sudo", "BOOLEAN DEFAULT FALSE"),
+            ("sudo_password", "VARCHAR(255)"),
             ("agent_token", "VARCHAR(64)"),
             ("connection_type", "VARCHAR(20) DEFAULT 'SSH'")
         ]

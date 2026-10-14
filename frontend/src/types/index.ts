@@ -56,12 +56,25 @@ export interface Server {
   agent_token?: string;
   has_ssh_key?: boolean;
   has_ssh_password?: boolean;
+  use_sudo?: boolean;
+  has_sudo_password?: boolean;
   status: 'ONLINE' | 'OFFLINE' | 'DEGRADED' | 'MAINTENANCE';
   last_heartbeat: string;
   agent_version: string;
   agent_status: string;
   is_active: boolean;
   latest_metric?: ServerMetric;
+}
+
+export interface ServerConnectionConfig {
+  ssh_user: string;
+  ssh_port: number;
+  ssh_auth_type: 'KEY' | 'PASSWORD';
+  ssh_key?: string;
+  ssh_password?: string;
+  connection_type: 'SSH' | 'AGENT';
+  use_sudo?: boolean;
+  sudo_password?: string;
 }
 
 export interface ApplicationComponent {

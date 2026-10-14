@@ -588,9 +588,18 @@ class ApiClient {
     ssh_key?: string;
     ssh_password?: string;
     connection_type: string;
+    use_sudo?: boolean;
+    sudo_password?: string;
   }) {
     return this.request<any>(`/servers/${id}/connect/configure`, {
       method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async updateServer(id: string, data: Record<string, any>) {
+    return this.request<any>(`/servers/${id}`, {
+      method: 'PATCH',
       body: JSON.stringify(data),
     });
   }

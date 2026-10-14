@@ -47,6 +47,8 @@ class Server(Base):
     ssh_auth_type = Column(String(20), default="KEY") # KEY, PASSWORD
     ssh_key = Column(Text, nullable=True)
     ssh_password = Column(String(255), nullable=True)
+    use_sudo = Column(Boolean, default=False)
+    sudo_password = Column(String(255), nullable=True)
     agent_token = Column(String(64), nullable=True)
     connection_type = Column(String(20), default="SSH") # SSH, AGENT, DIRECT
     status = Column(String(20), default="ONLINE", index=True) # ONLINE, OFFLINE, DEGRADED, MAINTENANCE

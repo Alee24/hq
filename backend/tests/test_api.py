@@ -1795,3 +1795,102 @@ async def test_domain_provision_and_terminal_endpoint():
             assert t_data["server_id"] == srv_id
 
 
+@pytest.mark.asyncio
+async def test_non_root_server_and_sudo_privilege_escalation():
+    """Validate non-root SSH registration, sudo escalation engine, and command wrapping."""
+    from backend.app.services.remote_executor import (
+        should_escalate_sudo,
+        build_escalated_command,
+        sanitize_sudo_output
+    )
+    from backend.app.models.entities import Server
+
+    # 1. Test helper functions directly
+    root_server = Server(ssh_user="root", use_sudo=False)
+    assert should_escalate_sudo(root_server) is False
+    direct_cmd = build_escalated_command(root_server, "uptime")
+    assert direct_cmd == "uptime"
+
+    ubuntu_server = Server(ssh_user="ubuntu", use_sudo=True, sudo_password="MySudoPass123")
+    assert should_escalate_sudo(ubuntu_server) is True
+    escalated_cmd = build_escalated_command(ubuntu_server, "systemctl status nginx", working_dir="/var/www")
+    assert "sudo -S -p" in escalated_cmd
+    assert "base64" in escalated_cmd
+    assert "su - root" in escalated_cmd
+
+    # Test passwordless sudo
+    nopass_server = Server(ssh_user="debian", use_sudo=True, sudo_password=None, ssh_password=None)
+    assert should_escalate_sudo(nopass_server) is True
+    nopass_cmd = build_escalated_command(nopass_server, "id -u")
+    assert "sudo -n" in nopass_cmd
+
+    # Test output sanitization
+    dirty_output = "[sudo] password for ubuntu: \nuid=0(root) gid=0(root) groups=0(root)\n"
+    clean_output = sanitize_sudo_output(dirty_output)
+    assert "[sudo] password for" not in clean_output
+    assert "uid=0(root)" in clean_output
+
+    # 2. Test API Endpoints with non-root server
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        token = await get_admin_token(ac)
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # Create server with non-root user (ubuntu) and sudo enabled
+        res = await ac.post("/api/servers", json={
+            "public_ip": "198.51.100.42",
+            "name": "AWS-Ubuntu-Web",
+            "ssh_user": "ubuntu",
+            "ssh_port": 22,
+            "ssh_password": "UbuntuSshPassword2026!",
+            "use_sudo": True,
+            "sudo_password": "UbuntuSudoPassword2026!"
+        }, headers=headers)
+        assert res.status_code == 200
+        server_data = res.json()
+        assert server_data["ssh_user"] == "ubuntu"
+        assert server_data["use_sudo"] is True
+        assert server_data["has_sudo_password"] is True
+        server_id = server_data["id"]
+
+        # Test configure_server_connection updates sudo credentials
+        conn_res = await ac.post(f"/api/servers/{server_id}/connect/configure", json={
+            "ssh_user": "ubuntu",
+            "ssh_port": 2202,
+            "ssh_auth_type": "PASSWORD",
+            "ssh_password": "NewUbuntuPassword!",
+            "use_sudo": True,
+            "sudo_password": "UpdatedSudoSecret!"
+        }, headers=headers)
+        assert conn_res.status_code == 200
+        conn_data = conn_res.json()
+        assert conn_data["ssh_port"] == 2202
+        assert conn_data["use_sudo"] is True
+        assert conn_data["has_sudo_password"] is True
+
+        # Test PATCH /api/servers/{server_id}
+        patch_res = await ac.patch(f"/api/servers/{server_id}", json={
+            "use_sudo": True,
+            "sudo_password": "PatchedSudoPass123!"
+        }, headers=headers)
+        assert patch_res.status_code == 200
+        patch_data = patch_res.json()
+        assert patch_data["use_sudo"] is True
+        assert patch_data["has_sudo_password"] is True
+
+        # Test test_server_connection with mocked paramiko
+        with patch("backend.app.api.servers.test_server_connection") as mock_test_conn:
+            mock_test_conn.return_value = {
+                "success": True,
+                "status": "ONLINE",
+                "connection_type": "SSH",
+                "latency_ms": 15,
+                "banner": "SSH-2.0-OpenSSH_9.6p1 Ubuntu",
+                "message": "Successfully connected to AWS-Ubuntu-Web (198.51.100.42:22) in 15ms. SSH Auth: AUTHENTICATED (User: ubuntu, Sudo: ROOT ESCALATED)"
+            }
+            test_res = await ac.post(f"/api/servers/{server_id}/connect/test", headers=headers)
+            assert test_res.status_code == 200
+            assert test_res.json()["success"] is True
+            assert "ROOT ESCALATED" in test_res.json()["message"]
+
+
+

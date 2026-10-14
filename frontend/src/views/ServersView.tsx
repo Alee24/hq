@@ -15,6 +15,7 @@ import {
   Layers,
   Terminal,
   ShieldAlert,
+  ShieldCheck,
   CheckCircle2,
   AlertTriangle,
   Wifi,
@@ -66,6 +67,9 @@ export const ServersView: React.FC<ServersViewProps> = ({ onSelectServer }) => {
   const [newProvider, setNewProvider] = useState('Custom VPS');
   const [newSshUser, setNewSshUser] = useState('root');
   const [newSshPort, setNewSshPort] = useState('22');
+  const [newUseSudo, setNewUseSudo] = useState(false);
+  const [newSudoPassword, setNewSudoPassword] = useState('');
+  const [showSudoPassword, setShowSudoPassword] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -402,7 +406,7 @@ export const ServersView: React.FC<ServersViewProps> = ({ onSelectServer }) => {
       return;
     }
     if (!passTrimmed) {
-      setFormError('SSH Root Password is required to establish management connection.');
+      setFormError('SSH Password is required to establish management connection.');
       return;
     }
 
@@ -416,7 +420,9 @@ export const ServersView: React.FC<ServersViewProps> = ({ onSelectServer }) => {
         provider: newProvider.trim() || 'Custom VPS',
         ssh_user: newSshUser.trim() || 'root',
         ssh_port: parseInt(newSshPort) || 22,
-        ssh_auth_type: 'PASSWORD'
+        ssh_auth_type: 'PASSWORD',
+        use_sudo: newUseSudo || newSshUser.trim() !== 'root',
+        sudo_password: newSudoPassword.trim() || undefined
       });
       setCreateModalOpen(false);
       setNewIp('');
@@ -426,6 +432,9 @@ export const ServersView: React.FC<ServersViewProps> = ({ onSelectServer }) => {
       setNewProvider('Custom VPS');
       setNewSshUser('root');
       setNewSshPort('22');
+      setNewUseSudo(false);
+      setNewSudoPassword('');
+      setShowSudoPassword(false);
       setShowAdvanced(false);
       await loadServers(s.id);
       setSuccessBanner(`Node ${s.name || ipTrimmed} (${ipTrimmed}) registered and credentials saved.`);
@@ -643,8 +652,16 @@ export const ServersView: React.FC<ServersViewProps> = ({ onSelectServer }) => {
                     </div>
                     <div>
                       <h3 className="font-semibold text-sm text-white">{srv.name}</h3>
-                      <div className="text-[11px] text-slate-400 mono flex items-center gap-2">
+                      <div className="text-[11px] text-slate-400 mono flex items-center flex-wrap gap-1.5 mt-0.5">
                         <span>{srv.public_ip}:{srv.ssh_port || 22}</span>
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 font-mono">
+                          {srv.ssh_user || 'root'}
+                        </span>
+                        {srv.use_sudo && (
+                          <span className="text-[10px] text-amber-400 flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-amber-950/60 border border-amber-800/50" title="Sudo Privilege Escalation Active (sudo su)">
+                            <ShieldAlert size={10} /> sudo su
+                          </span>
+                        )}
                         {srv.has_ssh_key && (
                           <span className="text-[10px] text-brand-400 flex items-center gap-0.5" title="SSH Key Active">
                             <Key size={10} /> Key
@@ -1017,7 +1034,7 @@ export const ServersView: React.FC<ServersViewProps> = ({ onSelectServer }) => {
               </div>
             )}
 
-            <form onSubmit={handleRegisterServer} className="space-y-3.5 text-xs">
+            <form onSubmit={handleRegisterServer} className="space-y-4 text-xs">
               {/* Public IPv4 Address - REQUIRED */}
               <div>
                 <div className="flex items-center justify-between mb-1">
@@ -1040,11 +1057,86 @@ export const ServersView: React.FC<ServersViewProps> = ({ onSelectServer }) => {
                 />
               </div>
 
-              {/* SSH Root Password - REQUIRED */}
+              {/* SSH User & Port */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-slate-300 font-semibold flex items-center gap-1.5">
+                    <span>SSH Login User & Port</span>
+                    <span className="text-rose-400 font-bold">*</span>
+                  </label>
+                  <span className="text-[10px] text-slate-400">Non-root users auto-escalate via sudo</span>
+                </div>
+
+                {/* Quick User Chips */}
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {[
+                    { label: 'root', desc: 'Direct root' },
+                    { label: 'ubuntu', desc: 'Ubuntu/EC2' },
+                    { label: 'debian', desc: 'Debian' },
+                    { label: 'admin', desc: 'Admin' },
+                    { label: 'deploy', desc: 'Deploy' }
+                  ].map((chip) => {
+                    const isSelected = newSshUser === chip.label;
+                    return (
+                      <button
+                        key={chip.label}
+                        type="button"
+                        onClick={() => {
+                          setNewSshUser(chip.label);
+                          if (chip.label !== 'root') {
+                            setNewUseSudo(true);
+                          } else {
+                            setNewUseSudo(false);
+                          }
+                        }}
+                        className={`px-2.5 py-1 rounded-lg text-xs font-mono transition-all flex items-center gap-1 ${
+                          isSelected
+                            ? 'bg-brand-600 text-white font-semibold shadow-sm ring-1 ring-brand-400'
+                            : 'bg-slate-950 text-slate-400 border border-slate-800 hover:border-slate-700 hover:text-slate-200'
+                        }`}
+                      >
+                        {isSelected && <Check size={11} />}
+                        <span>{chip.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div className="grid grid-cols-3 gap-2.5 pt-1">
+                  <div className="col-span-2">
+                    <input
+                      type="text"
+                      required
+                      value={newSshUser}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setNewSshUser(val);
+                        if (val.trim() && val.trim() !== 'root') {
+                          setNewUseSudo(true);
+                        }
+                      }}
+                      placeholder="Username (e.g. root, ubuntu)"
+                      className="w-full px-3.5 py-2 bg-slate-950 border border-slate-800 rounded-xl text-slate-100 placeholder-slate-600 font-mono text-xs focus:outline-none focus:border-brand-500"
+                    />
+                  </div>
+                  <div>
+                    <input
+                      type="number"
+                      required
+                      value={newSshPort}
+                      onChange={(e) => setNewSshPort(e.target.value)}
+                      placeholder="Port 22"
+                      className="w-full px-3.5 py-2 bg-slate-950 border border-slate-800 rounded-xl text-slate-100 placeholder-slate-600 font-mono text-xs focus:outline-none focus:border-brand-500"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* SSH Password - REQUIRED */}
               <div>
                 <div className="flex items-center justify-between mb-1">
                   <label className="text-slate-300 font-semibold flex items-center gap-1.5">
-                    <span>SSH Root Password</span>
+                    <span>SSH Password</span>
                     <span className="text-rose-400 font-bold">*</span>
                   </label>
                   <span className="text-[10px] font-semibold text-brand-400 bg-brand-500/10 border border-brand-500/20 px-1.5 py-0.5 rounded">
@@ -1057,7 +1149,7 @@ export const ServersView: React.FC<ServersViewProps> = ({ onSelectServer }) => {
                     required
                     value={newPassword}
                     onChange={(e) => setNewPassword(e.target.value)}
-                    placeholder="Enter root or sudo password"
+                    placeholder={`Enter password for ${newSshUser || 'user'}`}
                     className="w-full px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-slate-100 placeholder-slate-600 focus:outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500 font-mono text-xs pr-10 transition-colors"
                   />
                   <button
@@ -1070,8 +1162,67 @@ export const ServersView: React.FC<ServersViewProps> = ({ onSelectServer }) => {
                   </button>
                 </div>
                 <p className="text-[11px] text-slate-500 mt-1">
-                  Used for interactive terminal commands, status monitoring, and automated backups.
+                  Used for interactive SSH sessions, telemetry monitoring, and container commands.
                 </p>
+              </div>
+
+              {/* Privilege Escalation (sudo su) Architecture */}
+              <div className="p-3.5 bg-slate-950/80 border border-slate-800/90 rounded-xl space-y-3">
+                <div className="flex items-center justify-between">
+                  <label className="flex items-center gap-2 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={newUseSudo}
+                      onChange={(e) => setNewUseSudo(e.target.checked)}
+                      className="rounded border-slate-700 bg-slate-900 text-brand-600 focus:ring-brand-500 w-4 h-4"
+                    />
+                    <div className="flex items-center gap-1.5">
+                      <ShieldAlert size={15} className={newUseSudo ? 'text-amber-400' : 'text-slate-500'} />
+                      <span className="font-semibold text-slate-200">Privilege Escalation (sudo su / root)</span>
+                    </div>
+                  </label>
+                  <span className={`text-[10px] font-semibold px-2 py-0.5 rounded border ${
+                    newUseSudo
+                      ? 'bg-amber-950/70 text-amber-300 border-amber-800/80'
+                      : 'bg-slate-900 text-slate-400 border-slate-800'
+                  }`}>
+                    {newUseSudo ? 'Escalation Active' : 'Direct Execution'}
+                  </span>
+                </div>
+
+                <p className="text-[11px] text-slate-400 leading-relaxed">
+                  {newUseSudo
+                    ? `Logging in as '${newSshUser || 'user'}': all administration, domain provisioning, and docker commands will safely escalate to root via sudo su.`
+                    : 'Commands will execute directly under user context. Recommended only when connecting directly as root.'}
+                </p>
+
+                {newUseSudo && (
+                  <div className="pt-2 border-t border-slate-800/60 space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <label className="text-slate-300 text-[11px] font-medium">
+                        Sudo Password <span className="text-slate-500">(Optional / Fallback)</span>
+                      </label>
+                      <span className="text-[10px] text-slate-500">Blank for passwordless (NOPASSWD)</span>
+                    </div>
+                    <div className="relative">
+                      <input
+                        type={showSudoPassword ? 'text' : 'password'}
+                        value={newSudoPassword}
+                        onChange={(e) => setNewSudoPassword(e.target.value)}
+                        placeholder="Leave blank if passwordless or same as SSH"
+                        className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-lg text-slate-200 placeholder-slate-600 text-xs font-mono pr-9 focus:outline-none focus:border-brand-500"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowSudoPassword(!showSudoPassword)}
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300"
+                        title={showSudoPassword ? 'Hide password' : 'Show password'}
+                      >
+                        {showSudoPassword ? <EyeOff size={13} /> : <Eye size={13} />}
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Collapsible Optional Settings */}
@@ -1082,7 +1233,7 @@ export const ServersView: React.FC<ServersViewProps> = ({ onSelectServer }) => {
                   className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-slate-200 transition-colors font-medium py-1"
                 >
                   {showAdvanced ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-                  <span>{showAdvanced ? 'Hide Optional Settings' : 'Configure Optional Settings (Name, Port, User)'}</span>
+                  <span>{showAdvanced ? 'Hide Optional Settings' : 'Configure Optional Settings (Name, Hostname, Provider)'}</span>
                 </button>
 
                 {showAdvanced && (
@@ -1098,33 +1249,6 @@ export const ServersView: React.FC<ServersViewProps> = ({ onSelectServer }) => {
                         placeholder={`Defaults to VPS-${newIp.trim() || 'IP'}`}
                         className="w-full px-3 py-1.5 bg-slate-900 border border-slate-800 rounded-lg text-slate-200 placeholder-slate-600 text-xs"
                       />
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-2.5">
-                      <div>
-                        <label className="block text-slate-400 text-[11px] font-medium mb-1">
-                          SSH User <span className="text-slate-600">(Default: root)</span>
-                        </label>
-                        <input
-                          type="text"
-                          value={newSshUser}
-                          onChange={(e) => setNewSshUser(e.target.value)}
-                          placeholder="root"
-                          className="w-full px-3 py-1.5 bg-slate-900 border border-slate-800 rounded-lg text-slate-200 placeholder-slate-600 text-xs font-mono"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-slate-400 text-[11px] font-medium mb-1">
-                          SSH Port <span className="text-slate-600">(Default: 22)</span>
-                        </label>
-                        <input
-                          type="number"
-                          value={newSshPort}
-                          onChange={(e) => setNewSshPort(e.target.value)}
-                          placeholder="22"
-                          className="w-full px-3 py-1.5 bg-slate-900 border border-slate-800 rounded-lg text-slate-200 placeholder-slate-600 text-xs font-mono"
-                        />
-                      </div>
                     </div>
 
                     <div>
