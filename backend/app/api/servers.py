@@ -1,6 +1,7 @@
+import asyncio
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, func
 from typing import List, Optional
 from datetime import datetime, timezone
 from backend.app.core.database import get_db
@@ -45,16 +46,25 @@ async def list_servers(
     result = await db.execute(stmt)
     servers = result.scalars().all()
 
-    enriched = []
-    for srv in servers:
-        # Fetch latest metric
-        met_res = await db.execute(
-            select(ServerMetric).where(ServerMetric.server_id == srv.id).order_by(ServerMetric.timestamp.desc()).limit(1)
-        )
-        latest_met = met_res.scalar_one_or_none()
-        enriched.append(serialize_server(srv, latest_met))
+    if not servers:
+        return []
 
-    return enriched
+    server_ids = [s.id for s in servers]
+    # Single high-performance batch query for latest metric per server
+    subq = (
+        select(ServerMetric.server_id, func.max(ServerMetric.timestamp).label("max_ts"))
+        .where(ServerMetric.server_id.in_(server_ids))
+        .group_by(ServerMetric.server_id)
+        .subquery()
+    )
+    met_stmt = select(ServerMetric).join(
+        subq,
+        (ServerMetric.server_id == subq.c.server_id) & (ServerMetric.timestamp == subq.c.max_ts)
+    )
+    met_res = await db.execute(met_stmt)
+    metrics_map = {m.server_id: m for m in met_res.scalars().all()}
+
+    return [serialize_server(srv, metrics_map.get(srv.id)) for srv in servers]
 
 @router.get("/{server_id}", response_model=ServerResponse)
 async def get_server(
@@ -136,7 +146,7 @@ async def get_server_processes(
     if not srv:
         raise HTTPException(status_code=404, detail="Server not found.")
         
-    procs = get_remote_server_processes(srv)
+    procs = await asyncio.to_thread(get_remote_server_processes, srv)
     return procs
 
 @router.post("/{server_id}/discover-system")
@@ -151,7 +161,7 @@ async def discover_server_system(
     if not srv:
         raise HTTPException(status_code=404, detail="Server not found.")
 
-    specs = discover_remote_server_hardware(srv)
+    specs = await asyncio.to_thread(discover_remote_server_hardware, srv)
     srv.cpu_cores = specs["cpu_cores"]
     srv.ram_total_mb = specs["ram_total_mb"]
     srv.disk_total_gb = int(specs["disk_total_gb"])
@@ -207,7 +217,7 @@ async def scan_and_import_server_websites(
     if not srv:
         raise HTTPException(status_code=404, detail="Server not found.")
 
-    discovered_sites = scan_remote_server_websites(srv)
+    discovered_sites = await asyncio.to_thread(scan_remote_server_websites, srv)
     imported_apps = []
     new_count = 0
 
@@ -464,7 +474,7 @@ async def execute_server_command(
     remote_out = None
     if srv.ssh_key or srv.ssh_password:
         cmd_to_run = f"systemctl {action}" if "service" not in action else f"systemctl {action.replace('service_', '')} {payload.service_name}"
-        remote_res = execute_remote_command(srv, cmd_to_run, timeout=15)
+        remote_res = await asyncio.to_thread(execute_remote_command, srv, cmd_to_run, timeout=15)
         remote_out = remote_res.get("stdout") or remote_res.get("stderr")
 
     resp_msg = f"Command executed successfully: {execution_log}"
@@ -496,7 +506,8 @@ async def schedule_server_reboot_endpoint(
     if not srv:
         raise HTTPException(status_code=404, detail="Server not found.")
 
-    res = schedule_remote_reboot(
+    res = await asyncio.to_thread(
+        schedule_remote_reboot,
         server=srv,
         delay_minutes=payload.delay_minutes,
         schedule_time=payload.schedule_time,
@@ -537,7 +548,7 @@ async def cancel_server_reboot_endpoint(
     if not srv:
         raise HTTPException(status_code=404, detail="Server not found.")
 
-    res = cancel_remote_reboot(srv)
+    res = await asyncio.to_thread(cancel_remote_reboot, srv)
 
     await log_audit_event(
         db=db,
@@ -571,7 +582,7 @@ async def get_server_reboot_status_endpoint(
     if not srv:
         raise HTTPException(status_code=404, detail="Server not found.")
 
-    return get_remote_reboot_status(srv)
+    return await asyncio.to_thread(get_remote_reboot_status, srv)
 
 @router.get("/{server_id}/performance/analysis")
 async def get_server_performance_analysis_endpoint(
@@ -587,7 +598,7 @@ async def get_server_performance_analysis_endpoint(
     if not srv:
         raise HTTPException(status_code=404, detail="Server not found.")
 
-    analysis = analyze_server_performance_and_spikes(srv)
+    analysis = await asyncio.to_thread(analyze_server_performance_and_spikes, srv)
     return analysis
 
 @router.post("/{server_id}/troubleshoot/run")
@@ -605,7 +616,7 @@ async def run_troubleshoot_command_endpoint(
     if not srv:
         raise HTTPException(status_code=404, detail="Server not found.")
 
-    res = execute_troubleshoot_command(srv, payload.command_key, payload.custom_command)
+    res = await asyncio.to_thread(execute_troubleshoot_command, srv, payload.command_key, payload.custom_command)
 
     # Save to ServerTerminalLog
     term_log = ServerTerminalLog(
@@ -637,7 +648,7 @@ async def get_server_databases_endpoint(
     if not srv:
         raise HTTPException(status_code=404, detail="Server not found.")
 
-    return detect_remote_databases(srv)
+    return await asyncio.to_thread(detect_remote_databases, srv)
 
 @router.get("/{server_id}/docker/suite")
 async def get_server_docker_suite_endpoint(
@@ -654,7 +665,7 @@ async def get_server_docker_suite_endpoint(
     if not srv:
         raise HTTPException(status_code=404, detail="Server not found.")
 
-    return get_remote_docker_suite(srv)
+    return await asyncio.to_thread(get_remote_docker_suite, srv)
 
 @router.post("/{server_id}/services/{service_name}/action")
 async def execute_service_action_endpoint(
@@ -673,7 +684,7 @@ async def execute_service_action_endpoint(
     if not srv:
         raise HTTPException(status_code=404, detail="Server not found.")
 
-    res = execute_remote_service_action(srv, service_name, payload.action)
+    res = await asyncio.to_thread(execute_remote_service_action, srv, service_name, payload.action)
 
     # Save to ServerTerminalLog
     term_log = ServerTerminalLog(
@@ -724,7 +735,7 @@ async def test_server_connection_endpoint(
     if not srv:
         raise HTTPException(status_code=404, detail="Server not found.")
 
-    test_res = test_server_connection(srv)
+    test_res = await asyncio.to_thread(test_server_connection, srv)
     srv.status = test_res["status"]
     if test_res["success"]:
         srv.last_heartbeat = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -854,7 +865,8 @@ async def execute_terminal_command(
     if not srv:
         raise HTTPException(status_code=404, detail="Server not found.")
 
-    cmd_res = execute_remote_command(
+    cmd_res = await asyncio.to_thread(
+        execute_remote_command,
         server=srv,
         command=payload.command,
         working_dir=payload.working_dir,
@@ -1017,7 +1029,8 @@ async def take_server_snapshot(
     if not srv:
         raise HTTPException(status_code=404, detail="Server node not found.")
 
-    res = create_remote_server_snapshot(
+    res = await asyncio.to_thread(
+        create_remote_server_snapshot,
         server=srv,
         name=payload.name,
         description=payload.description,
@@ -1100,7 +1113,8 @@ async def revert_server_snapshot_endpoint(
     if not snap:
         raise HTTPException(status_code=404, detail="Server snapshot not found.")
 
-    res = revert_remote_server_snapshot(
+    res = await asyncio.to_thread(
+        revert_remote_server_snapshot,
         server=srv,
         snapshot_file_path=snap.file_path,
         snapshot_id=snap.id
@@ -1175,7 +1189,7 @@ async def delete_server_snapshot_endpoint(
     if not snap:
         raise HTTPException(status_code=404, detail="Server snapshot not found.")
 
-    delete_remote_server_snapshot(srv, snap.file_path)
+    await asyncio.to_thread(delete_remote_server_snapshot, srv, snap.file_path)
 
     snap.deleted_at = datetime.now(timezone.utc).replace(tzinfo=None)
 

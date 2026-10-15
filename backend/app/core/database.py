@@ -38,12 +38,26 @@ if "sqlite" in settings.DATABASE_URL:
     except Exception:
         pass
 
+pool_kwargs = {}
+if "sqlite" not in settings.DATABASE_URL:
+    pool_kwargs = {
+        "pool_size": 25,
+        "max_overflow": 35,
+        "pool_timeout": 20,
+        "pool_recycle": 1800,
+        "pool_pre_ping": True,
+    }
+else:
+    pool_kwargs = {
+        "pool_pre_ping": True,
+    }
+
 engine = create_async_engine(
     settings.DATABASE_URL,
     echo=False,
     connect_args=connect_args,
     future=True,
-    pool_pre_ping=True
+    **pool_kwargs
 )
 
 AsyncSessionLocal = async_sessionmaker(

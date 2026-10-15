@@ -21,6 +21,7 @@ export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     let ws: WebSocket;
     let reconnectTimeout: any;
+    let pingInterval: any;
 
     const connect = () => {
       try {
@@ -29,6 +30,15 @@ export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
         ws.onopen = () => {
           setConnected(true);
+          // 25s keepalive ping to prevent proxy idle disconnects
+          clearInterval(pingInterval);
+          pingInterval = setInterval(() => {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+              try {
+                ws.send(JSON.stringify({ type: 'ping' }));
+              } catch {}
+            }
+          }, 25000);
         };
 
         ws.onmessage = (event) => {
@@ -50,14 +60,17 @@ export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         };
 
         ws.onclose = () => {
+          clearInterval(pingInterval);
           setConnected(false);
           reconnectTimeout = setTimeout(connect, 3000);
         };
 
         ws.onerror = () => {
+          clearInterval(pingInterval);
           ws.close();
         };
       } catch {
+        clearInterval(pingInterval);
         reconnectTimeout = setTimeout(connect, 5000);
       }
     };
@@ -65,6 +78,7 @@ export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     connect();
 
     return () => {
+      clearInterval(pingInterval);
       clearTimeout(reconnectTimeout);
       if (socketRef.current) {
         socketRef.current.close();

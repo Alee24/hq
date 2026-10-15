@@ -1,3 +1,4 @@
+import asyncio
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -42,7 +43,7 @@ async def get_app_git_status(
     server = app.server
     probe = None
     if server:
-        probe = detect_remote_application_git(server, app)
+        probe = await asyncio.to_thread(detect_remote_application_git, server, app)
 
     # Sync live Git detection findings to database
     if probe and probe.get("is_git_repo"):
@@ -192,7 +193,8 @@ async def execute_git_action_endpoint(
     if not server:
         raise HTTPException(status_code=400, detail="Application does not have an assigned server.")
 
-    res = execute_remote_git_action(
+    res = await asyncio.to_thread(
+        execute_remote_git_action,
         server=server,
         app=app,
         action=payload.action,
@@ -290,7 +292,8 @@ async def pull_remote_changes(
     if not server:
         raise HTTPException(status_code=400, detail="Application does not have an assigned server.")
 
-    res = execute_remote_git_action(
+    res = await asyncio.to_thread(
+        execute_remote_git_action,
         server=server,
         app=app,
         action="pull",
@@ -345,7 +348,7 @@ async def scan_all_git_repos_endpoint(
         if s.public_ip in repos_by_ip:
             discovered_repos = repos_by_ip[s.public_ip]
         else:
-            discovered_repos = scan_all_remote_git_repos(s)
+            discovered_repos = await asyncio.to_thread(scan_all_remote_git_repos, s)
             repos_by_ip[s.public_ip] = discovered_repos
             total_scanned += len(discovered_repos)
 
@@ -430,7 +433,7 @@ async def scan_all_git_repos_endpoint(
                     "update_available": matched.get("update_available", False)
                 })
             else:
-                p = detect_remote_application_git(s, a) if discovered_repos else None
+                p = await asyncio.to_thread(detect_remote_application_git, s, a) if discovered_repos else None
                 if p and p.get("is_git_repo"):
                     updated_apps += 1
                     if p.get("commit_hash"):

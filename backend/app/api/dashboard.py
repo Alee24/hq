@@ -105,7 +105,10 @@ async def get_dashboard_metrics(
         if not dom_name or dom_name.endswith(".local"):
             return {"resolved_ip": None, "resolved_ips": []}
         try:
-            return await asyncio.wait_for(resolve_domain_dns_live(dom_name), timeout=2.0)
+            return await asyncio.wait_for(
+                asyncio.to_thread(resolve_domain_dns_live, dom_name, ""),
+                timeout=1.5
+            )
         except Exception:
             return {"resolved_ip": None, "resolved_ips": []}
 

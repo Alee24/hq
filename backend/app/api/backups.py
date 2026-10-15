@@ -1,3 +1,4 @@
+import asyncio
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete
@@ -189,7 +190,7 @@ async def create_database_backup(
             dump_cmd = f"mongodump --db={clean_db_name} --archive=/tmp/{filename} --gzip 2>/dev/null || echo '-- db dumped' | gzip > /tmp/{filename}"
         
         try:
-            execute_remote_command(srv, dump_cmd, timeout=15)
+            await asyncio.to_thread(execute_remote_command, srv, dump_cmd, timeout=15)
         except Exception:
             pass
 
@@ -266,7 +267,7 @@ async def create_web_config_backup(
     if not srv:
         raise HTTPException(status_code=404, detail="Target server not found.")
 
-    res = backup_remote_web_configs(srv, payload.config_type)
+    res = await asyncio.to_thread(backup_remote_web_configs, srv, payload.config_type)
 
     backup = Backup(
         server_id=srv.id,
@@ -471,7 +472,7 @@ async def backup_entire_application(
     if not server:
         raise HTTPException(status_code=400, detail="No active server found hosting this application.")
 
-    exec_res = create_remote_application_backup(server, app, payload.include_database)
+    exec_res = await asyncio.to_thread(create_remote_application_backup, server, app, payload.include_database)
 
     backup = Backup(
         application_id=app.id,
@@ -547,7 +548,7 @@ async def backup_server_config_snapshot(
     if not server:
         raise HTTPException(status_code=404, detail="Server not found.")
 
-    exec_res = backup_remote_web_configs(server, config_type="WEB_STACK")
+    exec_res = await asyncio.to_thread(backup_remote_web_configs, server, config_type="WEB_STACK")
 
     backup = Backup(
         server_id=server.id,

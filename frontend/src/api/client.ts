@@ -290,39 +290,59 @@ class ApiClient {
       headers['Authorization'] = `Bearer ${token}`;
     }
 
-    const response = await fetch(`${API_BASE}${endpoint}`, {
-      ...options,
-      headers,
-    });
+    const isLongOperation = endpoint.includes('/backups') || 
+                            endpoint.includes('/scan') || 
+                            endpoint.includes('/terminal') || 
+                            endpoint.includes('/snapshots') ||
+                            endpoint.includes('/autofix') ||
+                            endpoint.includes('/diagnostics');
+    const timeoutMs = isLongOperation ? 60000 : 15000;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
 
-    if (response.status === 401 && endpoint === '/auth/me') {
-      this.setToken(null);
-      try {
-        localStorage.removeItem('cc_user');
-      } catch {}
-      // Trigger re-auth event if needed
-      window.dispatchEvent(new Event('cc_unauthorized'));
-    }
+    try {
+      const response = await fetch(`${API_BASE}${endpoint}`, {
+        ...options,
+        signal: options.signal || controller.signal,
+        headers,
+      });
 
-    if (!response.ok) {
-      let errorMessage = `Server returned status ${response.status} (${response.statusText})`;
-      try {
-        const errorData = await response.json();
-        if (errorData.detail) {
-          errorMessage = typeof errorData.detail === 'string' ? errorData.detail : JSON.stringify(errorData.detail);
-        }
-      } catch {
-        // Fallback to text or status
+      if (response.status === 401 && endpoint === '/auth/me') {
+        this.setToken(null);
+        try {
+          localStorage.removeItem('cc_user');
+        } catch {}
+        // Trigger re-auth event if needed
+        window.dispatchEvent(new Event('cc_unauthorized'));
       }
-      throw new Error(errorMessage);
-    }
 
-    // Check if JSON response
-    const contentType = response.headers.get('content-type');
-    if (contentType && contentType.includes('application/json')) {
-      return response.json();
+      if (!response.ok) {
+        let errorMessage = `Server returned status ${response.status} (${response.statusText})`;
+        try {
+          const errorData = await response.json();
+          if (errorData.detail) {
+            errorMessage = typeof errorData.detail === 'string' ? errorData.detail : JSON.stringify(errorData.detail);
+          }
+        } catch {
+          // Fallback to text or status
+        }
+        throw new Error(errorMessage);
+      }
+
+      // Check if JSON response
+      const contentType = response.headers.get('content-type');
+      if (contentType && contentType.includes('application/json')) {
+        return response.json();
+      }
+      return response.text() as unknown as T;
+    } catch (err: any) {
+      if (err.name === 'AbortError') {
+        throw new Error(`Request to ${endpoint} timed out after ${timeoutMs / 1000}s. Please check your network or server responsiveness.`);
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
     }
-    return response.text() as unknown as T;
   }
 
   // ==========================================

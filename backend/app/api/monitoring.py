@@ -1,3 +1,4 @@
+import asyncio
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
@@ -319,7 +320,7 @@ print(json.dumps({{
 
     b64_str = base64.b64encode(probe_script.encode("utf-8")).decode("ascii")
     cmd = f"python3 -c \"import base64; exec(base64.b64decode('{b64_str}'))\""
-    res = execute_remote_command(server, cmd, timeout=20)
+    res = await asyncio.to_thread(execute_remote_command, server, cmd, timeout=20)
 
     parsed = {}
     if res.get("success") and res.get("stdout"):

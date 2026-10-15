@@ -48,9 +48,33 @@ interface ServersViewProps {
 }
 
 export const ServersView: React.FC<ServersViewProps> = ({ onSelectServer }) => {
-  const [servers, setServers] = useState<Server[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [selectedServer, setSelectedServer] = useState<Server | null>(null);
+  const [servers, setServers] = useState<Server[]>(() => {
+    try {
+      const cached = localStorage.getItem('cc_cached_servers');
+      return cached ? JSON.parse(cached) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [loading, setLoading] = useState<boolean>(() => {
+    try {
+      const cached = localStorage.getItem('cc_cached_servers');
+      return !cached || JSON.parse(cached).length === 0;
+    } catch {
+      return true;
+    }
+  });
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [selectedServer, setSelectedServer] = useState<Server | null>(() => {
+    try {
+      const cached = localStorage.getItem('cc_cached_servers');
+      const list: Server[] = cached ? JSON.parse(cached) : [];
+      const targetId = localStorage.getItem('cc_selected_server_id');
+      return (targetId ? list.find(s => s.id === targetId) : list[0]) || null;
+    } catch {
+      return null;
+    }
+  });
   const [processes, setProcesses] = useState<any[]>([]);
 
   // Dangerous action modal
@@ -122,22 +146,26 @@ export const ServersView: React.FC<ServersViewProps> = ({ onSelectServer }) => {
   const [confirmRevertTarget, setConfirmRevertTarget] = useState<ServerSnapshot | null>(null);
 
   const loadServers = async (selectId?: string) => {
+    setLoadError(null);
     try {
       const res = await api.listServers();
       setServers(res);
+      localStorage.setItem('cc_cached_servers', JSON.stringify(res));
       if (res.length > 0) {
         const targetId = selectId || localStorage.getItem('cc_selected_server_id');
         const matched = targetId ? res.find((s) => s.id === targetId) : null;
         const toSelect = matched || res[0];
         setSelectedServer(toSelect);
         localStorage.setItem('cc_selected_server_id', toSelect.id);
-        loadProcesses(toSelect.id);
+        // Non-blocking background load for processes
+        setTimeout(() => loadProcesses(toSelect.id), 50);
       } else {
         setSelectedServer(null);
         setProcesses([]);
       }
-    } catch (e) {
+    } catch (e: any) {
       console.error(e);
+      setLoadError(e?.message || 'Failed to establish connection to infrastructure nodes.');
     } finally {
       setLoading(false);
     }
@@ -603,9 +631,46 @@ export const ServersView: React.FC<ServersViewProps> = ({ onSelectServer }) => {
         </div>
       )}
 
+      {loadError && servers.length > 0 && (
+        <div className="flex items-center justify-between px-4 py-2.5 bg-amber-500/10 border border-amber-500/20 rounded-xl text-amber-300 text-xs">
+          <div className="flex items-center gap-2">
+            <AlertTriangle size={15} className="text-amber-400 shrink-0" />
+            <span>Telemetry update warning: {loadError}</span>
+          </div>
+          <button
+            onClick={() => loadServers()}
+            className="flex items-center gap-1 px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 rounded text-2xs font-semibold transition-colors"
+          >
+            <RefreshCw size={11} />
+            <span>Retry</span>
+          </button>
+        </div>
+      )}
+
       {/* Grid of Servers */}
-      {loading ? (
-        <div className="py-20 text-center text-slate-500 text-xs">Connecting to infrastructure nodes...</div>
+      {loading && servers.length === 0 ? (
+        <div className="py-20 flex flex-col items-center justify-center space-y-3">
+          <div className="w-8 h-8 rounded-full border-2 border-brand-500 border-t-transparent animate-spin" />
+          <div className="text-slate-400 text-xs font-medium tracking-wide">Connecting to infrastructure nodes...</div>
+        </div>
+      ) : loadError && servers.length === 0 ? (
+        <div className="p-8 text-center bg-rose-950/20 border border-rose-800/40 rounded-xl space-y-3">
+          <div className="w-10 h-10 rounded-xl bg-rose-900/40 text-rose-400 flex items-center justify-center mx-auto">
+            <AlertTriangle size={20} />
+          </div>
+          <h3 className="text-sm font-semibold text-white">Connection to Infrastructure Nodes Failed</h3>
+          <p className="text-xs text-rose-300/80 max-w-md mx-auto">{loadError}</p>
+          <button
+            onClick={() => {
+              setLoading(true);
+              loadServers();
+            }}
+            className="inline-flex items-center gap-1.5 px-4 py-2 bg-brand-600 hover:bg-brand-500 text-white rounded-lg text-xs font-semibold transition-colors mt-2"
+          >
+            <RefreshCw size={14} />
+            <span>Retry Connection</span>
+          </button>
+        </div>
       ) : servers.length === 0 ? (
         <div className="p-12 text-center bg-slate-900/60 border border-slate-800 rounded-xl space-y-3">
           <div className="w-12 h-12 rounded-xl bg-slate-800/80 flex items-center justify-center mx-auto text-slate-400">

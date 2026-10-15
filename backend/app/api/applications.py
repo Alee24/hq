@@ -1,3 +1,4 @@
+import asyncio
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
@@ -507,7 +508,7 @@ async def execute_application_action(
 
     # Execute remotely over SSH as root if server node is attached
     if srv:
-        exec_res = execute_remote_command(srv, cmd, working_dir=app.root_path, timeout=30)
+        exec_res = await asyncio.to_thread(execute_remote_command, srv, cmd, working_dir=app.root_path, timeout=30)
         is_success = exec_res.get("success", False) or exec_res.get("exit_code", 1) == 0
         stdout = exec_res.get("stdout", "")
         stderr = exec_res.get("stderr", "")
@@ -724,7 +725,8 @@ async def inspect_application_container(
     if not srv:
         raise HTTPException(status_code=404, detail="Associated server node not found.")
 
-    data = inspect_remote_container(
+    data = await asyncio.to_thread(
+        inspect_remote_container,
         server=srv,
         app_name=app.name,
         service_name=app.service_name,
@@ -758,7 +760,8 @@ async def execute_app_docker_action(
     action = payload.get("action", "restart")
     container_target = payload.get("container_name") or app.service_name or app.name
 
-    res = execute_container_action(
+    res = await asyncio.to_thread(
+        execute_container_action,
         server=srv,
         container_name_or_id=container_target,
         action=action,
@@ -828,7 +831,8 @@ async def execute_component_action(
     action = payload.get("action", "restart").lower().strip()
     target_container = component_name.strip()
 
-    res = execute_container_action(
+    res = await asyncio.to_thread(
+        execute_container_action,
         server=srv,
         container_name_or_id=target_container,
         action=action,
@@ -922,7 +926,8 @@ async def execute_suite_action(
     combined_targets_str = " ".join(sanitized_targets)
 
     # Batch restart / action via Docker
-    batch_res = execute_container_action(
+    batch_res = await asyncio.to_thread(
+        execute_container_action,
         server=srv,
         container_name_or_id=combined_targets_str,
         action=action,
