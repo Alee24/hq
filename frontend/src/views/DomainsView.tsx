@@ -34,7 +34,9 @@ import {
   Wrench,
   Radio,
   Network,
-  FolderSearch
+  FolderSearch,
+  GitBranch,
+  Folder
 } from 'lucide-react';
 import { api } from '../api/client';
 import { DomainItem, Server } from '../types';
@@ -184,6 +186,12 @@ interface SoftwarePreset {
 
 const SOFTWARE_PRESETS: SoftwarePreset[] = [
   {
+    name: 'WordPress Clean Install',
+    desc: 'Downloads latest WordPress archive, extracts to current directory & sets www-data permissions',
+    cmd: 'curl -sS -O https://wordpress.org/latest.tar.gz && tar -xzf latest.tar.gz --strip-components=1 && rm latest.tar.gz && chown -R www-data:www-data . && ls -lah',
+    icon: '🌐',
+  },
+  {
     name: 'Node.js 20 LTS & NPM',
     desc: 'Installs NodeSource Node.js 20.x, npm package manager & essential build tools',
     cmd: 'curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && apt-get install -y nodejs',
@@ -322,6 +330,25 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId, initi
     timestamp: string;
   } | null>(null);
 
+  // In-Wizard Modal Terminal & Software Installer State
+  const [modalTerminalCommand, setModalTerminalCommand] = useState('');
+  const [modalTerminalWorkingDir, setModalTerminalWorkingDir] = useState('');
+  const [modalTerminalRunning, setModalTerminalRunning] = useState(false);
+  const [modalTerminalOutput, setModalTerminalOutput] = useState<{
+    command: string;
+    stdout: string;
+    stderr: string;
+    exit_code: number;
+    duration_ms: number;
+    working_dir: string;
+    server_name?: string;
+    server_ip?: string;
+    timestamp: string;
+    success?: boolean;
+  } | null>(null);
+  const [gitCloneUrl, setGitCloneUrl] = useState('');
+  const [showGitClonePrompt, setShowGitClonePrompt] = useState(false);
+
   const showToast = (text: string, type: 'success' | 'error' | 'info' = 'success') => {
     setToastMessage({ text, type });
     setTimeout(() => setToastMessage(null), 5000);
@@ -370,11 +397,21 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId, initi
     }
   };
 
-  const openDomainPage = async (domainId: string, initialTab: 'telemetry' | 'troubleshoot' | 'config' | 'logs' | 'terminal' = 'telemetry') => {
+  const openDomainPage = async (domainId: string, initialTab: 'telemetry' | 'troubleshoot' | 'config' | 'logs' | 'terminal' = 'telemetry', targetServerId?: string) => {
+    let targetSrvId = targetServerId;
+    if (!targetSrvId) {
+      const dom = domains.find(d => d.id === domainId);
+      if (dom) {
+        targetSrvId = dom.server_id || servers.find(s => s.public_ip === dom.server_ip)?.id;
+      }
+    }
+    if (targetSrvId) {
+      setSelectedServerId(targetSrvId);
+    }
     setSelectedDomainId(domainId);
     setActiveDomainTab(initialTab);
     window.scrollTo({ top: 0, behavior: 'smooth' });
-    await fetchDomainDeepDive(domainId);
+    await fetchDomainDeepDive(domainId, true);
   };
 
   const handleVerifyAllDns = async () => {
@@ -941,6 +978,12 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId, initi
       });
 
       setProvisionResult(res);
+      const effectiveDocRoot = res.document_root || (provisionDocRoot.trim() || `/var/www/${provisionDomainName.trim()}`);
+      setModalTerminalWorkingDir(effectiveDocRoot);
+      setTerminalWorkingDir(effectiveDocRoot);
+      if (res.server_id) {
+        setSelectedServerId(res.server_id);
+      }
       if (res.success) {
         showToast(res.message || `Domain '${provisionDomainName}' successfully provisioned!`, 'success');
       } else {
@@ -1008,6 +1051,69 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId, initi
       });
     } finally {
       setTerminalRunning(false);
+    }
+  };
+
+  const handleRunModalTerminalCommand = async (cmdToRun?: string, customDir?: string) => {
+    const cmd = (cmdToRun || modalTerminalCommand).trim();
+    if (!cmd) return;
+
+    const targetSrv = (provisionResult && servers.find(s => s.id === provisionResult.server_id || s.public_ip === provisionResult.server_ip))
+      || servers.find(s => s.id === provisionServerId)
+      || selectedServer
+      || servers[0];
+
+    if (!targetSrv) {
+      showToast('No active VPS server identified for terminal execution.', 'error');
+      return;
+    }
+
+    const docRootFallback = provisionResult?.document_root || (provisionDocRoot.trim() || (provisionDomainName.trim() ? `/var/www/${provisionDomainName.trim()}` : '/var/www'));
+    const effectiveDir = customDir || modalTerminalWorkingDir || docRootFallback;
+
+    setModalTerminalRunning(true);
+    try {
+      const res = await api.executeDomainTerminal({
+        server_id: targetSrv.id,
+        domain_id: provisionResult?.domain_id,
+        command: cmd,
+        working_dir: effectiveDir,
+      });
+
+      setModalTerminalOutput({
+        command: res.command,
+        stdout: res.stdout,
+        stderr: res.stderr,
+        exit_code: res.exit_code,
+        duration_ms: res.duration_ms,
+        working_dir: res.working_dir,
+        server_name: res.server_name,
+        server_ip: res.server_ip,
+        timestamp: res.timestamp,
+        success: res.exit_code === 0,
+      });
+
+      if (!cmdToRun) {
+        setModalTerminalCommand('');
+      }
+
+      showToast(`Command executed (Exit ${res.exit_code}) in ${res.duration_ms}ms`, res.exit_code === 0 ? 'success' : 'error');
+    } catch (err: any) {
+      showToast(err.message || 'Terminal command execution failed', 'error');
+      setModalTerminalOutput({
+        command: cmd,
+        stdout: '',
+        stderr: err.message || 'Execution error',
+        exit_code: 1,
+        duration_ms: 100,
+        working_dir: effectiveDir,
+        server_name: targetSrv.name,
+        server_ip: targetSrv.public_ip,
+        timestamp: new Date().toISOString(),
+        success: false,
+      });
+    } finally {
+      setModalTerminalRunning(false);
     }
   };
 
@@ -2835,16 +2941,18 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId, initi
                     setProvisionResult(null);
                     setProvisionDomainName('');
                     setProvisionDocRoot('');
+                    setModalTerminalOutput(null);
+                    setShowGitClonePrompt(false);
                   }}
                 >
                   Provision Another
                 </Button>
                 <Button
-                  variant="primary"
+                  variant="secondary"
                   onClick={() => {
                     setProvisionModalOpen(false);
                     if (provisionResult.domain_id) {
-                      openDomainPage(provisionResult.domain_id, 'telemetry');
+                      openDomainPage(provisionResult.domain_id, 'telemetry', provisionResult.server_id);
                     }
                   }}
                   leftIcon={<ChevronRight size={14} />}
@@ -2852,11 +2960,12 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId, initi
                   Open Domain Control
                 </Button>
                 <Button
-                  variant="secondary"
+                  variant="primary"
+                  className="bg-emerald-600 hover:bg-emerald-500 text-white font-semibold shadow-md border-emerald-500/30"
                   onClick={() => {
                     setProvisionModalOpen(false);
                     if (provisionResult.domain_id) {
-                      openDomainPage(provisionResult.domain_id, 'terminal');
+                      openDomainPage(provisionResult.domain_id, 'terminal', provisionResult.server_id);
                     }
                   }}
                   leftIcon={<Terminal size={14} />}
@@ -3029,6 +3138,353 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId, initi
                 </pre>
               </div>
             )}
+
+            {/* Interactive Software Installation & Live Root Terminal */}
+            <div className="p-4 rounded-xl border border-emerald-500/30 bg-slate-950/80 shadow-lg space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800/80 pb-3">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
+                    <Terminal size={16} />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="font-semibold text-xs text-white">Software Installer & Root Terminal Console</span>
+                      <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-semibold">
+                        LIVE SSH ROOT
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-400">
+                      Deploy your software stack or run arbitrary shell commands on {provisionResult.server_name}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 text-xs">
+                  <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-900 border border-slate-800 text-[11px] font-mono text-slate-300">
+                    <ServerIcon size={12} className="text-brand-400" />
+                    <span>root@{provisionResult.server_ip}</span>
+                  </div>
+                  <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-900 border border-slate-800 text-[11px] font-mono text-emerald-300 max-w-[260px] truncate" title={modalTerminalWorkingDir || provisionResult.document_root || `/var/www/${provisionResult.domain_name}`}>
+                    <Folder size={12} className="text-emerald-400 shrink-0" />
+                    <span className="truncate">{modalTerminalWorkingDir || provisionResult.document_root || `/var/www/${provisionResult.domain_name}`}</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Quick Software Installation Presets */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+                    <Sparkles size={12} className="text-emerald-400" />
+                    <span>1-Click Software Installation Presets</span>
+                  </span>
+                  <span className="text-[10px] text-slate-500">Executes directly inside DocumentRoot</span>
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  {/* Preset 1: Git Clone Repo */}
+                  <button
+                    type="button"
+                    onClick={() => setShowGitClonePrompt(!showGitClonePrompt)}
+                    className={`p-2.5 rounded-lg border text-left transition-all ${
+                      showGitClonePrompt
+                        ? 'bg-brand-500/10 border-brand-500 text-white shadow-sm'
+                        : 'bg-slate-900/60 border-slate-800 text-slate-300 hover:border-slate-700 hover:bg-slate-900'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-xs font-semibold flex items-center gap-1.5 text-white">
+                        <GitBranch size={13} className="text-brand-400" />
+                        <span>Git Clone Repo</span>
+                      </span>
+                    </div>
+                    <p className="text-[10px] text-slate-400 line-clamp-1">Clone any public/private repo</p>
+                  </button>
+
+                  {/* Preset 2: WordPress Clean Install */}
+                  <button
+                    type="button"
+                    disabled={modalTerminalRunning}
+                    onClick={() => handleRunModalTerminalCommand('curl -sS -O https://wordpress.org/latest.tar.gz && tar -xzf latest.tar.gz --strip-components=1 && rm latest.tar.gz && chown -R www-data:www-data . && ls -lah')}
+                    className="p-2.5 rounded-lg border border-slate-800 bg-slate-900/60 hover:bg-slate-900 hover:border-slate-700 text-left transition-all group disabled:opacity-50"
+                  >
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-xs font-semibold flex items-center gap-1.5 text-white">
+                        <Globe size={13} className="text-blue-400" />
+                        <span>WordPress</span>
+                      </span>
+                    </div>
+                    <p className="text-[10px] text-slate-400 line-clamp-1">Auto-download & extract core</p>
+                  </button>
+
+                  {/* Preset 3: Node.js 20 & PM2 */}
+                  <button
+                    type="button"
+                    disabled={modalTerminalRunning}
+                    onClick={() => handleRunModalTerminalCommand('curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && apt-get install -y nodejs && npm install -g pm2')}
+                    className="p-2.5 rounded-lg border border-slate-800 bg-slate-900/60 hover:bg-slate-900 hover:border-slate-700 text-left transition-all group disabled:opacity-50"
+                  >
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-xs font-semibold flex items-center gap-1.5 text-white">
+                        <span className="text-xs">📦</span>
+                        <span>Node.js 20 & PM2</span>
+                      </span>
+                    </div>
+                    <p className="text-[10px] text-slate-400 line-clamp-1">Node 20 LTS + npm + PM2</p>
+                  </button>
+
+                  {/* Preset 4: PHP 8.2 & Composer */}
+                  <button
+                    type="button"
+                    disabled={modalTerminalRunning}
+                    onClick={() => handleRunModalTerminalCommand('apt-get update -qq && apt-get install -y php8.2-fpm php8.2-cli php8.2-mysql php8.2-curl php8.2-mbstring php8.2-xml php8.2-zip && curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer')}
+                    className="p-2.5 rounded-lg border border-slate-800 bg-slate-900/60 hover:bg-slate-900 hover:border-slate-700 text-left transition-all group disabled:opacity-50"
+                  >
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-xs font-semibold flex items-center gap-1.5 text-white">
+                        <span className="text-xs">🐘</span>
+                        <span>PHP 8.2 & Composer</span>
+                      </span>
+                    </div>
+                    <p className="text-[10px] text-slate-400 line-clamp-1">FPM, extensions & Composer</p>
+                  </button>
+
+                  {/* Preset 5: Python 3 & Venv */}
+                  <button
+                    type="button"
+                    disabled={modalTerminalRunning}
+                    onClick={() => handleRunModalTerminalCommand('apt-get update -qq && apt-get install -y python3 python3-pip python3-venv python3-dev')}
+                    className="p-2.5 rounded-lg border border-slate-800 bg-slate-900/60 hover:bg-slate-900 hover:border-slate-700 text-left transition-all group disabled:opacity-50"
+                  >
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-xs font-semibold flex items-center gap-1.5 text-white">
+                        <span className="text-xs">🐍</span>
+                        <span>Python 3 & Venv</span>
+                      </span>
+                    </div>
+                    <p className="text-[10px] text-slate-400 line-clamp-1">Python3, pip & venv</p>
+                  </button>
+
+                  {/* Preset 6: Docker Engine */}
+                  <button
+                    type="button"
+                    disabled={modalTerminalRunning}
+                    onClick={() => handleRunModalTerminalCommand('curl -fsSL https://get.docker.com | sh && apt-get install -y docker-compose-plugin')}
+                    className="p-2.5 rounded-lg border border-slate-800 bg-slate-900/60 hover:bg-slate-900 hover:border-slate-700 text-left transition-all group disabled:opacity-50"
+                  >
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-xs font-semibold flex items-center gap-1.5 text-white">
+                        <span className="text-xs">🐳</span>
+                        <span>Docker & Compose</span>
+                      </span>
+                    </div>
+                    <p className="text-[10px] text-slate-400 line-clamp-1">Official Docker stack</p>
+                  </button>
+
+                  {/* Preset 7: Fix Permissions */}
+                  <button
+                    type="button"
+                    disabled={modalTerminalRunning}
+                    onClick={() => handleRunModalTerminalCommand('chown -R www-data:www-data . && chmod -R 755 . && echo "Permissions repaired: www-data:www-data (755/644)"')}
+                    className="p-2.5 rounded-lg border border-slate-800 bg-slate-900/60 hover:bg-slate-900 hover:border-slate-700 text-left transition-all group disabled:opacity-50"
+                  >
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-xs font-semibold flex items-center gap-1.5 text-white">
+                        <Wrench size={13} className="text-emerald-400" />
+                        <span>Fix Permissions</span>
+                      </span>
+                    </div>
+                    <p className="text-[10px] text-slate-400 line-clamp-1">chown www-data:www-data</p>
+                  </button>
+
+                  {/* Preset 8: Inspect Directory */}
+                  <button
+                    type="button"
+                    disabled={modalTerminalRunning}
+                    onClick={() => handleRunModalTerminalCommand('ls -lah')}
+                    className="p-2.5 rounded-lg border border-slate-800 bg-slate-900/60 hover:bg-slate-900 hover:border-slate-700 text-left transition-all group disabled:opacity-50"
+                  >
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-xs font-semibold flex items-center gap-1.5 text-white">
+                        <FolderSearch size={13} className="text-amber-400" />
+                        <span>List Files</span>
+                      </span>
+                    </div>
+                    <p className="text-[10px] text-slate-400 line-clamp-1">ls -lah working directory</p>
+                  </button>
+                </div>
+
+                {/* Git Clone Expandable Form */}
+                {showGitClonePrompt && (
+                  <div className="p-3 rounded-lg border border-brand-500/30 bg-brand-950/20 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-semibold text-brand-300 flex items-center gap-1.5">
+                        <GitBranch size={13} />
+                        <span>Clone Git Repository directly into DocumentRoot</span>
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setShowGitClonePrompt(false)}
+                        className="text-slate-400 hover:text-white"
+                      >
+                        <X size={14} />
+                      </button>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="text"
+                        value={gitCloneUrl}
+                        onChange={(e) => setGitCloneUrl(e.target.value)}
+                        placeholder="https://github.com/organization/repo.git or git@..."
+                        className="flex-1 px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-xs font-mono text-white placeholder-slate-500 focus:outline-none focus:border-brand-500"
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && gitCloneUrl.trim() && !modalTerminalRunning) {
+                            e.preventDefault();
+                            handleRunModalTerminalCommand(`git clone ${gitCloneUrl.trim()} . && chown -R www-data:www-data . && ls -lah`);
+                          }
+                        }}
+                      />
+                      <Button
+                        variant="primary"
+                        disabled={!gitCloneUrl.trim() || modalTerminalRunning}
+                        isLoading={modalTerminalRunning}
+                        onClick={() => {
+                          if (gitCloneUrl.trim()) {
+                            handleRunModalTerminalCommand(`git clone ${gitCloneUrl.trim()} . && chown -R www-data:www-data . && ls -lah`);
+                          }
+                        }}
+                      >
+                        Clone into DocRoot
+                      </Button>
+                    </div>
+                    <p className="text-[10px] text-slate-400">
+                      Files will be cloned into <code className="text-emerald-400 font-mono">{modalTerminalWorkingDir || provisionResult.document_root}</code> and automatically assigned to <code className="text-brand-300 font-mono">www-data</code>.
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              {/* Shell Command Runner Bar */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between text-[11px]">
+                  <span className="font-semibold text-slate-300 flex items-center gap-1.5">
+                    <Terminal size={12} className="text-emerald-400" />
+                    <span>Run Shell Command on VPS</span>
+                  </span>
+                  <div className="flex items-center gap-1.5 text-slate-400">
+                    <span>Working Dir:</span>
+                    <input
+                      type="text"
+                      value={modalTerminalWorkingDir}
+                      onChange={(e) => setModalTerminalWorkingDir(e.target.value)}
+                      placeholder={provisionResult.document_root || '/var/www'}
+                      className="px-2 py-0.5 bg-slate-900 border border-slate-800 rounded font-mono text-[11px] text-emerald-300 w-52 focus:outline-none focus:border-brand-500"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <div className="flex-1 relative flex items-center">
+                    <span className="absolute left-3 font-mono text-xs text-emerald-400 font-bold select-none">$</span>
+                    <input
+                      type="text"
+                      value={modalTerminalCommand}
+                      onChange={(e) => setModalTerminalCommand(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && modalTerminalCommand.trim() && !modalTerminalRunning) {
+                          e.preventDefault();
+                          handleRunModalTerminalCommand();
+                        }
+                      }}
+                      placeholder="e.g. npm install && pm2 start server.js --name app or composer install or ls -lah"
+                      className="w-full pl-7 pr-3 py-2 bg-black/90 border border-slate-800 rounded-lg text-xs font-mono text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition-colors"
+                      disabled={modalTerminalRunning}
+                    />
+                  </div>
+                  <Button
+                    variant="primary"
+                    disabled={!modalTerminalCommand.trim() || modalTerminalRunning}
+                    isLoading={modalTerminalRunning}
+                    onClick={() => handleRunModalTerminalCommand()}
+                    className="bg-emerald-600 hover:bg-emerald-500 text-white font-semibold shadow-sm border-emerald-500/30 whitespace-nowrap"
+                    leftIcon={<Play size={13} />}
+                  >
+                    Run on VPS
+                  </Button>
+                </div>
+              </div>
+
+              {/* Execution Progress Indicator */}
+              {modalTerminalRunning && (
+                <div className="p-3 rounded-lg border border-emerald-500/30 bg-emerald-950/20 flex items-center justify-between text-xs text-emerald-300 animate-pulse">
+                  <div className="flex items-center gap-2">
+                    <RefreshCw size={14} className="animate-spin text-emerald-400" />
+                    <span>Executing command on <strong>{provisionResult.server_name}</strong> as root...</span>
+                  </div>
+                  <span className="text-[10px] font-mono text-emerald-400">Streaming output...</span>
+                </div>
+              )}
+
+              {/* Live Terminal Output Console */}
+              {modalTerminalOutput && (
+                <div className="rounded-lg border border-slate-800 overflow-hidden bg-black/90 space-y-0">
+                  <div className="px-3 py-2 bg-slate-900/90 border-b border-slate-800 flex flex-wrap items-center justify-between gap-2 text-xs">
+                    <div className="flex items-center gap-2">
+                      <span className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded ${
+                        modalTerminalOutput.exit_code === 0
+                          ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30'
+                          : 'bg-rose-500/10 text-rose-400 border border-rose-500/30'
+                      }`}>
+                        Exit {modalTerminalOutput.exit_code}
+                      </span>
+                      <span className="text-[11px] font-mono text-slate-400 truncate max-w-xs sm:max-w-md">
+                        $ {modalTerminalOutput.command}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] font-mono text-slate-500">
+                        {modalTerminalOutput.duration_ms}ms
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => handleCopyText('modal_terminal_out', `${modalTerminalOutput.stdout}\n${modalTerminalOutput.stderr}`, 'output')}
+                        className="h-6 px-2 text-[10px] rounded bg-slate-800 hover:bg-slate-700 text-slate-300 inline-flex items-center gap-1 transition-colors"
+                      >
+                        <Copy size={11} />
+                        <span>Copy Output</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setModalTerminalOutput(null)}
+                        className="h-6 px-1.5 text-[10px] rounded hover:bg-slate-800 text-slate-400 hover:text-white"
+                        title="Clear console output"
+                      >
+                        <X size={12} />
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="p-3 font-mono text-[11px] max-h-60 overflow-y-auto overflow-x-auto leading-relaxed select-text space-y-1">
+                    {modalTerminalOutput.stdout && (
+                      <div className="text-emerald-400 whitespace-pre-wrap">
+                        {modalTerminalOutput.stdout}
+                      </div>
+                    )}
+                    {modalTerminalOutput.stderr && (
+                      <div className="text-amber-300 whitespace-pre-wrap">
+                        {modalTerminalOutput.stderr}
+                      </div>
+                    )}
+                    {!modalTerminalOutput.stdout && !modalTerminalOutput.stderr && (
+                      <div className="text-slate-500 italic">
+                        Command completed successfully with no stdout/stderr output.
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         ) : (
           <form id="ai-domain-provision-form" onSubmit={handleExecuteProvision} className="space-y-4 text-xs">
