@@ -99,6 +99,8 @@ interface DomainDeepDiveData {
   ssl_status: string;
   ssl_issuer?: string;
   days_remaining: number;
+  is_default_vhost?: boolean;
+  default_vhost_port?: number | null;
 }
 
 interface TroubleshootToolDef {
@@ -291,6 +293,10 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId, initi
   const [teardownModalOpen, setTeardownModalOpen] = useState(false);
   const [selectedDomainForTeardown, setSelectedDomainForTeardown] = useState<DomainItem | null>(null);
   const [teardownRunning, setTeardownRunning] = useState(false);
+  const [teardownDeleteDocRoot, setTeardownDeleteDocRoot] = useState(false);
+  const [teardownDeleteApp, setTeardownDeleteApp] = useState(true);
+  const [teardownConfirmInput, setTeardownConfirmInput] = useState('');
+  const [restartingWebServerId, setRestartingWebServerId] = useState<string | null>(null);
 
   // Add Domain Modal (Legacy)
   const [createModalOpen, setCreateModalOpen] = useState(false);
@@ -769,23 +775,73 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId, initi
     const target = selectedDomainForTeardown;
     setTeardownRunning(true);
     try {
-      const res = await api.deleteDomainFromServer(target.id);
+      const deepDive = deepDives[target.id];
+      const cfgPath = deepDive?.config_file_path;
+      const res = await api.deleteDomainFromServer(target.id, {
+        delete_document_root: teardownDeleteDocRoot,
+        config_file_path: cfgPath,
+        delete_app: teardownDeleteApp
+      });
       if (res.success) {
         showToast(res.message || `Domain '${target.domain_name}' and all server configurations permanently removed.`, 'success');
       } else {
         showToast(res.message || 'Teardown reported warnings on server', 'error');
       }
+      setAuditExecutionData({
+        command: `teardown-vhost ${target.domain_name} (delete_docroot=${teardownDeleteDocRoot})`,
+        stdout: res.stdout || res.output || res.message || '',
+        stderr: res.stderr || '',
+        exit_code: res.success ? 0 : 1,
+        duration_ms: 250,
+        server_id: target.server_id || selectedServer?.id,
+        server_name: target.server_name || selectedServer?.name,
+        context_type: 'DOMAIN_TEARDOWN',
+        title: `Permanent Teardown: ${target.domain_name}`
+      });
+      setAuditModalOpen(true);
+
       setDomains(prev => prev.filter(d => d.id !== target.id));
       if (selectedDomainId === target.id) {
         setSelectedDomainId(null);
       }
       setTeardownModalOpen(false);
       setSelectedDomainForTeardown(null);
+      setTeardownDeleteDocRoot(false);
+      setTeardownConfirmInput('');
       await loadData();
     } catch (err: any) {
       showToast(err.message || 'Failed to remove domain configuration from server', 'error');
     } finally {
       setTeardownRunning(false);
+    }
+  };
+
+  const handleRestartWebServer = async (d: DomainItem) => {
+    setRestartingWebServerId(d.id);
+    try {
+      const res = await api.restartDomainWebServer(d.id);
+      if (res.success) {
+        showToast(res.message || `Web server restarted successfully for ${d.domain_name}`, 'success');
+      } else {
+        showToast(res.message || 'Web server restart reported warnings', 'error');
+      }
+      setAuditExecutionData({
+        command: res.command || 'systemctl restart (web-stack)',
+        stdout: res.stdout || res.message || '',
+        stderr: res.stderr || '',
+        exit_code: res.success ? 0 : 1,
+        duration_ms: res.duration_ms || 150,
+        server_id: d.server_id || selectedServer?.id,
+        server_name: d.server_name || selectedServer?.name,
+        context_type: 'WEB_SERVER_RESTART',
+        title: `Web Server Restart: ${d.domain_name} (${res.web_server_type || 'daemon'})`
+      });
+      setAuditModalOpen(true);
+      await fetchDomainDeepDive(d.id, true);
+    } catch (err: any) {
+      showToast(err.message || 'Failed to restart web server', 'error');
+    } finally {
+      setRestartingWebServerId(null);
     }
   };
 
@@ -1510,6 +1566,15 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId, initi
                           <ExternalLink size={11} />
                         </a>
                         <StatusBadge status={d.ssl_status} size="sm" />
+                        {(d.is_default_vhost || deepDive?.is_default_vhost) && (
+                          <span
+                            className="h-7 px-2.5 rounded-lg bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[11px] font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 shadow-sm"
+                            title="This domain is configured as the server's default catch-all website on Port 80 / 443"
+                          >
+                            <Globe size={11} className="text-amber-400" />
+                            <span>DEFAULT SERVER VHOST ({deepDive?.default_vhost_port || d.default_vhost_port ? `PORT ${deepDive?.default_vhost_port || d.default_vhost_port}` : 'CATCH-ALL'})</span>
+                          </span>
+                        )}
                       </div>
                       <p className="text-xs text-slate-400">
                         Application: <strong className="text-slate-200">{d.application_name || deepDive?.application_name || 'Web VirtualHost'}</strong>
@@ -1518,6 +1583,11 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId, initi
                         {deepDive?.config_file_path && (
                           <>
                             {' · '}Config: <span className="mono text-slate-300">{deepDive.config_file_path}</span>
+                          </>
+                        )}
+                        {deepDive?.root_path && (
+                          <>
+                            {' · '}DocRoot: <span className="mono text-emerald-300">{deepDive.root_path}</span>
                           </>
                         )}
                       </p>
@@ -1553,9 +1623,21 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId, initi
                       disabled={!!serviceActionLoading[d.id]}
                       onClick={() => handleServiceAction(d, 'restart')}
                       className="h-8 px-3 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors disabled:opacity-50"
+                      title="Restart domain specific service or reload virtualhost"
                     >
                       <RotateCcw size={13} className={serviceActionLoading[d.id] === 'restart' ? 'animate-spin text-brand-400 shrink-0' : 'text-brand-400 shrink-0'} />
                       <span>Restart Service</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={restartingWebServerId === d.id}
+                      onClick={() => handleRestartWebServer(d)}
+                      className="h-8 px-3 rounded-lg bg-indigo-950/80 hover:bg-indigo-900 text-indigo-200 border border-indigo-700/70 text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors disabled:opacity-50"
+                      title="Restart web server daemon (Apache2 / Nginx) and PHP-FPM workers on hosting VPS"
+                    >
+                      <RotateCcw size={13} className={restartingWebServerId === d.id ? 'animate-spin text-indigo-400 shrink-0' : 'text-indigo-400 shrink-0'} />
+                      <span>{restartingWebServerId === d.id ? 'Restarting...' : 'Restart Web Server'}</span>
                     </button>
 
                     <button
@@ -2760,7 +2842,7 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId, initi
                     >
                       {/* Column 1: Domain Name & App */}
                       <td className="py-3.5 px-4 min-w-0">
-                        <div className="flex items-center gap-2 min-w-0">
+                        <div className="flex items-center gap-2 min-w-0 flex-wrap">
                           <span className="mono font-bold text-white group-hover:text-brand-400 transition-colors text-[13px] truncate">
                             {d.domain_name}
                           </span>
@@ -2774,6 +2856,11 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId, initi
                           >
                             <ExternalLink size={12} />
                           </a>
+                          {d.is_default_vhost && (
+                            <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 whitespace-nowrap">
+                              DEFAULT ({d.default_vhost_port ? `:${d.default_vhost_port}` : 'VHOST'})
+                            </span>
+                          )}
                         </div>
                         <div className="text-[11px] text-slate-400 truncate mt-0.5">
                           {d.application_name || 'Web VirtualHost'}
@@ -3770,29 +3857,138 @@ export const DomainsView: React.FC<DomainsViewProps> = ({ initialServerId, initi
 
       {/* Delete / Teardown Configuration from Server Modal */}
       {selectedDomainForTeardown && (
-        <ConfirmationModal
+        <ModalShell
           isOpen={teardownModalOpen}
-          title="Tear Down & Delete Configuration from Server"
-          message={`Are you sure you want to permanently delete '${selectedDomainForTeardown.domain_name}' and all associated configurations from server (${selectedDomainForTeardown.server_ip})?
-
-This will permanently:
-1. Safely archive current configurations to /var/backups/hq-deleted-configs/
-2. Permanently delete all Apache VirtualHost files (/etc/apache2/sites-enabled/ & sites-available/)
-3. Permanently delete all Nginx server block configs (/etc/nginx/sites-enabled/, sites-available/, and conf.d/)
-4. Purge all Certbot Let's Encrypt certificates and renewal configs (/etc/letsencrypt/renewal/, live/, archive/)
-5. Purge local /etc/hosts domain mappings
-6. Run configuration syntax checks (apache2ctl configtest / nginx -t) and reload web daemons
-7. Permanently remove the domain record and all associations from HQ.`}
-          confirmKeyword="DELETE"
-          confirmButtonText={teardownRunning ? 'Purging from Server...' : 'Permanently Delete from Server'}
-          isDestructive={true}
-          isLoading={teardownRunning}
-          onConfirm={executeConfirmedTeardown}
           onClose={() => {
-            setTeardownModalOpen(false);
-            setSelectedDomainForTeardown(null);
+            if (!teardownRunning) {
+              setTeardownModalOpen(false);
+              setSelectedDomainForTeardown(null);
+              setTeardownConfirmInput('');
+              setTeardownDeleteDocRoot(false);
+            }
           }}
-        />
+          title={`Permanent Server Teardown: ${selectedDomainForTeardown.domain_name}`}
+          icon={Trash2}
+          iconClassName="text-rose-400 bg-rose-950/80 border-rose-800/80"
+          size="xl"
+          footer={
+            <div className="flex items-center justify-end gap-3 w-full">
+              <button
+                type="button"
+                disabled={teardownRunning}
+                onClick={() => {
+                  setTeardownModalOpen(false);
+                  setSelectedDomainForTeardown(null);
+                  setTeardownConfirmInput('');
+                  setTeardownDeleteDocRoot(false);
+                }}
+                className="px-4 py-2 text-xs font-semibold text-slate-300 hover:text-white bg-slate-800 hover:bg-slate-700 rounded-lg transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={teardownRunning || teardownConfirmInput.trim().toUpperCase() !== 'DELETE'}
+                onClick={executeConfirmedTeardown}
+                className="px-4 py-2 text-xs font-semibold text-white bg-rose-600 hover:bg-rose-500 disabled:opacity-40 disabled:hover:bg-rose-600 rounded-lg shadow-sm transition-colors flex items-center gap-1.5"
+              >
+                {teardownRunning && <RefreshCw size={13} className="animate-spin" />}
+                <span>{teardownRunning ? 'Purging from Server...' : 'Permanently Delete from Server'}</span>
+              </button>
+            </div>
+          }
+        >
+          <div className="space-y-4 text-xs text-slate-300">
+            <div className="p-3.5 rounded-xl bg-rose-950/40 border border-rose-800/60 text-rose-200 space-y-1.5">
+              <div className="flex items-center gap-2 font-bold text-rose-300">
+                <AlertTriangle size={15} className="text-rose-400 shrink-0" />
+                <span>Destructive Remote Teardown</span>
+              </div>
+              <p className="text-[11px] leading-relaxed">
+                This operation connects to <strong className="text-white">{selectedDomainForTeardown.server_name || selectedDomainForTeardown.server_ip}</strong> over root SSH and permanently strips the live VirtualHost configuration, unlinks active web server symlinks, purges SSL certificates, re-validates server syntax, and reloads the web daemon.
+              </p>
+            </div>
+
+            <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 space-y-2 mono text-[11px]">
+              <div className="flex items-center justify-between text-slate-400 border-b border-slate-800/80 pb-1.5">
+                <span>Target Domain:</span>
+                <span className="text-white font-bold">{selectedDomainForTeardown.domain_name}</span>
+              </div>
+              <div className="flex items-center justify-between text-slate-400 border-b border-slate-800/80 pb-1.5">
+                <span>Target Server:</span>
+                <span className="text-brand-300 font-bold">{selectedDomainForTeardown.server_ip}</span>
+              </div>
+              <div className="flex items-center justify-between text-slate-400 border-b border-slate-800/80 pb-1.5">
+                <span>Detected Configuration:</span>
+                <span className="text-slate-200 truncate max-w-[280px]" title={deepDives[selectedDomainForTeardown.id]?.config_file_path || 'Auto-discovered by domain/ServerName'}>
+                  {deepDives[selectedDomainForTeardown.id]?.config_file_path || '/etc/apache2/sites-enabled/*.conf'}
+                </span>
+              </div>
+              <div className="flex items-center justify-between text-slate-400">
+                <span>Detected DocumentRoot:</span>
+                <span className="text-emerald-300 font-bold truncate max-w-[280px]" title={deepDives[selectedDomainForTeardown.id]?.root_path || 'N/A'}>
+                  {deepDives[selectedDomainForTeardown.id]?.root_path || 'N/A (Reverse Proxy / Gateway)'}
+                </span>
+              </div>
+            </div>
+
+            {/* Checkbox Options */}
+            <div className="space-y-3 pt-1">
+              <label className="flex items-start gap-2.5 p-3 rounded-xl bg-slate-950 border border-slate-800 hover:border-slate-700 cursor-pointer transition-colors">
+                <input
+                  type="checkbox"
+                  checked={teardownDeleteDocRoot}
+                  onChange={(e) => setTeardownDeleteDocRoot(e.target.checked)}
+                  className="mt-0.5 rounded border-slate-700 text-rose-600 focus:ring-rose-500 bg-slate-900"
+                />
+                <div className="space-y-1">
+                  <span className="font-semibold text-slate-200">
+                    Also permanently delete website DocumentRoot directory from server
+                  </span>
+                  <p className="text-[11px] text-slate-400">
+                    Target: <code className="text-amber-300 bg-slate-900 px-1 py-0.5 rounded">{deepDives[selectedDomainForTeardown.id]?.root_path || 'Detected site path'}</code>.
+                    {teardownDeleteDocRoot && (
+                      <span className="block text-amber-400 font-semibold mt-1">
+                        ⚠️ WARNING: All application files and assets in this folder will be permanently deleted from the VPS. System root directories are strictly guarded.
+                      </span>
+                    )}
+                  </p>
+                </div>
+              </label>
+
+              <label className="flex items-start gap-2.5 p-3 rounded-xl bg-slate-950 border border-slate-800 hover:border-slate-700 cursor-pointer transition-colors">
+                <input
+                  type="checkbox"
+                  checked={teardownDeleteApp}
+                  onChange={(e) => setTeardownDeleteApp(e.target.checked)}
+                  className="mt-0.5 rounded border-slate-700 text-brand-600 focus:ring-brand-500 bg-slate-900"
+                />
+                <div className="space-y-1">
+                  <span className="font-semibold text-slate-200">
+                    Also remove associated Application record from HQ database
+                  </span>
+                  <p className="text-[11px] text-slate-400">
+                    Removes the linked application from monitoring, dashboards, and automated Git updates.
+                  </p>
+                </div>
+              </label>
+            </div>
+
+            {/* Confirmation input box */}
+            <div className="space-y-1.5 pt-1">
+              <label className="text-[11px] font-semibold text-slate-300">
+                To confirm permanent server teardown, type <span className="mono font-bold text-rose-400">DELETE</span> below:
+              </label>
+              <input
+                type="text"
+                value={teardownConfirmInput}
+                onChange={(e) => setTeardownConfirmInput(e.target.value)}
+                placeholder="DELETE"
+                className="w-full h-9 px-3 rounded-lg bg-slate-950 border border-slate-700 text-white font-mono text-xs focus:outline-none focus:border-rose-500"
+              />
+            </div>
+          </div>
+        </ModalShell>
       )}
 
       {/* Delete Domain from DB Confirmation Modal */}

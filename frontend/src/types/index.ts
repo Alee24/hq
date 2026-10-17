@@ -150,6 +150,8 @@ export interface DomainItem {
   redirect_status: string;
   auto_renew: boolean;
   last_checked_at: string;
+  is_default_vhost?: boolean;
+  default_vhost_port?: number | null;
 }
 
 export interface DeploymentItem {

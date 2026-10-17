@@ -144,6 +144,9 @@ export const ServerDetailView: React.FC<ServerDetailViewProps> = ({
   const [scanningWebsites, setScanningWebsites] = useState(false);
   const [scanNotice, setScanNotice] = useState<string | null>(null);
   const [restartingApp, setRestartingApp] = useState<string | null>(null);
+  const [defaultWebsiteData, setDefaultWebsiteData] = useState<any | null>(null);
+  const [loadingDefaultWebsite, setLoadingDefaultWebsite] = useState(false);
+  const [restartingWebServer, setRestartingWebServer] = useState(false);
 
   // Modals & Notifications
   const [terminalModalOpen, setTerminalModalOpen] = useState(false);
@@ -174,6 +177,7 @@ export const ServerDetailView: React.FC<ServerDetailViewProps> = ({
       loadDatabases();
       loadDockerSuite();
       loadTerminalLogs();
+      loadDefaultWebsite();
     } catch (err: any) {
       console.error(err);
       showToast(err.message || 'Failed to load server details', 'error');
@@ -511,6 +515,50 @@ export const ServerDetailView: React.FC<ServerDetailViewProps> = ({
       showToast(err.message || `Failed to restart ${appName}`, 'error');
     } finally {
       setRestartingApp(null);
+    }
+  };
+
+  // Server Default Catch-All Website Loader
+  const loadDefaultWebsite = async () => {
+    setLoadingDefaultWebsite(true);
+    try {
+      const res = await api.getServerDefaultWebsite(serverId);
+      setDefaultWebsiteData(res);
+    } catch (err: any) {
+      console.error('Failed to load server default website:', err);
+    } finally {
+      setLoadingDefaultWebsite(false);
+    }
+  };
+
+  // Restart Apache2 / Nginx Web Server Service
+  const handleRestartWebServer = async () => {
+    setRestartingWebServer(true);
+    try {
+      const res = await api.restartServerWebService(serverId);
+      setAuditExecutionData({
+        command: res.command || `systemctl restart ${res.web_server_type || 'web service'}`,
+        stdout: res.stdout || res.message,
+        stderr: res.stderr || '',
+        exit_code: res.success ? 0 : 1,
+        duration_ms: 1200,
+        server_id: server?.id || serverId,
+        server_name: server?.name,
+        server_ip: server?.public_ip,
+        context_type: 'WEB_SERVER_RESTART',
+        title: `Web Service Restart (${res.web_server_type?.toUpperCase() || 'Apache/Nginx'})`
+      });
+      setAuditModalOpen(true);
+      if (res.success) {
+        showToast(res.message || 'Web service restarted successfully', 'success');
+      } else {
+        showToast(res.message || 'Web service restart encountered issues', 'error');
+      }
+      loadDefaultWebsite();
+    } catch (err: any) {
+      showToast(err.message || 'Failed to restart web service', 'error');
+    } finally {
+      setRestartingWebServer(false);
     }
   };
 
@@ -991,7 +1039,10 @@ export const ServerDetailView: React.FC<ServerDetailViewProps> = ({
         </button>
 
         <button
-          onClick={() => setActiveTab('websites')}
+          onClick={() => {
+            setActiveTab('websites');
+            if (!defaultWebsiteData) loadDefaultWebsite();
+          }}
           className={`px-4 py-2.5 border-b-2 flex items-center gap-2 transition-colors whitespace-nowrap ${
             activeTab === 'websites'
               ? 'border-brand-500 text-white font-semibold'
@@ -2500,6 +2551,199 @@ export const ServerDetailView: React.FC<ServerDetailViewProps> = ({
       {/* TAB 6: HOSTED WEBSITES & VIRTUALHOSTS */}
       {activeTab === 'websites' && (
         <div className="space-y-6">
+          {/* SERVER DEFAULT CATCH-ALL WEBSITE & WEB SERVICE CONTROLS */}
+          <div className="p-5 bg-gradient-to-br from-slate-900 via-slate-900/90 to-slate-950 border border-slate-800 rounded-xl shadow-lg space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-4">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 rounded-xl bg-brand-500/10 border border-brand-500/30 text-brand-400 shrink-0">
+                  <Globe size={20} />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-sm font-bold text-white">Default Server Website & Catch-All VirtualHosts</h3>
+                    {defaultWebsiteData?.has_web_server && (
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-950/80 text-emerald-300 border border-emerald-800">
+                        ACTIVE ENGINE
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs text-slate-400">
+                    Active daemon configurations responding to unmatched Port 80 (HTTP) and Port 443 (HTTPS) requests.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  onClick={handleRestartWebServer}
+                  disabled={restartingWebServer}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-amber-600/90 hover:bg-amber-500 text-white rounded-lg text-xs font-semibold shadow-sm transition-colors disabled:opacity-50"
+                  title="Restart web services (Apache2 / Nginx) and reload VirtualHost configurations"
+                >
+                  <RotateCw size={12} className={restartingWebServer ? 'animate-spin' : ''} />
+                  <span>{restartingWebServer ? 'Restarting...' : 'Restart Web Server'}</span>
+                </button>
+                <button
+                  onClick={loadDefaultWebsite}
+                  disabled={loadingDefaultWebsite}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg text-xs font-medium transition-colors disabled:opacity-50"
+                  title="Re-inspect live virtual hosts on server"
+                >
+                  <RefreshCw size={12} className={loadingDefaultWebsite ? 'animate-spin' : ''} />
+                  <span>{loadingDefaultWebsite ? 'Probing...' : 'Refresh'}</span>
+                </button>
+              </div>
+            </div>
+
+            {loadingDefaultWebsite && !defaultWebsiteData ? (
+              <div className="py-8 flex items-center justify-center gap-2.5 text-slate-400 text-xs">
+                <RefreshCw size={16} className="animate-spin text-brand-400" />
+                <span>Inspecting remote web server VirtualHosts (apache2ctl / nginx)...</span>
+              </div>
+            ) : !defaultWebsiteData?.has_web_server ? (
+              <div className="p-4 rounded-xl bg-slate-950/60 border border-slate-800 text-slate-400 text-xs flex items-center gap-3">
+                <AlertTriangle size={18} className="text-amber-400 shrink-0" />
+                <div>
+                  <span className="font-semibold text-slate-200">No Web Server Detected</span>
+                  <p className="text-[11px] text-slate-400 mt-0.5">
+                    Apache2 or Nginx is not currently running as a host service or has no active listening ports. If running in Docker, see the container list below.
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {/* Engine Info Bar */}
+                <div className="flex flex-wrap items-center justify-between gap-3 p-3 rounded-lg bg-slate-950/70 border border-slate-800/80 text-xs">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-slate-400">Web Engine:</span>
+                    <span className="px-2 py-0.5 rounded font-mono font-bold text-[11px] bg-brand-950 text-brand-300 border border-brand-800 uppercase">
+                      {defaultWebsiteData.web_server_type}
+                    </span>
+                    <span className="text-slate-600">•</span>
+                    <span className="text-slate-400">Main Root:</span>
+                    <span className="font-mono text-emerald-400 font-semibold text-[11px]">
+                      {defaultWebsiteData.main_document_root || '/var/www'}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-3 text-slate-400 text-[11px]">
+                    <span>Active VirtualHosts: <strong className="text-white">{defaultWebsiteData.active_vhosts_count}</strong></span>
+                    <span className="text-slate-600">•</span>
+                    <span>Host IP: <code className="text-slate-300 font-mono">{defaultWebsiteData.server_ip}</code></span>
+                  </div>
+                </div>
+
+                {/* 2-Column VirtualHost Cards */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {/* Port 80 (HTTP Default) */}
+                  <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 hover:border-slate-700 transition-colors space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/10 text-amber-300 border border-amber-500/30">
+                          PORT 80 (HTTP)
+                        </span>
+                        <span className="px-1.5 py-0.5 rounded text-[9px] font-extrabold uppercase bg-brand-500/10 text-brand-400 border border-brand-500/20">
+                          DEFAULT CATCH-ALL
+                        </span>
+                      </div>
+                      <span className="text-[11px] font-mono text-slate-500">Unencrypted</span>
+                    </div>
+
+                    {defaultWebsiteData.port_80 ? (
+                      <div className="space-y-2 text-xs">
+                        <div className="space-y-0.5">
+                          <span className="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Default ServerName</span>
+                          <div className="font-mono font-bold text-white text-sm truncate" title={defaultWebsiteData.port_80.domain}>
+                            {defaultWebsiteData.port_80.domain}
+                          </div>
+                        </div>
+
+                        {defaultWebsiteData.port_80.aliases?.length > 0 && (
+                          <div className="text-[11px] text-slate-400">
+                            <span className="text-slate-500">Aliases: </span>
+                            <span className="font-mono text-slate-300">{defaultWebsiteData.port_80.aliases.join(', ')}</span>
+                          </div>
+                        )}
+
+                        <div className="pt-2 border-t border-slate-800/80 space-y-1.5 font-mono text-[11px]">
+                          <div className="flex items-center justify-between text-slate-400">
+                            <span>Config File:</span>
+                            <span className="text-slate-200 truncate max-w-[210px]" title={defaultWebsiteData.port_80.config_file}>
+                              {defaultWebsiteData.port_80.config_file}{defaultWebsiteData.port_80.line ? `:${defaultWebsiteData.port_80.line}` : ''}
+                            </span>
+                          </div>
+                          <div className="flex items-center justify-between text-slate-400">
+                            <span>Target:</span>
+                            <span className="text-emerald-400 font-semibold truncate max-w-[210px]" title={defaultWebsiteData.port_80.proxy_target || defaultWebsiteData.port_80.document_root || 'N/A'}>
+                              {defaultWebsiteData.port_80.proxy_target ? `Proxy: ${defaultWebsiteData.port_80.proxy_target}` : (defaultWebsiteData.port_80.document_root || 'N/A')}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="py-4 text-center text-slate-500 text-xs">
+                        No explicit Port 80 default catch-all found
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Port 443 (HTTPS Default) */}
+                  <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 hover:border-slate-700 transition-colors space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/10 text-emerald-300 border border-emerald-500/30">
+                          PORT 443 (HTTPS)
+                        </span>
+                        <span className="px-1.5 py-0.5 rounded text-[9px] font-extrabold uppercase bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                          SSL SECURE
+                        </span>
+                      </div>
+                      <span className="text-[11px] font-mono text-emerald-400 flex items-center gap-1">
+                        <ShieldCheck size={12} /> Active TLS
+                      </span>
+                    </div>
+
+                    {defaultWebsiteData.port_443 ? (
+                      <div className="space-y-2 text-xs">
+                        <div className="space-y-0.5">
+                          <span className="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Default ServerName</span>
+                          <div className="font-mono font-bold text-white text-sm truncate" title={defaultWebsiteData.port_443.domain}>
+                            {defaultWebsiteData.port_443.domain}
+                          </div>
+                        </div>
+
+                        {defaultWebsiteData.port_443.aliases?.length > 0 && (
+                          <div className="text-[11px] text-slate-400">
+                            <span className="text-slate-500">Aliases: </span>
+                            <span className="font-mono text-slate-300">{defaultWebsiteData.port_443.aliases.join(', ')}</span>
+                          </div>
+                        )}
+
+                        <div className="pt-2 border-t border-slate-800/80 space-y-1.5 font-mono text-[11px]">
+                          <div className="flex items-center justify-between text-slate-400">
+                            <span>Config File:</span>
+                            <span className="text-slate-200 truncate max-w-[210px]" title={defaultWebsiteData.port_443.config_file}>
+                              {defaultWebsiteData.port_443.config_file}{defaultWebsiteData.port_443.line ? `:${defaultWebsiteData.port_443.line}` : ''}
+                            </span>
+                          </div>
+                          <div className="flex items-center justify-between text-slate-400">
+                            <span>Target:</span>
+                            <span className="text-emerald-400 font-semibold truncate max-w-[210px]" title={defaultWebsiteData.port_443.proxy_target || defaultWebsiteData.port_443.document_root || 'N/A'}>
+                              {defaultWebsiteData.port_443.proxy_target ? `Proxy: ${defaultWebsiteData.port_443.proxy_target}` : (defaultWebsiteData.port_443.document_root || 'N/A')}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="py-4 text-center text-slate-500 text-xs">
+                        No explicit Port 443 default catch-all found
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
           <div className="p-5 bg-slate-900/80 border border-slate-800 rounded-xl space-y-4">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div>

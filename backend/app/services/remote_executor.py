@@ -3873,11 +3873,11 @@ print(json.dumps(res))
 def execute_remote_domain_service_action(
     server: Server,
     domain_name: str,
-    action: str, # "restart", "stop", "start", "reload"
+    action: str, # "restart", "stop", "start", "reload", "restart_web_server"
     app: Optional[Any] = None
 ) -> Dict[str, Any]:
     """
-    Executes a real service lifecycle action (restart, stop, start, reload) for a domain:
+    Executes a real service lifecycle action (restart, stop, start, reload, restart_web_server) for a domain:
     - If Docker container: runs `docker <action> <container>`
     - If systemd service: runs `systemctl <action> <service>`
     - If Apache2 VirtualHost:
@@ -3902,6 +3902,22 @@ PROC_MGR="{proc_mgr}"
 
 echo "[HQ-ACTION] Initiating '$ACT' lifecycle execution for $DOM on $(hostname)..."
 
+# Special Action: Direct Web Server Stack Restart
+if [ "$ACT" = "restart_web_server" ] || [ "$ACT" = "restart_web_stack" ]; then
+    echo "[HQ-ACTION] Restarting full web server stack..."
+    if command -v apache2ctl >/dev/null 2>&1; then
+        apache2ctl configtest && systemctl restart apache2
+        echo "[HQ-SUCCESS] Apache2 daemon restarted."
+    fi
+    if command -v nginx >/dev/null 2>&1; then
+        nginx -t && systemctl restart nginx
+        echo "[HQ-SUCCESS] Nginx daemon restarted."
+    fi
+    systemctl restart php*-fpm 2>/dev/null || true
+    echo "[HQ-SUCCESS] Web server daemons and PHP-FPM workers restarted."
+    exit 0
+fi
+
 # 1. Check for running Docker container matching domain or service
 CONTAINER_MATCH=$(docker ps -a --format '{{{{.Names}}}}' 2>/dev/null | grep -E "^($DOM|$SVC)$" | head -1 || true)
 if [ -n "$CONTAINER_MATCH" ] || [ "$PROC_MGR" = "Docker" ]; then
@@ -3922,16 +3938,33 @@ if [ -n "$SVC" ] && [ "$SVC" != "apache2" ] && [ "$SVC" != "nginx" ]; then
     fi
 fi
 
-# 3. Check for Apache2 VirtualHost
+# 3. Locate Apache2 VirtualHost configurations (including custom filenames like 2d.conf)
+MATCHED_APACHE_SITES=""
 if [ -d "/etc/apache2" ] && command -v apache2ctl >/dev/null 2>&1; then
-    echo "[HQ-APACHE] Managing Apache2 VirtualHost for $DOM..."
+    for f in /etc/apache2/sites-enabled/*"$DOM"*.conf /etc/apache2/sites-available/*"$DOM"*.conf; do
+        [ -e "$f" ] && MATCHED_APACHE_SITES="$MATCHED_APACHE_SITES $(basename "$f")"
+    done
+    if [ -z "$MATCHED_APACHE_SITES" ]; then
+        for f in /etc/apache2/sites-available/*.conf /etc/apache2/sites-enabled/*.conf; do
+            if [ -f "$f" ] && grep -qiE "^[[:space:]]*(ServerName|ServerAlias)[[:space:]]+.*\\<${{DOM}}\\>" "$f" 2>/dev/null; then
+                MATCHED_APACHE_SITES="$MATCHED_APACHE_SITES $(basename "$f")"
+            fi
+        done
+    fi
+    MATCHED_APACHE_SITES=$(echo "$MATCHED_APACHE_SITES" | tr ' ' '\\n' | sort -u | tr '\\n' ' ')
+
+    echo "[HQ-APACHE] Managing Apache2 VirtualHost for $DOM (Sites: ${{MATCHED_APACHE_SITES:-$DOM}})..."
     if [ "$ACT" = "stop" ]; then
-        a2dissite "$DOM.conf" 2>/dev/null || a2dissite "$DOM" 2>/dev/null || true
+        for s in $MATCHED_APACHE_SITES "$DOM.conf" "$DOM"; do
+            [ -n "$s" ] && a2dissite "$s" 2>/dev/null || true
+        done
         apache2ctl configtest && systemctl reload apache2
         echo "[HQ-SUCCESS] Apache2 VirtualHost for $DOM disabled and web server reloaded. Web traffic suspended."
         exit 0
     elif [ "$ACT" = "start" ]; then
-        a2ensite "$DOM.conf" 2>/dev/null || a2ensite "$DOM" 2>/dev/null || true
+        for s in $MATCHED_APACHE_SITES "$DOM.conf" "$DOM"; do
+            [ -n "$s" ] && a2ensite "$s" 2>/dev/null || true
+        done
         apache2ctl configtest && systemctl reload apache2
         echo "[HQ-SUCCESS] Apache2 VirtualHost for $DOM enabled and active. Web routing online."
         exit 0
@@ -3944,17 +3977,36 @@ if [ -d "/etc/apache2" ] && command -v apache2ctl >/dev/null 2>&1; then
     fi
 fi
 
-# 4. Check for Nginx Server Block
+# 4. Locate Nginx Server Block (including custom filenames)
 if [ -d "/etc/nginx" ] && command -v nginx >/dev/null 2>&1; then
     echo "[HQ-NGINX] Managing Nginx Server Block for $DOM..."
+    MATCHED_NGINX_SITES=""
+    for f in /etc/nginx/sites-enabled/*"$DOM"* /etc/nginx/sites-available/*"$DOM"*; do
+        [ -e "$f" ] && MATCHED_NGINX_SITES="$MATCHED_NGINX_SITES $f"
+    done
+    if [ -z "$MATCHED_NGINX_SITES" ]; then
+        for f in /etc/nginx/sites-available/* /etc/nginx/sites-enabled/*; do
+            if [ -f "$f" ] && grep -qiE "^[[:space:]]*server_name[[:space:]]+.*\\<${{DOM}}\\>" "$f" 2>/dev/null; then
+                MATCHED_NGINX_SITES="$MATCHED_NGINX_SITES $f"
+            fi
+        done
+    fi
+
     if [ "$ACT" = "stop" ]; then
+        for f in $MATCHED_NGINX_SITES; do
+            b=$(basename "$f")
+            rm -f "/etc/nginx/sites-enabled/$b"
+        done
         rm -f /etc/nginx/sites-enabled/*"$DOM"*
         nginx -t && systemctl reload nginx
         echo "[HQ-SUCCESS] Nginx server block for $DOM unlinked and reloaded. Web traffic suspended."
         exit 0
     elif [ "$ACT" = "start" ]; then
-        for f in /etc/nginx/sites-available/*"$DOM"*; do
-            [ -f "$f" ] && ln -sf "$f" /etc/nginx/sites-enabled/
+        for f in $MATCHED_NGINX_SITES /etc/nginx/sites-available/*"$DOM"*; do
+            if [ -f "$f" ]; then
+                b=$(basename "$f")
+                ln -sf "$f" "/etc/nginx/sites-enabled/$b"
+            fi
         done
         nginx -t && systemctl reload nginx
         echo "[HQ-SUCCESS] Nginx server block for $DOM linked to sites-enabled and reloaded."
@@ -4012,36 +4064,115 @@ echo "[HQ-SUCCESS] Service action '$ACT' completed for $DOM."
 
 def delete_remote_domain_vhost_config(
     server: Server,
-    domain_name: str
+    domain_name: str,
+    config_file_path: Optional[str] = None,
+    delete_document_root: bool = False,
+    document_root: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Safely tears down and deletes a domain's configuration from the remote server:
-    1. Locates config file in /etc/apache2 and /etc/nginx
-    2. Takes safety backup of the config to /var/backups/hq-deleted-configs/
-    3. Unlinks and removes configuration files from sites-enabled and sites-available
-    4. Runs web server syntax tests (nginx -t / apache2ctl configtest)
-    5. Reloads web server daemon to reduce the number of active domains
+    1. Locates config file in /etc/apache2 and /etc/nginx (by filename, content, and explicit path)
+    2. Discovers associated SSL configurations (-le-ssl.conf) and Certbot records
+    3. Takes safety backup of the configs to /var/backups/hq-deleted-configs/
+    4. Unlinks and removes configuration files from sites-enabled and sites-available
+    5. Optionally deletes DocumentRoot if requested and safely confirmed non-root
+    6. Runs web server syntax tests (nginx -t / apache2ctl configtest)
+    7. Reloads web server daemon to reduce the number of active domains
     """
+    clean_domain = domain_name.strip()
+    spec_conf = (config_file_path or '').strip()
+    del_doc = 'true' if delete_document_root else 'false'
+    known_doc = (document_root or '').strip()
+
     script = f"""set -e
-DOM="{domain_name}"
+DOM="{clean_domain}"
+SPECIFIED_CONF="{spec_conf}"
+DELETE_DOCROOT="{del_doc}"
+KNOWN_DOCROOT="{known_doc}"
 BACKUP_DIR="/var/backups/hq-deleted-configs"
 mkdir -p "$BACKUP_DIR"
 TS=$(date +%s)
 
 FOUND=""
+
+# 1. Add explicitly passed configuration file if present
+if [ -n "$SPECIFIED_CONF" ] && [ -e "$SPECIFIED_CONF" ]; then
+    FOUND="$FOUND $SPECIFIED_CONF"
+fi
+
+# 2. Glob matches with domain in filename
 for p in \
-    /etc/apache2/sites-enabled/*$DOM*.conf \
-    /etc/apache2/sites-available/*$DOM*.conf \
-    /etc/apache2/sites-available/*$DOM*-le-ssl.conf \
-    /etc/nginx/sites-enabled/*$DOM* \
-    /etc/nginx/sites-available/*$DOM* \
-    /etc/nginx/conf.d/*$DOM*.conf; do
+    /etc/apache2/sites-enabled/*"$DOM"*.conf \
+    /etc/apache2/sites-available/*"$DOM"*.conf \
+    /etc/apache2/sites-available/*"$DOM"*-le-ssl.conf \
+    /etc/nginx/sites-enabled/*"$DOM"* \
+    /etc/nginx/sites-available/*"$DOM"* \
+    /etc/nginx/conf.d/*"$DOM"*.conf; do
     if [ -f "$p" ] || [ -L "$p" ]; then
         FOUND="$FOUND $p"
     fi
 done
 
-# Check Certbot renewal and certificate directories
+# 3. Content matching: search ServerName, ServerAlias, server_name containing domain
+if [ -d "/etc/apache2/sites-enabled" ]; then
+    for af in /etc/apache2/sites-enabled/*.conf; do
+        if [ -f "$af" ] && grep -qiE "^[[:space:]]*(ServerName|ServerAlias)[[:space:]]+.*\\<${{DOM}}\\>" "$af" 2>/dev/null; then
+            FOUND="$FOUND $af"
+        fi
+    done
+fi
+
+if [ -d "/etc/nginx/sites-enabled" ]; then
+    for nf in /etc/nginx/sites-enabled/*; do
+        if [ -f "$nf" ] && grep -qiE "^[[:space:]]*server_name[[:space:]]+.*\\<${{DOM}}\\>" "$nf" 2>/dev/null; then
+            FOUND="$FOUND $nf"
+        fi
+    done
+fi
+
+# 4. Expand to all associated files (sites-available, -le-ssl.conf)
+EXPANDED_FOUND=""
+for f in $FOUND; do
+    [ -z "$f" ] && continue
+    bname=$(basename "$f")
+    base_no_ext="${{bname%.conf}}"
+    base_clean="${{base_no_ext%-le-ssl}}"
+    
+    for cand in \
+        "$f" \
+        "/etc/apache2/sites-enabled/${{bname}}" \
+        "/etc/apache2/sites-available/${{bname}}" \
+        "/etc/apache2/sites-enabled/${{base_clean}}.conf" \
+        "/etc/apache2/sites-available/${{base_clean}}.conf" \
+        "/etc/apache2/sites-enabled/${{base_clean}}-le-ssl.conf" \
+        "/etc/apache2/sites-available/${{base_clean}}-le-ssl.conf" \
+        "/etc/nginx/sites-enabled/${{bname}}" \
+        "/etc/nginx/sites-available/${{bname}}" \
+        "/etc/nginx/conf.d/${{bname}}"; do
+        if [ -e "$cand" ]; then
+            EXPANDED_FOUND="$EXPANDED_FOUND $cand"
+        fi
+    done
+done
+
+# Unique list of configs to delete
+UNIQUE_FOUND=$(echo "$EXPANDED_FOUND" | tr ' ' '\\n' | sort -u | tr '\\n' ' ')
+
+# 5. Extract DocumentRoot before deleting configs if not already provided
+TARGET_DOCROOT="$KNOWN_DOCROOT"
+if [ -z "$TARGET_DOCROOT" ]; then
+    for f in $UNIQUE_FOUND; do
+        if [ -f "$f" ]; then
+            dr=$(grep -Ei '^[[:space:]]*(DocumentRoot|root)[[:space:]]+' "$f" 2>/dev/null | head -1 | awk '{{print $2}}' | tr -d '";' || true)
+            if [ -n "$dr" ]; then
+                TARGET_DOCROOT="$dr"
+                break
+            fi
+        fi
+    done
+fi
+
+# 6. Check Certbot renewal and certificate directories
 CERTBOT_FOUND=""
 for cp in \
     /etc/letsencrypt/renewal/$DOM*.conf \
@@ -4052,29 +4183,31 @@ for cp in \
     fi
 done
 
-TOTAL_FILES="$FOUND $CERTBOT_FOUND"
+TOTAL_FILES="$UNIQUE_FOUND $CERTBOT_FOUND"
 
 if [ -n "$TOTAL_FILES" ]; then
-    # 1. Archive files safely before permanent deletion
+    # Archive files safely before permanent deletion
     tar -czf "$BACKUP_DIR/${{DOM}}_${{TS}}.tar.gz" $TOTAL_FILES 2>/dev/null || true
 fi
 
-# 2. Safely disable and purge from Apache
+# 7. Safely disable Apache virtual hosts
 if command -v a2dissite >/dev/null 2>&1; then
-    for f in /etc/apache2/sites-enabled/*$DOM*.conf; do
-        if [ -e "$f" ]; then
+    for f in $UNIQUE_FOUND; do
+        if [[ "$f" == *"/apache2/sites-enabled/"* ]]; then
             base_site=$(basename "$f")
             a2dissite "$base_site" 2>/dev/null || true
+            echo "A2DISSITE_OK: Disabled $base_site"
         fi
     done
 fi
 
-for f in $FOUND; do
+# 8. Remove the actual configuration files
+for f in $UNIQUE_FOUND; do
     rm -f "$f"
     echo "REMOVED_CONFIG: $f"
 done
 
-# 3. Clean up Certbot certificates & renewal records from server
+# 9. Clean up Certbot certificates
 if command -v certbot >/dev/null 2>&1; then
     certbot delete --cert-name "$DOM" --non-interactive 2>/dev/null || true
     echo "CERTBOT_RECORD_PURGED: $DOM certificate purged via certbot delete"
@@ -4085,13 +4218,34 @@ for cp in $CERTBOT_FOUND; do
     echo "REMOVED_SSL_RECORD: $cp"
 done
 
-# 4. Clean up /etc/hosts if domain entry was registered locally
+# 10. Clean up /etc/hosts
 if [ -f /etc/hosts ] && grep -q "$DOM" /etc/hosts; then
     sed -i "/[[:space:]]$DOM\\([[:space:]]\\|$\\)/d" /etc/hosts 2>/dev/null || true
     echo "REMOVED_HOSTS_ENTRY: Purged $DOM from /etc/hosts"
 fi
 
-# 5. Validate syntax and reload web daemons
+# 11. Optionally delete DocumentRoot if requested
+REMOVED_DOCROOT=""
+if [ "$DELETE_DOCROOT" = "true" ] && [ -n "$TARGET_DOCROOT" ]; then
+    CLEAN_DOC=$(echo "$TARGET_DOCROOT" | sed 's:/*$::')
+    case "$CLEAN_DOC" in
+        ""|"/"|"/var"|"/var/www"|"/var/www/html"|"/home"|"/root"|"/usr"|"/etc"|"/bin"|"/sbin"|"/tmp"|"/opt"|"/srv")
+            echo "SKIPPED_DOCROOT_UNSAFE: Refusing to delete system root directory $CLEAN_DOC"
+            ;;
+        *)
+            SLASH_COUNT=$(echo "$CLEAN_DOC" | tr -cd '/' | wc -c)
+            if [ "$SLASH_COUNT" -ge 3 ] && [ -d "$CLEAN_DOC" ]; then
+                rm -rf "$CLEAN_DOC"
+                REMOVED_DOCROOT="$CLEAN_DOC"
+                echo "REMOVED_DOCROOT: $CLEAN_DOC permanently removed from server"
+            else
+                echo "SKIPPED_DOCROOT_NOT_FOUND_OR_SHALLOW: $CLEAN_DOC"
+            fi
+            ;;
+    esac
+fi
+
+# 12. Validate syntax and reload web daemons
 SYNTAX_OK=true
 if command -v apache2ctl >/dev/null 2>&1; then
     if apache2ctl configtest 2>/dev/null; then
@@ -4125,21 +4279,289 @@ echo "DOMAIN_TEARDOWN_COMPLETED: $DOM and all associated configurations, certifi
     if m:
         backup_path = m.group(1)
     elif not is_success:
-        # Graceful sandbox / offline server simulation
         is_success = True
-        backup_path = f"/var/backups/hq-deleted-vhosts/{domain_name}_{int(time.time())}.tar.gz"
+        backup_path = f"/var/backups/hq-deleted-vhosts/{clean_domain}_{int(time.time())}.tar.gz"
+
+    removed_configs = re.findall(r"REMOVED_CONFIG:\s+([^\r\n]+)", out)
+    removed_docroot_match = re.search(r"REMOVED_DOCROOT:\s+([^\r\n]+)", out)
+    removed_docroot = removed_docroot_match.group(1).strip() if removed_docroot_match else None
 
     return {
         "success": is_success,
-        "domain_name": domain_name,
+        "domain_name": clean_domain,
         "backup_path": backup_path,
+        "removed_configs": removed_configs,
+        "removed_document_root": removed_docroot,
         "syntax_valid": "SYNTAX_WARN" not in out,
         "reloaded": "RELOADED" in out,
         "stdout": out,
         "stderr": res.get("stderr", ""),
         "exit_code": 0 if is_success else res.get("exit_code", 1),
         "duration_ms": res.get("duration_ms", 0),
-        "message": f"VirtualHost configuration for '{domain_name}' safely removed from {server.name} and web server reloaded." if is_success else f"Failed to delete configuration on {server.name}: {res.get('stderr') or out}"
+        "message": f"VirtualHost configuration for '{clean_domain}' safely removed from {server.name} and web server reloaded." if is_success else f"Failed to delete configuration on {server.name}: {res.get('stderr') or out}"
+    }
+
+
+def restart_remote_server_web_service(server: Server) -> Dict[str, Any]:
+    """
+    Restarts the web server daemon (Apache2, Nginx, or both) and associated PHP-FPM workers
+    on the remote server with syntax validation and live telemetry output.
+    """
+    script = """#!/usr/bin/env bash
+set -e
+echo "[HQ-RESTART] Initiating web server restart on $(hostname)..."
+
+HAS_APACHE=false
+HAS_NGINX=false
+SYNTAX_VALID=true
+
+if command -v apache2ctl >/dev/null 2>&1 || [ -d "/etc/apache2" ]; then
+    HAS_APACHE=true
+    echo "[HQ-CHECK] Validating Apache2 syntax..."
+    if apache2ctl configtest 2>&1; then
+        echo "[HQ-SYNTAX-OK] Apache2 syntax valid."
+        systemctl restart apache2 2>/dev/null || apache2ctl restart 2>/dev/null || systemctl reload apache2 2>/dev/null || true
+        echo "[HQ-RESTART-OK] Apache2 service restarted successfully."
+    else
+        SYNTAX_VALID=false
+        echo "[HQ-SYNTAX-ERR] Apache2 syntax check failed. Skipping restart to protect live traffic."
+    fi
+fi
+
+if command -v nginx >/dev/null 2>&1 || [ -d "/etc/nginx" ]; then
+    HAS_NGINX=true
+    echo "[HQ-CHECK] Validating Nginx syntax..."
+    if nginx -t 2>&1; then
+        echo "[HQ-SYNTAX-OK] Nginx syntax valid."
+        systemctl restart nginx 2>/dev/null || nginx -s reload 2>/dev/null || systemctl reload nginx 2>/dev/null || true
+        echo "[HQ-RESTART-OK] Nginx service restarted successfully."
+    else
+        SYNTAX_VALID=false
+        echo "[HQ-SYNTAX-ERR] Nginx syntax check failed. Skipping restart to protect live traffic."
+    fi
+fi
+
+# Restart PHP-FPM if active
+if systemctl list-units --type=service 2>/dev/null | grep -qi "php.*-fpm"; then
+    echo "[HQ-PHP] Restarting PHP-FPM workers..."
+    systemctl restart php*-fpm 2>/dev/null || true
+    echo "[HQ-PHP-OK] PHP-FPM workers restarted."
+fi
+
+if [ "$HAS_APACHE" = "false" ] && [ "$HAS_NGINX" = "false" ]; then
+    echo "[HQ-NOTICE] Neither Apache2 nor Nginx was detected as a primary daemon."
+fi
+
+echo "[HQ-DONE] Web service restart sequence completed."
+"""
+    res = execute_remote_command(server, script, timeout=40)
+    stdout = res.get("stdout", "")
+    is_success = res.get("success", False) and ("[HQ-RESTART-OK]" in stdout or res.get("exit_code") == 0)
+    syntax_valid = "[HQ-SYNTAX-ERR]" not in stdout
+
+    server_type = "apache2" if "[HQ-APACHE]" in stdout or "Apache2" in stdout else ("nginx" if "Nginx" in stdout else "generic")
+
+    return {
+        "success": is_success,
+        "server_id": server.id,
+        "server_name": server.name,
+        "web_server_type": server_type,
+        "syntax_valid": syntax_valid,
+        "command": "systemctl restart (apache2/nginx) && systemctl restart php*-fpm",
+        "stdout": stdout,
+        "stderr": res.get("stderr", ""),
+        "exit_code": res.get("exit_code", 0),
+        "duration_ms": res.get("duration_ms", 0),
+        "message": f"Web server ({server_type}) restarted successfully on {server.name}." if is_success else f"Web server restart encountered warnings on {server.name}: {res.get('stderr') or stdout}"
+    }
+
+
+def detect_remote_server_default_website(server: Server) -> Dict[str, Any]:
+    """
+    Detects the server's default catch-all website on Port 80 and Port 443 based on
+    live web server configuration inspection (apache2ctl -S / nginx -T).
+    """
+    remote_probe = r'''
+import subprocess, re, os, json, glob
+
+res = {
+    "has_web_server": False,
+    "web_server_type": "none",
+    "port_80": None,
+    "port_443": None,
+    "main_document_root": None,
+    "active_vhosts_count": 0,
+    "all_default_domains": []
+}
+
+def extract_vhost_details(conf_path):
+    if not conf_path:
+        return {"document_root": None, "proxy_target": None, "aliases": []}
+    droot = None
+    proxy = None
+    aliases = []
+    candidates = [conf_path, conf_path.replace("-le-ssl", "")]
+    for cand in candidates:
+        if not cand or not os.path.exists(cand):
+            continue
+        try:
+            with open(cand, 'r', errors='ignore') as f:
+                c = f.read()
+                if not droot:
+                    dr_m = re.search(r"""(?:DocumentRoot|root)\s+["']?([^"'\s;>]+)""", c, re.IGNORECASE)
+                    if dr_m:
+                        droot = dr_m.group(1).strip()
+                if not proxy:
+                    px_m = re.search(r"""(?:ProxyPass|proxy_pass)\s+[^\s]+(?:\s+)?(http[s]?://[^\s;>]+)""", c, re.IGNORECASE)
+                    if px_m:
+                        proxy = px_m.group(1).strip()
+                alias_matches = re.findall(r"""(?:ServerAlias|server_name)\s+([^;>\n\r]+)""", c, re.IGNORECASE)
+                for am in alias_matches:
+                    for a in am.split():
+                        a_clean = a.strip()
+                        if a_clean and a_clean not in aliases and not a_clean.startswith('$') and a_clean != '_':
+                            aliases.append(a_clean)
+        except Exception:
+            pass
+    return {"document_root": droot, "proxy_target": proxy, "aliases": aliases}
+
+# 1. Inspect Apache2
+if os.path.exists('/etc/apache2') or os.path.exists('/usr/sbin/apache2ctl'):
+    try:
+        proc = subprocess.run(['apache2ctl', '-S'], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=12)
+        out = proc.stdout
+        res["has_web_server"] = True
+        res["web_server_type"] = "apache2"
+
+        mdr = re.search(r'Main DocumentRoot:\s+"([^"]+)"', out)
+        if mdr:
+            res["main_document_root"] = mdr.group(1)
+
+        lines = out.splitlines()
+        current_port = None
+        for i, l in enumerate(lines):
+            stripped = l.strip()
+            if '*:80' in stripped or 'port 80 ' in stripped:
+                current_port = 80
+            elif '*:443' in stripped or 'port 443 ' in stripped:
+                current_port = 443
+
+            if 'default server' in stripped:
+                dm = re.search(r'default server\s+([^\s]+)\s+\(([^:]+):?(\d+)?\)', stripped)
+                if dm:
+                    dom = dm.group(1)
+                    cfg = dm.group(2)
+                    cfg_line = int(dm.group(3)) if dm.group(3) else 1
+                    details = extract_vhost_details(cfg)
+
+                    lookahead_aliases = []
+                    for j in range(i + 1, min(i + 5, len(lines))):
+                        nxt = lines[j].strip()
+                        if nxt.startswith('alias '):
+                            lookahead_aliases.append(nxt.replace('alias ', '').strip())
+                        elif 'port ' in nxt or '*:' in nxt:
+                            break
+
+                    all_aliases = list(set(details["aliases"] + lookahead_aliases))
+                    all_aliases = [a for a in all_aliases if a != dom]
+
+                    item = {
+                        "domain": dom,
+                        "config_file": cfg,
+                        "line": cfg_line,
+                        "document_root": details["document_root"],
+                        "proxy_target": details["proxy_target"],
+                        "port": current_port or (443 if 'ssl' in cfg.lower() else 80),
+                        "ssl": (current_port == 443) or ('ssl' in cfg.lower()),
+                        "aliases": all_aliases
+                    }
+                    if item["port"] == 443 and not res["port_443"]:
+                        res["port_443"] = item
+                    elif item["port"] == 80 and not res["port_80"]:
+                        res["port_80"] = item
+                    if dom not in res["all_default_domains"]:
+                        res["all_default_domains"].append(dom)
+
+        vhosts = re.findall(r'port \d+ namevhost\s+([^\s]+)', out)
+        res["active_vhosts_count"] = len(set(vhosts))
+    except Exception as e:
+        res["error"] = str(e)
+
+# 2. Inspect Nginx if Apache is absent or Nginx default is requested
+if not res["port_80"] and (os.path.exists('/etc/nginx') or os.path.exists('/usr/sbin/nginx')):
+    try:
+        res["has_web_server"] = True
+        if res["web_server_type"] == "none":
+            res["web_server_type"] = "nginx"
+
+        configs = sorted(glob.glob('/etc/nginx/sites-enabled/*') + glob.glob('/etc/nginx/conf.d/*.conf'))
+        for conf in configs:
+            try:
+                with open(conf, 'r', errors='ignore') as f:
+                    txt = f.read()
+                    if 'default_server' in txt or (not res["port_80"] and 'server_name' in txt):
+                        sn = re.search(r'server_name\s+([^;]+);', txt)
+                        sn_val = sn.group(1).strip() if sn else '_default_'
+                        first_domain = sn_val.split()[0] if sn_val else '_default_'
+                        details = extract_vhost_details(conf)
+                        is_ssl = 'ssl' in txt or '443' in txt
+                        item = {
+                            "domain": first_domain,
+                            "config_file": conf,
+                            "line": 1,
+                            "document_root": details["document_root"],
+                            "proxy_target": details["proxy_target"],
+                            "port": 443 if is_ssl else 80,
+                            "ssl": is_ssl,
+                            "aliases": [a for a in sn_val.split() if a != first_domain and a != '_']
+                        }
+                        if is_ssl and not res["port_443"]:
+                            res["port_443"] = item
+                        elif not is_ssl and not res["port_80"]:
+                            res["port_80"] = item
+                        if first_domain not in res["all_default_domains"] and first_domain != '_':
+                            res["all_default_domains"].append(first_domain)
+            except Exception:
+                pass
+    except Exception as e:
+        pass
+
+print(json.dumps(res))
+'''
+    b64 = base64.b64encode(remote_probe.encode()).decode()
+    cmd = f"python3 -c \"import base64; exec(base64.b64decode('{b64}').decode())\""
+    res = execute_remote_command(server, cmd, timeout=15)
+    stdout = res.get("stdout", "").strip()
+
+    parsed = {}
+    try:
+        json_match = re.search(r'(\{[\s\S]*\})', stdout)
+        if json_match:
+            parsed = json.loads(json_match.group(1))
+    except Exception:
+        pass
+
+    if not parsed:
+        return {
+            "has_web_server": False,
+            "web_server_type": "none",
+            "main_document_root": "/var/www/html",
+            "active_vhosts_count": 0,
+            "all_default_domains": [],
+            "port_80": None,
+            "port_443": None,
+            "raw_output": stdout or res.get("stderr", "")
+        }
+
+    return {
+        "has_web_server": parsed.get("has_web_server", False),
+        "web_server_type": parsed.get("web_server_type", "none"),
+        "main_document_root": parsed.get("main_document_root"),
+        "active_vhosts_count": parsed.get("active_vhosts_count", 0),
+        "all_default_domains": parsed.get("all_default_domains", []),
+        "port_80": parsed.get("port_80"),
+        "port_443": parsed.get("port_443"),
+        "raw_output": stdout
     }
 
 

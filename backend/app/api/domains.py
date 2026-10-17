@@ -11,6 +11,7 @@ from backend.app.models.entities import User, Domain, Application, Server, Serve
 from backend.app.schemas.api_schemas import (
     DomainCreate, DomainResponse, DomainSslActionResponse,
     DomainDeepDiveResponse, DomainServiceActionRequest, DomainDeleteFromServerResponse,
+    DomainDeleteFromServerRequest, WebServiceRestartResponse,
     DomainTroubleshootRequest, DomainTroubleshootResponse,
     DomainCreateProvisionRequest, DomainCreateProvisionResponse,
     DomainTerminalExecRequest, DomainTerminalExecResponse
@@ -21,7 +22,8 @@ from backend.app.services.remote_executor import (
     inspect_remote_domain_deep_dive, execute_remote_domain_service_action,
     delete_remote_domain_vhost_config, resolve_domain_dns_live,
     clear_domain_dns_cache, execute_domain_troubleshoot_tool,
-    provision_remote_domain_vhost, execute_domain_server_terminal
+    provision_remote_domain_vhost, execute_domain_server_terminal,
+    restart_remote_server_web_service, detect_remote_server_default_website
 )
 
 router = APIRouter(prefix="/domains", tags=["Domains & SSL"])
@@ -216,6 +218,27 @@ async def get_domain_deep_dive(
 
     telemetry = await asyncio.to_thread(inspect_remote_domain_deep_dive, server, domain.domain_name, app)
 
+    # Detect if this domain is the server's default catch-all website on Port 80 / Port 443
+    is_default = False
+    default_port = None
+    try:
+        default_info = await asyncio.to_thread(detect_remote_server_default_website, server)
+        if default_info:
+            p80 = default_info.get("port_80")
+            p443 = default_info.get("port_443")
+            clean_d = domain.domain_name.lower().strip()
+            if p80 and (p80.get("domain", "").lower() == clean_d or clean_d in [a.lower() for a in p80.get("aliases", [])]):
+                is_default = True
+                default_port = 80
+            elif p443 and (p443.get("domain", "").lower() == clean_d or clean_d in [a.lower() for a in p443.get("aliases", [])]):
+                is_default = True
+                default_port = 443
+            elif clean_d in [x.lower() for x in default_info.get("all_default_domains", [])]:
+                is_default = True
+                default_port = 80
+    except Exception:
+        pass
+
     return DomainDeepDiveResponse(
         domain_id=domain.id,
         domain_name=domain.domain_name,
@@ -253,7 +276,9 @@ async def get_domain_deep_dive(
         config_content=telemetry.get("config_content"),
         ssl_status=domain.ssl_status,
         ssl_issuer=domain.ssl_issuer,
-        days_remaining=domain.days_remaining
+        days_remaining=domain.days_remaining,
+        is_default_vhost=is_default,
+        default_vhost_port=default_port
     )
 
 
@@ -416,31 +441,44 @@ async def backup_domain_config(
 @router.post("/{domain_id}/delete-from-server", response_model=DomainDeleteFromServerResponse)
 async def delete_domain_from_server(
     domain_id: str,
+    payload: Optional[DomainDeleteFromServerRequest] = None,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_roles(["SUPER_ADMIN", "INFRASTRUCTURE_ADMIN"]))
 ):
     """
     Cleanly tears down and unlinks the VirtualHost configuration file from the remote VPS
-    (/etc/apache2/sites-enabled/ or /etc/nginx/sites-enabled/), verifies syntax, reloads web daemons,
-    and removes the domain from active count in the database.
+    (/etc/apache2/sites-enabled/ or /etc/nginx/sites-enabled/), optionally removes DocumentRoot directory,
+    verifies syntax, reloads web daemons, and removes the domain (and linked application) from the database.
     """
     res = await db.execute(select(Domain).where(Domain.id == domain_id))
     domain = res.scalars().first()
     if not domain:
         raise HTTPException(status_code=404, detail="Domain record not found.")
 
-    server, _ = await _resolve_domain_server_and_app(db, domain)
+    server, app = await _resolve_domain_server_and_app(db, domain)
+
+    delete_docroot = payload.delete_document_root if payload else False
+    specified_cfg = payload.config_file_path if payload else None
+    delete_app = payload.delete_app if payload else True
+    known_docroot = app.root_path if app else None
 
     teardown_res: Dict[str, Any] = {}
     if server:
-        teardown_res = await asyncio.to_thread(delete_remote_domain_vhost_config, server, domain.domain_name)
+        teardown_res = await asyncio.to_thread(
+            delete_remote_domain_vhost_config,
+            server,
+            domain.domain_name,
+            config_file_path=specified_cfg,
+            delete_document_root=delete_docroot,
+            document_root=known_docroot
+        )
 
         term_user_id = current_user.id if not str(current_user.id).startswith("apikey-") else None
         term_log = ServerTerminalLog(
             server_id=server.id,
             user_id=term_user_id,
             username=current_user.username,
-            command=f"teardown-vhost {domain.domain_name}",
+            command=f"teardown-vhost {domain.domain_name} (delete_docroot={delete_docroot})",
             output=teardown_res.get("stdout", "")[:4000],
             exit_code=teardown_res.get("exit_code", 0),
             execution_duration_ms=teardown_res.get("duration_ms", 0)
@@ -451,7 +489,7 @@ async def delete_domain_from_server(
             server_id=server.id,
             severity="WARN",
             category="server",
-            message=f"Domain '{domain.domain_name}' VirtualHost removed from server {server.name} by {current_user.username}",
+            message=f"Domain '{domain.domain_name}' VirtualHost removed from server {server.name} by {current_user.username}. Removed configs: {teardown_res.get('removed_configs')}. Docroot removed: {teardown_res.get('removed_document_root')}",
             user=current_user.username
         )
         db.add(app_log)
@@ -467,12 +505,19 @@ async def delete_domain_from_server(
             "domain": domain.domain_name,
             "server_ip": domain.server_ip,
             "backup_path": teardown_res.get("backup_path"),
+            "removed_configs": teardown_res.get("removed_configs", []),
+            "removed_document_root": teardown_res.get("removed_document_root"),
             "reloaded": teardown_res.get("reloaded", True)
         },
         result="SUCCESS"
     )
 
     domain_name = domain.domain_name
+
+    # Clean up associated application if requested and exists
+    if delete_app and app:
+        await db.delete(app)
+
     await db.delete(domain)
     await db.commit()
 
@@ -480,11 +525,78 @@ async def delete_domain_from_server(
         success=teardown_res.get("success", True),
         domain_id=domain_id,
         domain_name=domain_name,
-        message=f"Configuration for '{domain_name}' successfully removed from server and web daemon reloaded.",
+        message=f"Configuration for '{domain_name}' successfully removed from server and web daemon reloaded." + (f" DocumentRoot '{teardown_res.get('removed_document_root')}' purged." if teardown_res.get("removed_document_root") else ""),
         backup_path=teardown_res.get("backup_path"),
+        removed_configs=teardown_res.get("removed_configs", []),
+        removed_document_root=teardown_res.get("removed_document_root"),
         syntax_valid=teardown_res.get("syntax_valid", True),
         reloaded=teardown_res.get("reloaded", True),
-        output=teardown_res.get("stdout")
+        output=teardown_res.get("stdout"),
+        stdout=teardown_res.get("stdout"),
+        stderr=teardown_res.get("stderr")
+    )
+
+
+@router.post("/{domain_id}/restart-web-server", response_model=WebServiceRestartResponse)
+async def restart_domain_web_server(
+    domain_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_roles(["SUPER_ADMIN", "INFRASTRUCTURE_ADMIN"]))
+):
+    """
+    Directly restarts the web server stack (Apache2 / Nginx + PHP-FPM) on the server hosting this domain.
+    """
+    res = await db.execute(select(Domain).where(Domain.id == domain_id))
+    domain = res.scalars().first()
+    if not domain:
+        raise HTTPException(status_code=404, detail="Domain not found.")
+
+    server, _ = await _resolve_domain_server_and_app(db, domain)
+    if not server:
+        raise HTTPException(status_code=400, detail="Hosting server could not be resolved for this domain.")
+
+    restart_res = await asyncio.to_thread(restart_remote_server_web_service, server)
+
+    term_user_id = current_user.id if not str(current_user.id).startswith("apikey-") else None
+    term_log = ServerTerminalLog(
+        server_id=server.id,
+        user_id=term_user_id,
+        username=current_user.username,
+        command="systemctl restart (web-stack) && systemctl restart php-fpm",
+        output=restart_res.get("stdout", "")[:4000],
+        exit_code=restart_res.get("exit_code", 0),
+        execution_duration_ms=restart_res.get("duration_ms", 0)
+    )
+    db.add(term_log)
+
+    await log_audit_event(
+        db=db,
+        action="RESTART_WEB_SERVER",
+        entity_type="server",
+        username=current_user.username,
+        user_id=current_user.id,
+        entity_id=server.id,
+        details={
+            "server_id": server.id,
+            "domain": domain.domain_name,
+            "web_server_type": restart_res.get("web_server_type"),
+            "syntax_valid": restart_res.get("syntax_valid")
+        },
+        result="SUCCESS" if restart_res.get("success") else "FAILURE"
+    )
+    await db.commit()
+
+    return WebServiceRestartResponse(
+        success=restart_res.get("success", False),
+        server_id=server.id,
+        server_name=server.name,
+        web_server_type=restart_res.get("web_server_type", "unknown"),
+        message=restart_res.get("message", "Web server restart completed."),
+        syntax_valid=restart_res.get("syntax_valid", True),
+        command=restart_res.get("command"),
+        stdout=restart_res.get("stdout"),
+        stderr=restart_res.get("stderr"),
+        duration_ms=restart_res.get("duration_ms", 0)
     )
 
 

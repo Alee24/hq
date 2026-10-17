@@ -12,7 +12,8 @@ from backend.app.schemas.api_schemas import (
     ServerConnectionConfig, ServerConnectionTestRequest, ServerConnectionTestResponse, TerminalExecRequest,
     TerminalExecResponse, ServerTerminalLogResponse, ScheduledRebootRequest,
     TroubleshootCommandRequest, ServiceActionRequest,
-    ServerSnapshotResponse, CreateServerSnapshotRequest, RevertServerSnapshotResponse
+    ServerSnapshotResponse, CreateServerSnapshotRequest, RevertServerSnapshotResponse,
+    ServerDefaultWebsiteResponse, WebServiceRestartResponse
 )
 from backend.app.services.audit import log_audit_event
 from backend.app.services.websocket_manager import ws_manager
@@ -22,7 +23,8 @@ from backend.app.services.remote_executor import (
     schedule_remote_reboot, cancel_remote_reboot, get_remote_reboot_status,
     analyze_server_performance_and_spikes, execute_troubleshoot_command,
     detect_remote_databases, get_remote_docker_suite, execute_remote_service_action,
-    create_remote_server_snapshot, revert_remote_server_snapshot, delete_remote_server_snapshot
+    create_remote_server_snapshot, revert_remote_server_snapshot, delete_remote_server_snapshot,
+    detect_remote_server_default_website, restart_remote_server_web_service
 )
 
 router = APIRouter(prefix="/servers", tags=["Servers"])
@@ -1224,5 +1226,87 @@ async def delete_server_snapshot_endpoint(
     await db.commit()
 
     return {"success": True, "message": f"Snapshot '{snap.name}' deleted successfully."}
+
+
+@router.get("/{server_id}/default-website", response_model=ServerDefaultWebsiteResponse)
+async def get_server_default_website(
+    server_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Detects the server's default catch-all website on Port 80 and Port 443 based on
+    live web server configuration inspection (apache2ctl -S / nginx -T).
+    """
+    result = await db.execute(select(Server).where(Server.id == server_id, Server.deleted_at == None))
+    srv = result.scalar_one_or_none()
+    if not srv:
+        raise HTTPException(status_code=404, detail="Server not found.")
+
+    data = await asyncio.to_thread(detect_remote_server_default_website, srv)
+    return ServerDefaultWebsiteResponse(
+        server_id=srv.id,
+        server_name=srv.name,
+        server_ip=srv.public_ip,
+        **data
+    )
+
+
+@router.post("/{server_id}/web-service/restart", response_model=WebServiceRestartResponse)
+async def restart_server_web_service_endpoint(
+    server_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_roles(["SUPER_ADMIN", "INFRASTRUCTURE_ADMIN"]))
+):
+    """
+    Validates syntax and restarts the web server daemon (Apache2, Nginx, or both) and PHP-FPM workers on the server.
+    """
+    result = await db.execute(select(Server).where(Server.id == server_id, Server.deleted_at == None))
+    srv = result.scalar_one_or_none()
+    if not srv:
+        raise HTTPException(status_code=404, detail="Server not found.")
+
+    res = await asyncio.to_thread(restart_remote_server_web_service, srv)
+
+    term_user_id = current_user.id if not str(current_user.id).startswith("apikey-") else None
+    term_log = ServerTerminalLog(
+        server_id=srv.id,
+        user_id=term_user_id,
+        username=current_user.username,
+        command=res.get("command", "systemctl restart (web-stack)"),
+        output=res.get("stdout", "")[:4000],
+        exit_code=res.get("exit_code", 0),
+        execution_duration_ms=res.get("duration_ms", 0)
+    )
+    db.add(term_log)
+
+    await log_audit_event(
+        db=db,
+        action="RESTART_WEB_SERVICE",
+        entity_type="server",
+        username=current_user.username,
+        user_id=current_user.id,
+        entity_id=srv.id,
+        details={
+            "server_id": srv.id,
+            "web_server_type": res.get("web_server_type"),
+            "syntax_valid": res.get("syntax_valid")
+        },
+        result="SUCCESS" if res.get("success") else "FAILURE"
+    )
+    await db.commit()
+
+    return WebServiceRestartResponse(
+        success=res.get("success", False),
+        server_id=srv.id,
+        server_name=srv.name,
+        web_server_type=res.get("web_server_type", "unknown"),
+        message=res.get("message", "Web server restarted."),
+        syntax_valid=res.get("syntax_valid", True),
+        command=res.get("command"),
+        stdout=res.get("stdout"),
+        stderr=res.get("stderr"),
+        duration_ms=res.get("duration_ms", 0)
+    )
 
 

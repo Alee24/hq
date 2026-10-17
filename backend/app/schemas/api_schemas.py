@@ -362,6 +362,8 @@ class DomainResponse(BaseModel):
     redirect_status: str
     auto_renew: bool
     last_checked_at: datetime
+    is_default_vhost: bool = False
+    default_vhost_port: Optional[int] = None
 
     class Config:
         from_attributes = True
@@ -440,9 +442,16 @@ class DomainDeepDiveResponse(BaseModel):
     ssl_status: str = "VALID"
     ssl_issuer: Optional[str] = None
     days_remaining: int = 90
+    is_default_vhost: bool = False
+    default_vhost_port: Optional[int] = None
 
 class DomainServiceActionRequest(BaseModel):
     action: str # "restart", "stop", "start", "reload"
+
+class DomainDeleteFromServerRequest(BaseModel):
+    delete_document_root: bool = False
+    config_file_path: Optional[str] = None
+    delete_app: bool = True
 
 class DomainDeleteFromServerResponse(BaseModel):
     success: bool
@@ -450,9 +459,48 @@ class DomainDeleteFromServerResponse(BaseModel):
     domain_name: str
     message: str
     backup_path: Optional[str] = None
+    removed_configs: List[str] = []
+    removed_document_root: Optional[str] = None
     syntax_valid: bool = True
     reloaded: bool = True
     output: Optional[str] = None
+    stdout: Optional[str] = None
+    stderr: Optional[str] = None
+
+class DefaultVirtualHostItem(BaseModel):
+    domain: str
+    config_file: str
+    line: Optional[int] = None
+    document_root: Optional[str] = None
+    port: int
+    ssl: bool = False
+    aliases: List[str] = []
+    proxy_target: Optional[str] = None
+
+class ServerDefaultWebsiteResponse(BaseModel):
+    server_id: str
+    server_name: str
+    server_ip: str
+    has_web_server: bool = False
+    web_server_type: str = "none" # "apache2", "nginx", "none"
+    main_document_root: Optional[str] = None
+    active_vhosts_count: int = 0
+    all_default_domains: List[str] = []
+    port_80: Optional[DefaultVirtualHostItem] = None
+    port_443: Optional[DefaultVirtualHostItem] = None
+    raw_output: Optional[str] = None
+
+class WebServiceRestartResponse(BaseModel):
+    success: bool
+    server_id: str
+    server_name: Optional[str] = None
+    web_server_type: str
+    message: str
+    syntax_valid: bool = True
+    command: Optional[str] = None
+    stdout: Optional[str] = None
+    stderr: Optional[str] = None
+    duration_ms: int = 0
 
 class ApplicationBackupRequest(BaseModel):
     application_id: str

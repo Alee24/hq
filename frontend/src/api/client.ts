@@ -1040,19 +1040,92 @@ class ApiClient {
     });
   }
 
-  async deleteDomainFromServer(id: string) {
+  async deleteDomainFromServer(id: string, options?: { delete_document_root?: boolean; config_file_path?: string; delete_app?: boolean }) {
     return this.request<{
       success: boolean;
       domain_id: string;
       domain_name: string;
       message: string;
       backup_path?: string;
+      removed_configs?: string[];
+      removed_document_root?: string;
       syntax_valid: boolean;
       reloaded: boolean;
       output?: string;
+      stdout?: string;
+      stderr?: string;
     }>(`/domains/${id}/delete-from-server`, {
-      method: 'DELETE',
+      method: 'POST',
+      body: JSON.stringify(options || {}),
     });
+  }
+
+  async restartDomainWebServer(id: string) {
+    return this.request<{
+      success: boolean;
+      server_id: string;
+      server_name?: string;
+      web_server_type: string;
+      message: string;
+      syntax_valid: boolean;
+      command?: string;
+      stdout?: string;
+      stderr?: string;
+      duration_ms: number;
+    }>(`/domains/${id}/restart-web-server`, {
+      method: 'POST',
+    });
+  }
+
+  async restartServerWebService(serverId: string) {
+    return this.request<{
+      success: boolean;
+      server_id: string;
+      server_name?: string;
+      web_server_type: string;
+      message: string;
+      syntax_valid: boolean;
+      command?: string;
+      stdout?: string;
+      stderr?: string;
+      duration_ms: number;
+    }>(`/servers/${serverId}/web-service/restart`, {
+      method: 'POST',
+    });
+  }
+
+  async getServerDefaultWebsite(serverId: string) {
+    return this.request<{
+      server_id: string;
+      server_name: string;
+      server_ip: string;
+      has_web_server: boolean;
+      web_server_type: string;
+      main_document_root?: string;
+      active_vhosts_count: number;
+      all_default_domains: string[];
+      port_80?: {
+        domain: string;
+        config_file: string;
+        line?: number;
+        document_root?: string;
+        proxy_target?: string;
+        port: number;
+        ssl: boolean;
+        aliases: string[];
+      };
+      port_443?: {
+        domain: string;
+        config_file: string;
+        line?: number;
+        document_root?: string;
+        proxy_target?: string;
+        port: number;
+        ssl: boolean;
+        aliases: string[];
+      };
+      raw_output?: string;
+    }>(`/servers/${serverId}/default-website`);
   }
 
   async downloadDomainConfig(id: string, domainName: string) {
