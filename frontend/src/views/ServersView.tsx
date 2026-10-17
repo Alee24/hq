@@ -750,6 +750,22 @@ export const ServersView: React.FC<ServersViewProps> = ({ onSelectServer }) => {
                   </div>
                 </div>
 
+                {srv.status === 'AUTH_FAILED' && (
+                  <div className="p-2.5 bg-rose-950/70 border border-rose-800 rounded-xl flex items-center justify-between gap-2 animate-in fade-in">
+                    <div className="flex items-center gap-2 text-rose-300 text-xs">
+                      <AlertTriangle size={15} className="shrink-0 text-rose-400" />
+                      <span className="font-medium">SSH Auth Failed. Host rejected credentials.</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={(e) => handleOpenConnection(srv, e)}
+                      className="px-2.5 py-1 bg-rose-600 hover:bg-rose-500 text-white rounded text-[11px] font-semibold whitespace-nowrap shadow-sm transition-colors"
+                    >
+                      Configure SSH
+                    </button>
+                  </div>
+                )}
+
                 {/* Hardware utilization meters */}
                 <div className="space-y-2 text-xs">
                   <div>

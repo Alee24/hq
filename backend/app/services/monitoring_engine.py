@@ -2,6 +2,7 @@ import asyncio
 import ssl
 import socket
 import time
+import uuid
 from datetime import datetime, timezone, timedelta
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -93,6 +94,31 @@ async def execute_monitoring_cycle():
             )).scalars().all()
         }
 
+        # Ensure a valid MonitoringCheck exists for each application to preserve foreign key integrity
+        checks_res = await db.execute(
+            select(MonitoringCheck).where(
+                MonitoringCheck.application_id.in_([a.id for a in applications]),
+                MonitoringCheck.is_active == True
+            )
+        )
+        existing_checks = checks_res.scalars().all()
+        check_map = {c.application_id: c.id for c in existing_checks}
+
+        # Auto-create MonitoringCheck for any application lacking one
+        for a in applications:
+            if a.id not in check_map:
+                app_target = a.domain if (a.domain and a.domain.startswith("http")) else f"https://{a.domain or 'localhost'}{a.health_check_url or '/'}"
+                new_chk = MonitoringCheck(
+                    id=str(uuid.uuid4()),
+                    application_id=a.id,
+                    target_url=app_target,
+                    check_type="HTTP_GET",
+                    interval_seconds=60,
+                    is_active=True
+                )
+                db.add(new_chk)
+                check_map[a.id] = new_chk.id
+
         alerts_to_notify = []
         for res in check_results:
             if isinstance(res, Exception):
@@ -126,17 +152,20 @@ async def execute_monitoring_cycle():
             elif app_obj.health_status != "MAINTENANCE":
                 app_obj.health_status = "ONLINE"
 
-            result_record = MonitoringResult(
-                check_id=app_obj.id,
-                application_id=app_obj.id,
-                status_code=status_code,
-                response_time_ms=elapsed_ms,
-                is_up=is_up,
-                ssl_valid=True,
-                ssl_days_left=65,
-                error_message=error_message
-            )
-            db.add(result_record)
+            chk_id = check_map.get(app_obj.id)
+            if chk_id:
+                result_record = MonitoringResult(
+                    id=str(uuid.uuid4()),
+                    check_id=chk_id,
+                    application_id=app_obj.id,
+                    status_code=status_code,
+                    response_time_ms=elapsed_ms,
+                    is_up=is_up,
+                    ssl_valid=True,
+                    ssl_days_left=65,
+                    error_message=error_message
+                )
+                db.add(result_record)
 
         # Batch update server metrics
         srv_map = {
@@ -147,10 +176,11 @@ async def execute_monitoring_cycle():
         for srv_id, srv in srv_map.items():
             base_cpu = 28.0 + (hash(srv.name) % 35)
             cpu = round(min(98.0, max(5.0, base_cpu + (time.time() % 15) - 7)), 1)
-            ram = round(min(95.0, max(20.0, 58.0 + (hash(srv.hostname) % 25))), 1)
+            ram = round(min(95.0, max(20.0, 58.0 + (hash(srv.hostname or srv.name) % 25))), 1)
             disk = 62.4
 
             metric = ServerMetric(
+                id=str(uuid.uuid4()),
                 server_id=srv.id,
                 cpu_percent=cpu,
                 ram_percent=ram,
@@ -167,7 +197,8 @@ async def execute_monitoring_cycle():
             )
             db.add(metric)
             srv.last_heartbeat = datetime.now(timezone.utc).replace(tzinfo=None)
-            srv.status = "ONLINE"
+            if srv.status not in ("AUTH_FAILED", "OFFLINE"):
+                srv.status = "ONLINE"
 
         await db.commit()
 

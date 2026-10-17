@@ -58,7 +58,7 @@ export interface Server {
   has_ssh_password?: boolean;
   use_sudo?: boolean;
   has_sudo_password?: boolean;
-  status: 'ONLINE' | 'OFFLINE' | 'DEGRADED' | 'MAINTENANCE';
+  status: 'ONLINE' | 'OFFLINE' | 'DEGRADED' | 'MAINTENANCE' | 'AUTH_FAILED' | 'UNREACHABLE' | string;
   last_heartbeat: string;
   agent_version: string;
   agent_status: string;

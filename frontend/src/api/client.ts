@@ -589,7 +589,16 @@ class ApiClient {
     });
   }
 
-  async testServerConnection(id: string) {
+  async testServerConnection(id: string, creds?: {
+    ssh_user?: string;
+    ssh_port?: number;
+    ssh_auth_type?: string;
+    ssh_key?: string;
+    ssh_password?: string;
+    use_sudo?: boolean;
+    sudo_password?: string;
+    save_if_successful?: boolean;
+  }) {
     return this.request<{
       success: boolean;
       server_id: string;
@@ -598,7 +607,10 @@ class ApiClient {
       banner?: string;
       message: string;
       status: string;
-    }>(`/servers/${id}/connect/test`, { method: 'POST' });
+    }>(`/servers/${id}/connect/test`, {
+      method: 'POST',
+      body: creds ? JSON.stringify(creds) : undefined,
+    });
   }
 
   async configureServerConnection(id: string, data: {

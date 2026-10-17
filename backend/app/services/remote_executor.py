@@ -75,19 +75,26 @@ def build_escalated_command(server: Server, full_cmd: str, working_dir: Optional
             f'sudo -n bash -l -c "eval \\"\\$(echo \'{b64_cmd}\' | base64 -d)\\""'
         )
 
-def test_server_connection(server: Server) -> Dict[str, Any]:
+def test_server_connection(server: Server, override_credentials: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     Tests TCP connectivity and SSH / Agent handshake to the server.
+    Supports in-flight override_credentials so users can test newly typed passwords/keys before saving.
     Measures latency in milliseconds and verifies SSH service availability.
     If non-root or use_sudo is enabled, verifies root escalation via sudo su.
     """
     start_time = time.time()
     target_ip = server.public_ip
-    port = server.ssh_port or 22
+    creds = override_credentials or {}
+    port = creds.get("ssh_port") or server.ssh_port or 22
+    ssh_user = (creds.get("ssh_user") or server.ssh_user or "root").strip()
+    ssh_password = creds.get("ssh_password") if creds.get("ssh_password") is not None else server.ssh_password
+    ssh_key = creds.get("ssh_key") if creds.get("ssh_key") is not None else server.ssh_key
+    use_sudo = creds.get("use_sudo") if creds.get("use_sudo") is not None else getattr(server, "use_sudo", False)
+    sudo_password = creds.get("sudo_password") if creds.get("sudo_password") is not None else getattr(server, "sudo_password", None)
 
     # 1. Quick TCP socket probe
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.settimeout(4.0)
+    sock.settimeout(6.0)
     try:
         sock.connect((target_ip, port))
         latency_ms = round((time.time() - start_time) * 1000, 2)
@@ -95,7 +102,7 @@ def test_server_connection(server: Server) -> Dict[str, Any]:
         # Read SSH banner if available
         banner = ""
         try:
-            sock.settimeout(1.5)
+            sock.settimeout(2.0)
             banner_bytes = sock.recv(1024)
             banner = banner_bytes.decode("utf-8", errors="ignore").strip()
         except Exception:
@@ -105,13 +112,13 @@ def test_server_connection(server: Server) -> Dict[str, Any]:
 
         # 2. Test SSH authentication if credentials exist
         auth_status = "PORT_OPEN"
-        if server.ssh_password or server.ssh_key:
+        if ssh_password or ssh_key:
             client = paramiko.SSHClient()
             client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
             try:
-                if server.ssh_key:
+                if ssh_key:
                     # Try RSA, Ed25519, or ECDSA key
-                    key_file = io.StringIO(server.ssh_key.strip())
+                    key_file = io.StringIO(ssh_key.strip())
                     try:
                         pkey = paramiko.RSAKey.from_private_key(key_file)
                     except Exception:
@@ -124,39 +131,87 @@ def test_server_connection(server: Server) -> Dict[str, Any]:
                     client.connect(
                         hostname=target_ip,
                         port=port,
-                        username=server.ssh_user or "root",
+                        username=ssh_user,
                         pkey=pkey,
-                        timeout=5.0
+                        timeout=10.0,
+                        auth_timeout=10.0,
+                        banner_timeout=10.0,
+                        look_for_keys=False,
+                        allow_agent=False
                     )
                 else:
                     client.connect(
                         hostname=target_ip,
                         port=port,
-                        username=server.ssh_user or "root",
-                        password=server.ssh_password,
-                        timeout=5.0
+                        username=ssh_user,
+                        password=ssh_password,
+                        timeout=10.0,
+                        auth_timeout=10.0,
+                        banner_timeout=10.0,
+                        look_for_keys=False,
+                        allow_agent=False
                     )
                 
                 # Test privilege escalation if non-root user or use_sudo enabled
-                if should_escalate_sudo(server):
-                    test_cmd = build_escalated_command(server, "id -u")
-                    stdin_t, stdout_t, stderr_t = client.exec_command(test_cmd, timeout=6.0)
+                should_escalate = (ssh_user.lower() != "root") and (use_sudo is not False)
+                if should_escalate:
+                    temp_server = Server(
+                        public_ip=target_ip,
+                        ssh_user=ssh_user,
+                        ssh_port=port,
+                        ssh_password=ssh_password,
+                        use_sudo=True,
+                        sudo_password=sudo_password or ssh_password
+                    )
+                    test_cmd = build_escalated_command(temp_server, "id -u")
+                    stdin_t, stdout_t, stderr_t = client.exec_command(test_cmd, timeout=8.0)
                     sudo_out = stdout_t.read().decode("utf-8", errors="replace").strip()
                     sudo_err = stderr_t.read().decode("utf-8", errors="replace").strip()
                     sudo_code = stdout_t.channel.recv_exit_status()
                     if sudo_code == 0 and ("0" in sudo_out or "root" in sudo_out):
-                        auth_status = f"AUTHENTICATED (User: {server.ssh_user}, Sudo: ROOT ESCALATED)"
+                        auth_status = f"AUTHENTICATED (User: {ssh_user}, Sudo: ROOT ESCALATED)"
                     else:
                         err_sample = (sudo_err or sudo_out or "Sudo escalation rejected")[:80].strip()
-                        auth_status = f"AUTHENTICATED (User: {server.ssh_user}, Sudo FAILED: {err_sample})"
+                        auth_status = f"AUTHENTICATED (User: {ssh_user}, Sudo FAILED: {err_sample})"
                 else:
-                    auth_status = f"AUTHENTICATED (User: {server.ssh_user or 'root'})"
+                    auth_status = f"AUTHENTICATED (User: {ssh_user})"
 
                 client.close()
             except paramiko.AuthenticationException:
                 auth_status = "AUTH_FAILED"
             except Exception as e:
-                auth_status = f"AUTH_ERROR: {str(e)[:50]}"
+                auth_status = f"AUTH_ERROR: {str(e)[:80]}"
+
+        if auth_status == "AUTH_FAILED":
+            return {
+                "success": False,
+                "server_id": server.id,
+                "connection_type": server.connection_type or "SSH",
+                "latency_ms": latency_ms,
+                "banner": banner,
+                "status": "AUTH_FAILED",
+                "message": f"SSH Authentication Failed for {server.name} ({target_ip}:{port}) as '{ssh_user}'. Invalid password or key."
+            }
+        elif auth_status.startswith("AUTH_ERROR"):
+            return {
+                "success": False,
+                "server_id": server.id,
+                "connection_type": server.connection_type or "SSH",
+                "latency_ms": latency_ms,
+                "banner": banner,
+                "status": "AUTH_FAILED",
+                "message": f"SSH Handshake Error for {server.name} ({target_ip}:{port}): {auth_status}"
+            }
+        elif "Sudo FAILED" in auth_status:
+            return {
+                "success": False,
+                "server_id": server.id,
+                "connection_type": server.connection_type or "SSH",
+                "latency_ms": latency_ms,
+                "banner": banner,
+                "status": "AUTH_FAILED",
+                "message": f"SSH Authenticated as '{ssh_user}', but Sudo root escalation failed: {auth_status}"
+            }
 
         return {
             "success": True,
@@ -235,7 +290,7 @@ def execute_remote_command(server: Server, command: str, working_dir: Optional[s
 
         client = paramiko.SSHClient()
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        conn_timeout = min(float(timeout), 4.0)
+        conn_timeout = max(min(float(timeout), 10.0), 6.0)
         try:
             if server.ssh_key:
                 key_file = io.StringIO(server.ssh_key.strip())
@@ -255,7 +310,9 @@ def execute_remote_command(server: Server, command: str, working_dir: Optional[s
                     pkey=pkey,
                     timeout=conn_timeout,
                     auth_timeout=conn_timeout,
-                    banner_timeout=conn_timeout
+                    banner_timeout=conn_timeout,
+                    look_for_keys=False,
+                    allow_agent=False
                 )
             else:
                 client.connect(
@@ -265,7 +322,9 @@ def execute_remote_command(server: Server, command: str, working_dir: Optional[s
                     password=server.ssh_password,
                     timeout=conn_timeout,
                     auth_timeout=conn_timeout,
-                    banner_timeout=conn_timeout
+                    banner_timeout=conn_timeout,
+                    look_for_keys=False,
+                    allow_agent=False
                 )
 
             escalated_cmd = build_escalated_command(server, full_cmd)

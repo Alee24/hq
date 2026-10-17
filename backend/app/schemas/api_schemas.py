@@ -147,6 +147,16 @@ class ServerConnectionConfig(BaseModel):
     use_sudo: bool = False
     sudo_password: Optional[str] = None
 
+class ServerConnectionTestRequest(BaseModel):
+    ssh_user: Optional[str] = None
+    ssh_port: Optional[int] = None
+    ssh_auth_type: Optional[str] = None
+    ssh_key: Optional[str] = None
+    ssh_password: Optional[str] = None
+    use_sudo: Optional[bool] = None
+    sudo_password: Optional[str] = None
+    save_if_successful: Optional[bool] = False
+
 class ServerConnectionTestResponse(BaseModel):
     success: bool
     server_id: str

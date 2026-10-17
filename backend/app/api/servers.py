@@ -9,7 +9,7 @@ from backend.app.core.deps import get_current_user, require_roles
 from backend.app.models.entities import User, Server, ServerMetric, Application, AppLog, ServerTerminalLog, Domain, ServerSnapshot
 from backend.app.schemas.api_schemas import (
     ServerCreate, ServerUpdate, ServerResponse, ServerCommandRequest, ServerMetricResponse,
-    ServerConnectionConfig, ServerConnectionTestResponse, TerminalExecRequest,
+    ServerConnectionConfig, ServerConnectionTestRequest, ServerConnectionTestResponse, TerminalExecRequest,
     TerminalExecResponse, ServerTerminalLogResponse, ScheduledRebootRequest,
     TroubleshootCommandRequest, ServiceActionRequest,
     ServerSnapshotResponse, CreateServerSnapshotRequest, RevertServerSnapshotResponse
@@ -727,6 +727,7 @@ async def execute_service_action_endpoint(
 @router.post("/{server_id}/connect/test", response_model=ServerConnectionTestResponse)
 async def test_server_connection_endpoint(
     server_id: str,
+    payload: Optional[ServerConnectionTestRequest] = None,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_roles(["SUPER_ADMIN", "INFRASTRUCTURE_ADMIN"]))
 ):
@@ -735,11 +736,28 @@ async def test_server_connection_endpoint(
     if not srv:
         raise HTTPException(status_code=404, detail="Server not found.")
 
-    test_res = await asyncio.to_thread(test_server_connection, srv)
+    override_creds = payload.model_dump(exclude_unset=True) if payload else None
+
+    test_res = await asyncio.to_thread(test_server_connection, srv, override_creds)
     srv.status = test_res["status"]
     if test_res["success"]:
         srv.last_heartbeat = datetime.now(timezone.utc).replace(tzinfo=None)
         srv.agent_status = "CONNECTED"
+        if payload and payload.save_if_successful:
+            if payload.ssh_user is not None:
+                srv.ssh_user = payload.ssh_user
+            if payload.ssh_port is not None:
+                srv.ssh_port = payload.ssh_port
+            if payload.ssh_auth_type is not None:
+                srv.ssh_auth_type = payload.ssh_auth_type
+            if payload.ssh_password is not None and payload.ssh_password.strip():
+                srv.ssh_password = payload.ssh_password
+            if payload.ssh_key is not None and payload.ssh_key.strip():
+                srv.ssh_key = payload.ssh_key
+            if payload.use_sudo is not None:
+                srv.use_sudo = payload.use_sudo
+            if payload.sudo_password is not None and payload.sudo_password.strip():
+                srv.sudo_password = payload.sudo_password
     else:
         srv.agent_status = "DISCONNECTED"
 
@@ -750,7 +768,7 @@ async def test_server_connection_endpoint(
         username=current_user.username,
         user_id=current_user.id,
         entity_id=srv.id,
-        details={"result": test_res["status"], "latency_ms": test_res["latency_ms"]},
+        details={"result": test_res["status"], "latency_ms": test_res["latency_ms"], "override": bool(override_creds)},
         result="SUCCESS" if test_res["success"] else "FAILED"
     )
 

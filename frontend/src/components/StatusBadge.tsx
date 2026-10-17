@@ -33,6 +33,12 @@ export const StatusBadge: React.FC<StatusBadgeProps> = ({ status, size = 'md' })
       Icon = AlertTriangle;
       break;
 
+    case 'AUTH_FAILED':
+    case 'AUTH_REQUIRED':
+      bg = 'bg-rose-950 text-rose-300 border-rose-600 animate-pulse';
+      Icon = ShieldAlert;
+      break;
+
     case 'OFFLINE':
     case 'FAILED':
     case 'EXPIRED':

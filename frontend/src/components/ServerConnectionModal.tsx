@@ -51,8 +51,23 @@ export const ServerConnectionModal: React.FC<ServerConnectionModalProps> = ({
     setTesting(true);
     setTestResult(null);
     try {
-      const res = await api.testServerConnection(server.id);
+      const res = await api.testServerConnection(server.id, {
+        ssh_user: sshUser,
+        ssh_port: Number(sshPort),
+        ssh_auth_type: authType,
+        ssh_key: authType === 'KEY' ? (sshKey ? sshKey.trim() : undefined) : undefined,
+        ssh_password: authType === 'PASSWORD' ? (sshPassword ? sshPassword : undefined) : undefined,
+        use_sudo: useSudo,
+        sudo_password: sudoPassword ? sudoPassword.trim() : undefined,
+        save_if_successful: false
+      });
       setTestResult(res);
+      if (res.success) {
+        try {
+          const refreshed = await api.getServer(server.id);
+          onUpdated(refreshed);
+        } catch {}
+      }
     } catch (err: any) {
       setTestResult({
         success: false,
@@ -78,7 +93,13 @@ export const ServerConnectionModal: React.FC<ServerConnectionModalProps> = ({
         use_sudo: useSudo,
         sudo_password: sudoPassword ? sudoPassword.trim() : undefined,
       });
-      onUpdated(updated);
+      try {
+        await api.testServerConnection(server.id);
+        const refreshed = await api.getServer(server.id);
+        onUpdated(refreshed);
+      } catch {
+        onUpdated(updated);
+      }
       onClose();
     } catch (err: any) {
       alert(err.message || 'Failed to save connection configuration.');
