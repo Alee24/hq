@@ -445,3 +445,130 @@ class NotificationLog(Base):
     error_message = Column(Text, nullable=True)
     metadata_json = Column(JSON, default=dict)
     created_at = Column(DateTime, default=utcnow, index=True)
+
+
+class SubscriptionPlan(Base):
+    __tablename__ = "subscription_plans"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    name = Column(String(100), nullable=False, index=True)
+    slug = Column(String(50), unique=True, nullable=False, index=True)
+    description = Column(String(255), nullable=True)
+    monthly_price_usd = Column(Float, nullable=False, default=0.0)
+    annual_price_usd = Column(Float, nullable=False, default=0.0)
+    max_servers = Column(Integer, default=1)
+    max_domains = Column(Integer, default=3)
+    max_applications = Column(Integer, default=5)
+    features = Column(JSON, default=list)
+    badge = Column(String(50), nullable=True)
+    is_popular = Column(Boolean, default=False)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=utcnow)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class CustomerSubscription(Base):
+    __tablename__ = "customer_subscriptions"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    plan_id = Column(String(36), ForeignKey("subscription_plans.id"), nullable=False, index=True)
+    status = Column(String(30), default="ACTIVE", index=True)  # ACTIVE, TRIAL, PAST_DUE, CANCELED
+    billing_cycle = Column(String(20), default="MONTHLY")  # MONTHLY, ANNUAL
+    current_period_start = Column(DateTime, default=utcnow)
+    current_period_end = Column(DateTime, nullable=True)
+    payment_method = Column(String(50), default="CREDIT_CARD")
+    auto_renew = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=utcnow)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
+
+    plan = relationship("SubscriptionPlan")
+    user = relationship("User")
+
+
+class DomainOrder(Base):
+    __tablename__ = "domain_orders"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    domain_name = Column(String(255), nullable=False, index=True)
+    tld = Column(String(30), nullable=False, index=True)
+    registration_years = Column(Integer, default=1)
+    price_usd = Column(Float, nullable=False, default=12.0)
+    status = Column(String(30), default="ACTIVE", index=True)  # ACTIVE, PENDING_DNS, EXPIRED, CANCELLED
+    auto_renew = Column(Boolean, default=True)
+    privacy_protection = Column(Boolean, default=True)
+    server_id = Column(String(36), ForeignKey("servers.id"), nullable=True, index=True)
+    nameservers = Column(JSON, default=lambda: ["ns1.cloudnode.io", "ns2.cloudnode.io"])
+    dns_records = Column(JSON, default=list)
+    ssl_status = Column(String(30), default="ACTIVE")
+    registered_at = Column(DateTime, default=utcnow)
+    expires_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=utcnow)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
+
+    user = relationship("User")
+    server = relationship("Server")
+
+
+class CloudServerOrder(Base):
+    __tablename__ = "cloud_server_orders"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    instance_name = Column(String(100), nullable=False, index=True)
+    plan_name = Column(String(100), nullable=False)
+    region = Column(String(100), default="Frankfurt (eu-central-1)")
+    os_image = Column(String(100), default="Ubuntu 24.04 LTS (Docker Pre-Installed)")
+    cpu_cores = Column(Integer, default=2)
+    ram_gb = Column(Integer, default=4)
+    disk_gb = Column(Integer, default=80)
+    bandwidth_tb = Column(Integer, default=2)
+    monthly_price_usd = Column(Float, nullable=False, default=10.0)
+    status = Column(String(30), default="ACTIVE", index=True)  # PROVISIONING, ACTIVE, STOPPED, TERMINATED
+    ip_address = Column(String(45), nullable=True, index=True)
+    root_password_hash = Column(String(255), nullable=True)
+    server_id = Column(String(36), ForeignKey("servers.id"), nullable=True, index=True)
+    created_at = Column(DateTime, default=utcnow)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
+
+    user = relationship("User")
+    server = relationship("Server")
+
+
+class AppMarketplaceTemplate(Base):
+    __tablename__ = "app_marketplace_templates"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    slug = Column(String(100), unique=True, nullable=False, index=True)
+    title = Column(String(150), nullable=False, index=True)
+    category = Column(String(50), default="Fullstack", index=True)  # CMS, Fullstack, Backend API, Database, Tool
+    description = Column(Text, nullable=False)
+    icon = Column(String(50), default="Box")
+    badge = Column(String(50), default="Popular")
+    default_port = Column(Integer, default=80)
+    git_template_url = Column(String(255), nullable=True)
+    docker_compose_yaml = Column(Text, nullable=True)
+    env_variables = Column(JSON, default=list)
+    install_time_estimate = Column(String(30), default="2 minutes")
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=utcnow)
+
+
+class BillingInvoice(Base):
+    __tablename__ = "billing_invoices"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    invoice_number = Column(String(50), unique=True, nullable=False, index=True)
+    amount_usd = Column(Float, nullable=False, default=0.0)
+    currency = Column(String(10), default="USD")
+    description = Column(String(255), nullable=False)
+    status = Column(String(20), default="PAID", index=True)  # PAID, PENDING, FAILED, REFUNDED
+    payment_method = Column(String(50), default="CARD")
+    download_url = Column(String(255), nullable=True)
+    paid_at = Column(DateTime, default=utcnow)
+    created_at = Column(DateTime, default=utcnow, index=True)
+
+    user = relationship("User")
+

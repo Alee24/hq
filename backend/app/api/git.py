@@ -1,5 +1,5 @@
 import asyncio
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request, Header
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -15,13 +15,19 @@ from backend.app.schemas.api_schemas import (
     GitCommitInfo,
     GitActionRequest,
     GitActionResponse,
-    GitBatchScanResponse
+    GitBatchScanResponse,
+    ServerDeployKeyResponse,
+    AppGitAuthConfigureRequest,
+    AppGitAuthConfigureResponse,
+    GitWebhookConfigResponse
 )
 from backend.app.services.remote_executor import (
     detect_remote_application_git,
     scan_all_remote_git_repos,
     execute_remote_git_action,
-    build_allowed_names_for_app
+    build_allowed_names_for_app,
+    get_or_create_server_git_deploy_key,
+    configure_remote_application_git_auth
 )
 
 router = APIRouter(prefix="/git", tags=["Git Management"])
@@ -486,6 +492,228 @@ async def scan_all_git_repos_endpoint(
         message=f"Scanned {len(servers)} servers. Discovered {total_scanned} git directories, updated {updated_apps} applications ({updates_available_count} updates pending).",
         results=scan_results
     )
+
+
+@router.get("/deploy-key/{server_id}", response_model=ServerDeployKeyResponse)
+async def get_server_deploy_key_endpoint(
+    server_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    srv_res = await db.execute(select(Server).where(Server.id == server_id))
+    server = srv_res.scalar_one_or_none()
+    if not server:
+        raise HTTPException(status_code=404, detail="Server not found.")
+        
+    res = await asyncio.to_thread(get_or_create_server_git_deploy_key, server, False)
+    return ServerDeployKeyResponse(**res)
+
+
+@router.post("/deploy-key/{server_id}/generate", response_model=ServerDeployKeyResponse)
+async def generate_server_deploy_key_endpoint(
+    server_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_roles(["SUPER_ADMIN", "DEPLOYMENT_ADMIN"]))
+):
+    srv_res = await db.execute(select(Server).where(Server.id == server_id))
+    server = srv_res.scalar_one_or_none()
+    if not server:
+        raise HTTPException(status_code=404, detail="Server not found.")
+        
+    res = await asyncio.to_thread(get_or_create_server_git_deploy_key, server, True)
+    
+    audit = AuditLog(
+        user_id=current_user.id,
+        username=current_user.username,
+        action="GENERATE_GIT_DEPLOY_KEY",
+        entity_type="server",
+        entity_id=server.id,
+        details={"fingerprint": res.get("fingerprint"), "key_type": res.get("key_type")}
+    )
+    db.add(audit)
+    await db.commit()
+    
+    return ServerDeployKeyResponse(**res)
+
+
+@router.post("/app/{application_id}/configure-auth", response_model=AppGitAuthConfigureResponse)
+async def configure_app_git_auth_endpoint(
+    application_id: str,
+    payload: AppGitAuthConfigureRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_roles(["SUPER_ADMIN", "DEPLOYMENT_ADMIN"]))
+):
+    result = await db.execute(
+        select(Application).options(selectinload(Application.server)).where(Application.id == application_id)
+    )
+    app = result.scalar_one_or_none()
+    if not app:
+        raise HTTPException(status_code=404, detail="Application not found.")
+    if not app.server:
+        raise HTTPException(status_code=400, detail="Application does not have an assigned server.")
+        
+    res = await asyncio.to_thread(
+        configure_remote_application_git_auth,
+        server=app.server,
+        app=app,
+        auth_type=payload.auth_type,
+        token=payload.token,
+        switch_to_ssh=payload.switch_to_ssh,
+        custom_repo_url=payload.custom_repo_url
+    )
+    
+    if res.get("success") and res.get("repo_url"):
+        app.repo_url = res["repo_url"]
+        await db.commit()
+        
+    return AppGitAuthConfigureResponse(**res)
+
+
+@router.post("/app/{application_id}/switch-to-ssh", response_model=AppGitAuthConfigureResponse)
+async def switch_app_to_ssh_endpoint(
+    application_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_roles(["SUPER_ADMIN", "DEPLOYMENT_ADMIN"]))
+):
+    result = await db.execute(
+        select(Application).options(selectinload(Application.server)).where(Application.id == application_id)
+    )
+    app = result.scalar_one_or_none()
+    if not app:
+        raise HTTPException(status_code=404, detail="Application not found.")
+    if not app.server:
+        raise HTTPException(status_code=400, detail="Application does not have an assigned server.")
+        
+    res = await asyncio.to_thread(
+        configure_remote_application_git_auth,
+        server=app.server,
+        app=app,
+        auth_type="SSH",
+        token=None,
+        switch_to_ssh=True,
+        custom_repo_url=None
+    )
+    
+    if res.get("success") and res.get("repo_url"):
+        app.repo_url = res["repo_url"]
+        await db.commit()
+        
+    return AppGitAuthConfigureResponse(**res)
+
+
+@router.get("/webhook/{application_id}/config", response_model=GitWebhookConfigResponse)
+async def get_app_webhook_config(
+    application_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    result = await db.execute(
+        select(Application).where(Application.id == application_id)
+    )
+    app = result.scalar_one_or_none()
+    if not app:
+        raise HTTPException(status_code=404, detail="Application not found.")
+        
+    base_url = str(request.base_url).rstrip("/")
+    webhook_url = f"{base_url}/api/git/webhook/{app.id}"
+    
+    import hashlib
+    secret_seed = f"hq-webhook-{app.id}-{app.server_id or '0'}"
+    webhook_secret = hashlib.sha256(secret_seed.encode("utf-8")).hexdigest()[:32]
+    
+    instructions = {
+        "github": "In your GitHub repository, go to Settings > Webhooks > Add webhook. Paste the Payload URL, set Content type to application/json, paste the Secret, and select 'Just the push event'.",
+        "gitlab": "In your GitLab project, go to Settings > Webhooks. Paste the URL, Secret token, and check 'Push events'.",
+        "bitbucket": "In Bitbucket repository settings, go to Webhooks > Add webhook. Enter URL and select repository push."
+    }
+    
+    return GitWebhookConfigResponse(
+        application_id=app.id,
+        application_name=app.name,
+        webhook_url=webhook_url,
+        secret=webhook_secret,
+        recommended_events=["push"],
+        payload_format="application/json",
+        instructions=instructions
+    )
+
+
+@router.post("/webhook/{application_id}")
+async def receive_git_webhook(
+    application_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    x_github_event: Optional[str] = Header(None),
+    x_gitlab_event: Optional[str] = Header(None),
+    x_hub_signature_256: Optional[str] = Header(None),
+    x_gitlab_token: Optional[str] = Header(None)
+):
+    """
+    Public webhook receiver for GitHub, GitLab, and Bitbucket push events.
+    Automatically triggers a clean remote pull and Docker/service update on the assigned VPS.
+    """
+    result = await db.execute(
+        select(Application).options(selectinload(Application.server)).where(Application.id == application_id)
+    )
+    app = result.scalar_one_or_none()
+    if not app:
+        raise HTTPException(status_code=404, detail="Application not found.")
+        
+    server = app.server
+    if not server:
+        raise HTTPException(status_code=400, detail="Application does not have an assigned server.")
+        
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+        
+    ref = body.get("ref", "")
+    pushed_branch = ref.split("/")[-1] if ref else ""
+    commit_hash = body.get("after") or (body.get("commits", [{}])[0].get("id") if body.get("commits") else "HEAD")
+    commit_msg = body.get("head_commit", {}).get("message") or (body.get("commits", [{}])[0].get("message") if body.get("commits") else "Automated Webhook Push")
+    commit_author = body.get("head_commit", {}).get("author", {}).get("name") or body.get("user_name") or "GitHub Webhook"
+    
+    res = await asyncio.to_thread(
+        execute_remote_git_action,
+        server=server,
+        app=app,
+        action="pull",
+        branch=app.git_branch or pushed_branch or "main"
+    )
+    
+    new_commit = res.get("new_commit") or commit_hash
+    if res.get("success"):
+        app.current_commit = new_commit
+        app.latest_repo_commit = new_commit
+        if res.get("new_version"):
+            app.current_version = res["new_version"]
+        app.last_deployment_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        
+        dep = Deployment(
+            application_id=app.id,
+            environment=app.environment or "production",
+            branch=app.git_branch or pushed_branch or "main",
+            commit_hash=new_commit,
+            commit_message=f"Webhook Auto-Deploy: {commit_msg[:120]}",
+            commit_author=commit_author,
+            status="SUCCESS",
+            deployed_by=f"Webhook ({commit_author})",
+            logs=res.get("stdout") or res.get("message"),
+            duration_seconds=max(1, int(res.get("duration_ms", 1000) / 1000))
+        )
+        db.add(dep)
+        await db.commit()
+        
+    return {
+        "success": res.get("success", False),
+        "application_id": app.id,
+        "application_name": app.name,
+        "pushed_branch": pushed_branch,
+        "new_commit": new_commit,
+        "message": res.get("message", "Webhook processed successfully.")
+    }
 
 
 

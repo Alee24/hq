@@ -12,7 +12,9 @@ import {
   Activity,
   Layers,
   Sparkles,
-  Mail
+  Mail,
+  Globe,
+  Layout
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useEnvironment } from '../context/EnvironmentContext';
@@ -24,6 +26,8 @@ interface TopBarProps {
   onNavigate: (view: string) => void;
   onToggleMobileMenu?: () => void;
   activeAlertsCount?: number;
+  onGoToPortal?: () => void;
+  onGoToLanding?: () => void;
 }
 
 export const TopBar: React.FC<TopBarProps> = ({
@@ -32,6 +36,8 @@ export const TopBar: React.FC<TopBarProps> = ({
   onNavigate,
   onToggleMobileMenu,
   activeAlertsCount = 0,
+  onGoToPortal,
+  onGoToLanding,
 }) => {
   const { user, logout } = useAuth();
   const { environment, setEnvironment } = useEnvironment();
@@ -112,6 +118,30 @@ export const TopBar: React.FC<TopBarProps> = ({
           <Sparkles size={13} className="text-amber-400" />
           <span>Setup Wizard</span>
         </button>
+
+        {/* Client Portal Link */}
+        {onGoToPortal && (
+          <button
+            onClick={onGoToPortal}
+            className="hidden md:flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-brand-950/80 hover:bg-brand-900 border border-brand-800 text-brand-300 hover:text-white text-xs font-semibold transition-colors focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:outline-none"
+            title="Open Customer SaaS Portal"
+          >
+            <Layout size={13} />
+            <span>Client Portal</span>
+          </button>
+        )}
+
+        {/* Public Website Link */}
+        {onGoToLanding && (
+          <button
+            onClick={onGoToLanding}
+            className="hidden lg:flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 hover:text-white text-xs font-medium transition-colors focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:outline-none"
+            title="Open Public Cloud & Domain SaaS Website"
+          >
+            <Globe size={13} className="text-emerald-400" />
+            <span>Public Site</span>
+          </button>
+        )}
 
         {/* Theme Toggle */}
         <button
@@ -258,6 +288,32 @@ export const TopBar: React.FC<TopBarProps> = ({
                 <Mail size={14} className="text-slate-400" />
                 <span>Email & Alerts (SMTP)</span>
               </button>
+
+              {onGoToPortal && (
+                <button
+                  onClick={() => {
+                    setUserDropdownOpen(false);
+                    onGoToPortal();
+                  }}
+                  className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-brand-300 hover:text-white hover:bg-slate-800 rounded-lg transition-colors text-left font-semibold"
+                >
+                  <Layout size={14} className="text-brand-400" />
+                  <span>Switch to Client Portal</span>
+                </button>
+              )}
+
+              {onGoToLanding && (
+                <button
+                  onClick={() => {
+                    setUserDropdownOpen(false);
+                    onGoToLanding();
+                  }}
+                  className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-emerald-300 hover:text-white hover:bg-slate-800 rounded-lg transition-colors text-left"
+                >
+                  <Globe size={14} className="text-emerald-400" />
+                  <span>View Public Website</span>
+                </button>
+              )}
 
               <div className="my-1 border-t border-slate-800" />
 

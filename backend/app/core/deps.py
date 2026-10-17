@@ -4,6 +4,7 @@ from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from backend.app.core.database import get_db
+from backend.app.core.config import settings
 from backend.app.core.security import decode_access_token
 from backend.app.models.entities import User, ApiKey
 import hashlib
@@ -48,14 +49,15 @@ async def get_current_user_optional(
     if not payload:
         return None
 
-    user_id = payload.get("sub")
+    sub = payload.get("sub")
     username = payload.get("username")
-    if not user_id and not username:
+    user_id = payload.get("user_id") or sub
+    if not sub and not username and not user_id:
         return None
 
     # Resilient resolution: Find user by ID, username, or email
     stmt = select(User).where(
-        ((User.id == user_id) | (User.username == username) | (User.email == user_id)) & (User.is_active == True)
+        ((User.id == user_id) | (User.id == sub) | (User.username == username) | (User.username == sub) | (User.email == user_id) | (User.email == sub)) & (User.is_active == True)
     )
     result = await db.execute(stmt)
     user = result.scalar_one_or_none()

@@ -2042,6 +2042,8 @@ def execute_remote_service_action(server: Server, service_name: str, action: str
 
 _VPS_GIT_RESOLVER_PY = """
 import os, glob, re, subprocess, json, time
+os.environ['GIT_SSH_COMMAND'] = 'ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new'
+os.environ['GIT_TERMINAL_PROMPT'] = '0'
 
 app_name = payload.get('name', '')
 app_domain = payload.get('domain', '')
@@ -2697,6 +2699,8 @@ def scan_all_remote_git_repos(server: Server) -> List[Dict[str, Any]]:
     """
     vps_py = """
 import os, glob, subprocess, json
+os.environ['GIT_SSH_COMMAND'] = 'ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new'
+os.environ['GIT_TERMINAL_PROMPT'] = '0'
 
 STOP_DIRS = {'/', '/var', '/var/www', '/var/www/html', '/home', '/root', '/opt', '/usr', '/etc', '/var/lib'}
 repos = []
@@ -5522,3 +5526,265 @@ fi
         "working_dir": target_dir,
         "timestamp": datetime.now(timezone.utc)
     }
+
+
+def get_or_create_server_git_deploy_key(server: Server, force_regenerate: bool = False) -> Dict[str, Any]:
+    """
+    Ensures an SSH Ed25519 deploy key pair exists on the target server (/root/.ssh/id_ed25519),
+    configures known_hosts and ~/.ssh/config for GitHub, GitLab, and Bitbucket, and validates live authentication.
+    Returns the public key, fingerprint, and live GitHub/GitLab authentication status.
+    """
+    force_val = "true" if force_regenerate else "false"
+    clean_srv_name = re.sub(r'[^a-zA-Z0-9_-]', '-', server.name).lower()
+    script = f"""#!/usr/bin/env bash
+set -e
+
+FORCE="{force_val}"
+SSH_DIR="/root/.ssh"
+if [ ! -d "$SSH_DIR" ]; then
+    mkdir -p "$SSH_DIR"
+fi
+chmod 700 "$SSH_DIR"
+
+KEY_FILE="$SSH_DIR/id_ed25519"
+PUB_FILE="$SSH_DIR/id_ed25519.pub"
+
+if [ "$FORCE" = "true" ] || [ ! -f "$KEY_FILE" ] || [ ! -f "$PUB_FILE" ]; then
+    rm -f "$KEY_FILE" "$PUB_FILE"
+    ssh-keygen -t ed25519 -C "hq-deploy-key@{clean_srv_name}" -f "$KEY_FILE" -N "" >/dev/null 2>&1
+fi
+chmod 600 "$KEY_FILE" 2>/dev/null || true
+chmod 644 "$PUB_FILE" 2>/dev/null || true
+
+KNOWN_HOSTS="$SSH_DIR/known_hosts"
+touch "$KNOWN_HOSTS"
+chmod 644 "$KNOWN_HOSTS"
+for host in github.com gitlab.com bitbucket.org; do
+    if ! grep -q "$host" "$KNOWN_HOSTS" 2>/dev/null; then
+        ssh-keyscan -H "$host" >> "$KNOWN_HOSTS" 2>/dev/null || true
+    fi
+done
+
+CONFIG_FILE="$SSH_DIR/config"
+touch "$CONFIG_FILE"
+chmod 600 "$CONFIG_FILE"
+
+if ! grep -q "Host github.com" "$CONFIG_FILE" 2>/dev/null; then
+    cat << 'EOF' >> "$CONFIG_FILE"
+
+Host github.com
+    HostName github.com
+    User git
+    IdentityFile /root/.ssh/id_ed25519
+    IdentitiesOnly yes
+    StrictHostKeyChecking accept-new
+
+Host gitlab.com
+    HostName gitlab.com
+    User git
+    IdentityFile /root/.ssh/id_ed25519
+    IdentitiesOnly yes
+    StrictHostKeyChecking accept-new
+
+Host bitbucket.org
+    HostName bitbucket.org
+    User git
+    IdentityFile /root/.ssh/id_ed25519
+    IdentitiesOnly yes
+    StrictHostKeyChecking accept-new
+EOF
+fi
+
+PUB_KEY=$(cat "$PUB_FILE" 2>/dev/null || true)
+FP=$(ssh-keygen -lf "$PUB_FILE" 2>/dev/null | awk '{{print $2}}' || true)
+GH_TEST=$(ssh -T -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=6 git@github.com 2>&1 || true)
+GL_TEST=$(ssh -T -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=6 git@gitlab.com 2>&1 || true)
+
+echo "---HQ_GIT_DEPLOY_START---"
+echo "PUBLIC_KEY=$PUB_KEY"
+echo "FINGERPRINT=$FP"
+echo "GH_RAW=$GH_TEST"
+echo "GL_RAW=$GL_TEST"
+echo "---HQ_GIT_DEPLOY_END---"
+"""
+    res = execute_remote_command(server, script, timeout=25)
+    stdout = res.get("stdout", "")
+    
+    pub_key = ""
+    fingerprint = ""
+    gh_raw = ""
+    gl_raw = ""
+    
+    if "---HQ_GIT_DEPLOY_START---" in stdout and "---HQ_GIT_DEPLOY_END---" in stdout:
+        block = stdout.split("---HQ_GIT_DEPLOY_START---")[1].split("---HQ_GIT_DEPLOY_END---")[0]
+        for line in block.splitlines():
+            line = line.strip()
+            if line.startswith("PUBLIC_KEY="):
+                pub_key = line[len("PUBLIC_KEY="):].strip()
+            elif line.startswith("FINGERPRINT="):
+                fingerprint = line[len("FINGERPRINT="):].strip()
+            elif line.startswith("GH_RAW="):
+                gh_raw = line[len("GH_RAW="):].strip()
+            elif line.startswith("GL_RAW="):
+                gl_raw = line[len("GL_RAW="):].strip()
+    
+    is_gh_auth = "successfully authenticated" in gh_raw.lower()
+    gh_status = "AUTHENTICATED" if is_gh_auth else ("AWAITING_KEY_REGISTRATION" if "permission denied" in gh_raw.lower() else "ERROR")
+    
+    is_gl_auth = "welcome to gitlab" in gl_raw.lower() or "successfully authenticated" in gl_raw.lower()
+    gl_status = "AUTHENTICATED" if is_gl_auth else ("AWAITING_KEY_REGISTRATION" if "permission denied" in gl_raw.lower() else "ERROR")
+    
+    setup_commands = [
+        "ssh-keyscan -H github.com >> ~/.ssh/known_hosts",
+        "git config --global core.sshCommand 'ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new'"
+    ]
+    
+    if is_gh_auth:
+        message = f"SSH Deploy Key is active and verified with GitHub ({gh_raw}). Private repositories can be pulled automatically."
+    elif gh_status == "AWAITING_KEY_REGISTRATION":
+        message = f"SSH Deploy Key ready on {server.name}. Copy this key and add it to your GitHub / GitLab repository under Settings > Deploy Keys."
+    else:
+        message = f"Deploy key generated on {server.name}. {gh_raw or 'Ready for use.'}"
+        
+    return {
+        "success": bool(pub_key),
+        "server_id": server.id,
+        "server_name": server.name,
+        "server_ip": server.public_ip,
+        "public_key": pub_key,
+        "key_type": "ED25519",
+        "fingerprint": fingerprint,
+        "github_authenticated": is_gh_auth,
+        "github_status": gh_status,
+        "gitlab_status": gl_status,
+        "test_output": gh_raw or gl_raw,
+        "setup_commands": setup_commands,
+        "message": message,
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+
+
+def configure_remote_application_git_auth(
+    server: Server,
+    app: Application,
+    auth_type: str = "SSH",
+    token: Optional[str] = None,
+    switch_to_ssh: bool = True,
+    custom_repo_url: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Configures remote Git authentication on the target server for the specified application.
+    Automatically converts HTTPS clone URLs to SSH (git@github.com:owner/repo.git) or embeds
+    tokens securely into remote origin.
+    """
+    payload = {
+        'name': app.name,
+        'domain': app.domain or '',
+        'root_path': app.root_path or '',
+        'service_name': getattr(app, 'service_name', '') or '',
+        'process_manager': getattr(app, 'process_manager', '') or '',
+        'auth_type': auth_type,
+        'token': token or '',
+        'switch_to_ssh': switch_to_ssh,
+        'custom_repo_url': custom_repo_url or ''
+    }
+    script_py = _VPS_GIT_RESOLVER_PY + """
+auth_type = payload.get('auth_type', 'SSH').upper()
+token = (payload.get('token') or '').strip()
+switch_to_ssh = payload.get('switch_to_ssh', True)
+custom_url = (payload.get('custom_repo_url') or '').strip()
+
+out_lines = []
+err_lines = []
+new_url = None
+success = False
+
+if not target_dir or not os.path.isdir(os.path.join(target_dir, '.git')):
+    err_lines.append(f"No Git repository found at {target_dir}")
+else:
+    p_cur = subprocess.run(['git', '-C', target_dir, 'config', '--get', 'remote.origin.url'], capture_output=True, text=True, timeout=5)
+    cur_url = p_cur.stdout.strip()
+    target_url = custom_url if custom_url else cur_url
+    
+    if auth_type == 'SSH' or switch_to_ssh:
+        if target_url.startswith('http://') or target_url.startswith('https://'):
+            clean_http = re.sub(r'^https?://([^@]+@)?', '', target_url)
+            pts = clean_http.split('/', 1)
+            if len(pts) == 2:
+                host = pts[0]
+                repo_path = pts[1]
+                if not repo_path.endswith('.git'):
+                    repo_path += '.git'
+                target_url = f"git@{host}:{repo_path}"
+        
+        p_set = subprocess.run(['git', '-C', target_dir, 'remote', 'set-url', 'origin', target_url], capture_output=True, text=True, timeout=5)
+        if p_set.returncode == 0:
+            new_url = target_url
+            out_lines.append(f"Updated Git origin remote to: {target_url}")
+            success = True
+        else:
+            err_lines.append(p_set.stderr.strip() or "Failed to set remote origin")
+            
+    elif auth_type == 'TOKEN' and token:
+        if 'github.com' in target_url:
+            clean_gh = re.sub(r'^https?://([^@]+@)?github\\.com/', '', target_url)
+            clean_gh = re.sub(r'^git@github\\.com:', '', clean_gh)
+            target_url = f"https://{token}@github.com/{clean_gh}"
+            if not target_url.endswith('.git'):
+                target_url += '.git'
+            p_set = subprocess.run(['git', '-C', target_dir, 'remote', 'set-url', 'origin', target_url], capture_output=True, text=True, timeout=5)
+            if p_set.returncode == 0:
+                new_url = f"https://***@github.com/{clean_gh}"
+                out_lines.append(f"Configured token-authenticated remote for {app_name}")
+                success = True
+            else:
+                err_lines.append(p_set.stderr.strip() or "Failed to configure token remote")
+
+    if success:
+        p_test = subprocess.run(['git', '-C', target_dir, 'fetch', 'origin', '--dry-run'], capture_output=True, text=True, timeout=10)
+        if p_test.returncode == 0:
+            out_lines.append("Remote fetch authentication test passed successfully.")
+        else:
+            test_err = p_test.stderr.strip()
+            if "permission denied" in test_err.lower():
+                out_lines.append("Remote URL updated. Please ensure the server's SSH Deploy Key is registered in GitHub/GitLab to complete authentication.")
+            else:
+                out_lines.append(f"Remote test notice: {test_err}")
+
+print(json.dumps({
+    'success': success,
+    'new_url': new_url,
+    'stdout': '\\n'.join(out_lines),
+    'stderr': '\\n'.join(err_lines)
+}))
+"""
+    payload_b64 = base64.b64encode(json.dumps(payload).encode("utf-8")).decode("ascii")
+    script_b64 = base64.b64encode(script_py.encode("utf-8")).decode("ascii")
+    
+    cmd = f"python3 -c \"import base64, json; payload=json.loads(base64.b64decode('{payload_b64}').decode()); exec(base64.b64decode('{script_b64}'))\""
+    res = execute_remote_command(server, cmd, timeout=25)
+    
+    stdout = res.get("stdout", "")
+    new_url = None
+    is_success = False
+    
+    if stdout:
+        try:
+            p_res = json.loads(stdout.strip().splitlines()[-1])
+            is_success = p_res.get("success", False)
+            new_url = p_res.get("new_url")
+            out_msg = p_res.get("stdout", "")
+        except Exception:
+            out_msg = stdout
+    else:
+        out_msg = res.get("stderr", "Execution failed")
+        
+    return {
+        "success": is_success,
+        "application_id": app.id,
+        "repo_url": new_url or app.repo_url or "",
+        "auth_type": auth_type,
+        "message": out_msg or f"Git authentication configured for {app.name}",
+        "remote_output": stdout or res.get("stderr", "")
+    }
+

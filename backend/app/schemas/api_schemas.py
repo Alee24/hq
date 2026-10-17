@@ -620,6 +620,44 @@ class GitBatchScanResponse(BaseModel):
     message: str
     results: List[Dict[str, Any]] = []
 
+class ServerDeployKeyResponse(BaseModel):
+    server_id: str
+    server_name: str
+    server_ip: str
+    public_key: str
+    key_type: str = "ED25519"
+    fingerprint: Optional[str] = None
+    github_authenticated: bool = False
+    github_status: str = "AWAITING_KEY_REGISTRATION" # AUTHENTICATED, AWAITING_KEY_REGISTRATION, ERROR
+    gitlab_status: Optional[str] = None
+    test_output: Optional[str] = None
+    setup_commands: List[str] = []
+    message: str
+    created_at: Optional[str] = None
+
+class AppGitAuthConfigureRequest(BaseModel):
+    auth_type: str = "SSH" # "SSH" or "TOKEN"
+    token: Optional[str] = None
+    custom_repo_url: Optional[str] = None
+    switch_to_ssh: bool = True
+
+class AppGitAuthConfigureResponse(BaseModel):
+    success: bool
+    application_id: str
+    repo_url: str
+    auth_type: str
+    message: str
+    remote_output: Optional[str] = None
+
+class GitWebhookConfigResponse(BaseModel):
+    application_id: str
+    application_name: str
+    webhook_url: str
+    secret: str
+    recommended_events: List[str] = ["push"]
+    payload_format: str = "application/json"
+    instructions: Dict[str, str] = {}
+
 class DeploymentTriggerRequest(BaseModel):
     application_id: str
     environment: str = "production"
@@ -1096,6 +1134,169 @@ class DomainTerminalExecResponse(BaseModel):
     server_ip: str
     working_dir: str
     timestamp: datetime
+
+
+# ==========================================
+# SaaS Cloud & Domain Portal Schemas
+# ==========================================
+
+class DomainSearchItem(BaseModel):
+    domain_name: str
+    tld: str
+    available: bool
+    price_usd: float
+    renew_price_usd: float
+    status_badge: str
+    is_recommended: bool = False
+
+
+class DomainSearchResponse(BaseModel):
+    query: str
+    exact_match: Optional[DomainSearchItem] = None
+    suggestions: List[DomainSearchItem] = []
+
+
+class DomainOrderRequest(BaseModel):
+    domain_name: str
+    registration_years: int = 1
+    privacy_protection: bool = True
+    auto_renew: bool = True
+    server_id: Optional[str] = None
+    payment_method: str = "CARD"
+
+
+class DomainOrderResponse(BaseModel):
+    id: str
+    domain_name: str
+    tld: str
+    status: str
+    price_usd: float
+    ssl_status: str
+    nameservers: List[str] = []
+    auto_renew: bool
+    registered_at: datetime
+    expires_at: Optional[datetime] = None
+    message: str
+
+
+class CloudServerOrderRequest(BaseModel):
+    instance_name: str
+    plan_name: str = "Cloud Compute Micro"
+    region: str = "Frankfurt (eu-central-1)"
+    os_image: str = "Ubuntu 24.04 LTS (Docker Pre-Installed)"
+    cpu_cores: int = 2
+    ram_gb: int = 4
+    disk_gb: int = 80
+    monthly_price_usd: float = 10.0
+    payment_method: str = "CARD"
+
+
+class CloudServerOrderResponse(BaseModel):
+    id: str
+    instance_name: str
+    plan_name: str
+    region: str
+    os_image: str
+    cpu_cores: int
+    ram_gb: int
+    disk_gb: int
+    ip_address: str
+    status: str
+    root_password: str
+    server_id: Optional[str] = None
+    monthly_price_usd: float
+    message: str
+
+
+class AppMarketplaceTemplateResponse(BaseModel):
+    id: str
+    slug: str
+    title: str
+    category: str
+    description: str
+    icon: str
+    badge: str
+    default_port: int
+    install_time_estimate: str
+    env_variables: List[Dict[str, Any]] = []
+
+
+class AppDeployTemplateRequest(BaseModel):
+    template_slug: str
+    app_name: str
+    domain: str
+    server_id: Optional[str] = None
+    env_values: Dict[str, str] = Field(default_factory=dict)
+
+
+class AppDeployTemplateResponse(BaseModel):
+    success: bool
+    application_id: str
+    app_name: str
+    domain: str
+    deploy_url: str
+    status: str
+    message: str
+
+
+class SubscriptionPlanResponse(BaseModel):
+    id: str
+    name: str
+    slug: str
+    description: Optional[str] = None
+    monthly_price_usd: float
+    annual_price_usd: float
+    max_servers: int
+    max_domains: int
+    max_applications: int
+    features: List[str] = []
+    badge: Optional[str] = None
+    is_popular: bool = False
+
+
+class BillingInvoiceResponse(BaseModel):
+    id: str
+    invoice_number: str
+    amount_usd: float
+    currency: str = "USD"
+    description: str
+    status: str
+    payment_method: str
+    paid_at: datetime
+    download_url: Optional[str] = None
+
+
+class CustomerDashboardResponse(BaseModel):
+    total_servers: int
+    total_domains: int
+    total_applications: int
+    active_deployments: int
+    monthly_spend: float
+    current_plan: Optional[SubscriptionPlanResponse] = None
+    recent_servers: List[Dict[str, Any]] = []
+    recent_domains: List[Dict[str, Any]] = []
+    recent_apps: List[Dict[str, Any]] = []
+    invoices: List[BillingInvoiceResponse] = []
+
+
+class CustomerSignupRequest(BaseModel):
+    email: str
+    username: str
+    password: str
+    full_name: Optional[str] = None
+    company_name: Optional[str] = None
+    plan_slug: Optional[str] = "starter"
+
+
+class CustomerSignupResponse(BaseModel):
+    success: bool
+    user_id: str
+    username: str
+    email: str
+    role: str
+    token: str
+    message: str
+
 
 
 

@@ -3,7 +3,9 @@ from backend.app.models.entities import (
     MonitoringCheck, MonitoringResult, Incident,
     Deployment, DeploymentRollback, License, LicenseActivation,
     AuditLog, Alert, AlertRule, Backup, MaintenanceWindow,
-    ApiKey, AppLog
+    ApiKey, AppLog,
+    SubscriptionPlan, CustomerSubscription, DomainOrder,
+    CloudServerOrder, AppMarketplaceTemplate, BillingInvoice
 )
 
 __all__ = [
@@ -11,5 +13,7 @@ __all__ = [
     "MonitoringCheck", "MonitoringResult", "Incident",
     "Deployment", "DeploymentRollback", "License", "LicenseActivation",
     "AuditLog", "Alert", "AlertRule", "Backup", "MaintenanceWindow",
-    "ApiKey", "AppLog"
+    "ApiKey", "AppLog",
+    "SubscriptionPlan", "CustomerSubscription", "DomainOrder",
+    "CloudServerOrder", "AppMarketplaceTemplate", "BillingInvoice"
 ]

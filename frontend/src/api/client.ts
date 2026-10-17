@@ -1317,6 +1317,86 @@ class ApiClient {
     return this.request<any>(`/git/pull/${appId}`, { method: 'POST' });
   }
 
+  async getServerDeployKey(serverId: string) {
+    return this.request<{
+      success: boolean;
+      server_id: string;
+      server_name: string;
+      server_ip: string;
+      public_key: string;
+      key_type: string;
+      fingerprint?: string;
+      github_authenticated: boolean;
+      github_status: 'AUTHENTICATED' | 'AWAITING_KEY_REGISTRATION' | 'ERROR';
+      gitlab_status?: string;
+      test_output?: string;
+      setup_commands: string[];
+      message: string;
+      created_at?: string;
+    }>(`/git/deploy-key/${serverId}`);
+  }
+
+  async generateServerDeployKey(serverId: string) {
+    return this.request<{
+      success: boolean;
+      server_id: string;
+      server_name: string;
+      server_ip: string;
+      public_key: string;
+      key_type: string;
+      fingerprint?: string;
+      github_authenticated: boolean;
+      github_status: 'AUTHENTICATED' | 'AWAITING_KEY_REGISTRATION' | 'ERROR';
+      gitlab_status?: string;
+      test_output?: string;
+      setup_commands: string[];
+      message: string;
+      created_at?: string;
+    }>(`/git/deploy-key/${serverId}/generate`, { method: 'POST' });
+  }
+
+  async configureAppGitAuth(appId: string, data: {
+    auth_type: string;
+    token?: string;
+    custom_repo_url?: string;
+    switch_to_ssh?: boolean;
+  }) {
+    return this.request<{
+      success: boolean;
+      application_id: string;
+      repo_url: string;
+      auth_type: string;
+      message: string;
+      remote_output?: string;
+    }>(`/git/app/${appId}/configure-auth`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async switchAppToSsh(appId: string) {
+    return this.request<{
+      success: boolean;
+      application_id: string;
+      repo_url: string;
+      auth_type: string;
+      message: string;
+      remote_output?: string;
+    }>(`/git/app/${appId}/switch-to-ssh`, { method: 'POST' });
+  }
+
+  async getAppWebhookConfig(appId: string) {
+    return this.request<{
+      application_id: string;
+      application_name: string;
+      webhook_url: string;
+      secret: string;
+      recommended_events: string[];
+      payload_format: string;
+      instructions: Record<string, string>;
+    }>(`/git/webhook/${appId}/config`);
+  }
+
   // ==========================================
   // Licenses
   // ==========================================
@@ -1820,6 +1900,139 @@ class ApiClient {
 
   async getNotificationLogs(limit: number = 50) {
     return this.request<NotificationLogItem[]>(`/notifications/logs?limit=${limit}`);
+  }
+
+  // ==========================================
+  // SaaS Cloud & Domain Portal Methods
+  // ==========================================
+  async searchDomains(query: string) {
+    return this.request<{
+      query: string;
+      exact_match?: {
+        domain_name: string;
+        tld: string;
+        available: boolean;
+        price_usd: number;
+        renew_price_usd: number;
+        status_badge: string;
+        is_recommended: boolean;
+      };
+      suggestions: Array<{
+        domain_name: string;
+        tld: string;
+        available: boolean;
+        price_usd: number;
+        renew_price_usd: number;
+        status_badge: string;
+        is_recommended: boolean;
+      }>;
+    }>(`/saas/domains/search?query=${encodeURIComponent(query)}`);
+  }
+
+  async orderDomain(data: {
+    domain_name: string;
+    registration_years?: number;
+    privacy_protection?: boolean;
+    auto_renew?: boolean;
+    server_id?: string;
+    payment_method?: string;
+  }) {
+    return this.request<any>('/saas/domains/order', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async provisionCloudServer(data: {
+    instance_name: string;
+    plan_name?: string;
+    region?: string;
+    os_image?: string;
+    cpu_cores?: number;
+    ram_gb?: number;
+    disk_gb?: number;
+    monthly_price_usd?: number;
+    payment_method?: string;
+  }) {
+    return this.request<any>('/saas/servers/provision', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async getMarketplaceTemplates() {
+    return this.request<Array<{
+      id: string;
+      slug: string;
+      title: string;
+      category: string;
+      description: string;
+      icon: string;
+      badge: string;
+      default_port: number;
+      install_time_estimate: string;
+      env_variables: Array<any>;
+    }>>('/saas/templates');
+  }
+
+  async deployMarketplaceTemplate(data: {
+    template_slug: string;
+    app_name: string;
+    domain: string;
+    server_id?: string;
+    env_values?: Record<string, string>;
+  }) {
+    return this.request<any>('/saas/deploy-template', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  }
+
+  async getSubscriptionPlans() {
+    return this.request<Array<{
+      id: string;
+      name: string;
+      slug: string;
+      description?: string;
+      monthly_price_usd: number;
+      annual_price_usd: number;
+      max_servers: number;
+      max_domains: number;
+      max_applications: number;
+      features: string[];
+      badge?: string;
+      is_popular: boolean;
+    }>>('/saas/billing/plans');
+  }
+
+  async getCustomerInvoices() {
+    return this.request<any[]>('/saas/billing/invoices');
+  }
+
+  async getCustomerDashboard() {
+    return this.request<any>('/saas/customer/dashboard');
+  }
+
+  async registerCustomer(data: {
+    email: string;
+    username: string;
+    password: string;
+    full_name?: string;
+    company_name?: string;
+    plan_slug?: string;
+  }) {
+    return this.request<{
+      success: boolean;
+      user_id: string;
+      username: string;
+      email: string;
+      role: string;
+      token: string;
+      message: string;
+    }>('/saas/auth/register-customer', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
   }
 }
 

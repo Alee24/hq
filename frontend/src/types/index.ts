@@ -5,7 +5,8 @@ export type UserRole =
   | 'APPLICATION_ADMIN'
   | 'LICENSE_ADMIN'
   | 'MONITORING_ADMIN'
-  | 'READ_ONLY';
+  | 'READ_ONLY'
+  | 'CUSTOMER';
 
 export interface User {
   id: string;

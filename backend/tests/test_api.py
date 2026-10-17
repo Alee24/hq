@@ -1893,4 +1893,249 @@ async def test_non_root_server_and_sudo_privilege_escalation():
             assert "ROOT ESCALATED" in test_res.json()["message"]
 
 
+@pytest.mark.asyncio
+async def test_git_deploy_key_auth_and_webhook_endpoints():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        token = await get_admin_token(ac)
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # 1. Create a server
+        server_res = await ac.post("/api/servers", json={
+            "name": f"GitTestServer-{uuid.uuid4().hex[:4]}",
+            "hostname": "git-test.local",
+            "provider": "Custom",
+            "public_ip": "192.0.2.77",
+            "os": "Ubuntu Linux",
+            "os_version": "24.04 LTS"
+        }, headers=headers)
+        assert server_res.status_code == 200
+        server_id = server_res.json()["id"]
+
+        # 2. Create an application on that server
+        app_res = await ac.post("/api/applications", json={
+            "name": f"GitTestApp-{uuid.uuid4().hex[:4]}",
+            "server_id": server_id,
+            "domain": "gittest.local",
+            "port": 3000,
+            "service_name": "gittest-svc",
+            "repo_url": "https://github.com/myorg/myprivaterepo.git",
+            "root_path": "/var/www/gittest"
+        }, headers=headers)
+        assert app_res.status_code == 200
+        app_id = app_res.json()["id"]
+
+        # 3. Test GET /api/git/deploy-key/{server_id}
+        with patch("backend.app.api.git.get_or_create_server_git_deploy_key") as mock_dk:
+            mock_dk.return_value = {
+                "success": True,
+                "server_id": server_id,
+                "server_name": "GitTestServer",
+                "server_ip": "192.0.2.77",
+                "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGitTestDeployKey123 hq-deploy@test",
+                "key_type": "ED25519",
+                "fingerprint": "SHA256:GitFingerprintMock123",
+                "github_authenticated": True,
+                "github_status": "AUTHENTICATED",
+                "gitlab_status": "AUTHENTICATED",
+                "test_output": "Hi myorg! You've successfully authenticated",
+                "setup_commands": ["ssh-keyscan -H github.com >> ~/.ssh/known_hosts"],
+                "message": "SSH Deploy Key is active and verified with GitHub."
+            }
+            dk_res = await ac.get(f"/api/git/deploy-key/{server_id}", headers=headers)
+            assert dk_res.status_code == 200
+            dk_data = dk_res.json()
+            assert dk_data["github_authenticated"] is True
+            assert dk_data["github_status"] == "AUTHENTICATED"
+            assert "ssh-ed25519" in dk_data["public_key"]
+
+        # 4. Test POST /api/git/deploy-key/{server_id}/generate
+        with patch("backend.app.api.git.get_or_create_server_git_deploy_key") as mock_gen:
+            mock_gen.return_value = {
+                "success": True,
+                "server_id": server_id,
+                "server_name": "GitTestServer",
+                "server_ip": "192.0.2.77",
+                "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINewRegeneratedKey456 hq-deploy@test",
+                "key_type": "ED25519",
+                "fingerprint": "SHA256:NewKeyFingerprint",
+                "github_authenticated": False,
+                "github_status": "AWAITING_KEY_REGISTRATION",
+                "gitlab_status": "AWAITING_KEY_REGISTRATION",
+                "test_output": "Permission denied (publickey)",
+                "setup_commands": [],
+                "message": "SSH Deploy Key ready. Copy this key into GitHub Settings > Deploy Keys."
+            }
+            gen_res = await ac.post(f"/api/git/deploy-key/{server_id}/generate", headers=headers)
+            assert gen_res.status_code == 200
+            assert gen_res.json()["github_status"] == "AWAITING_KEY_REGISTRATION"
+
+        # 5. Test POST /api/git/app/{application_id}/switch-to-ssh
+        with patch("backend.app.api.git.configure_remote_application_git_auth") as mock_ssh_auth:
+            mock_ssh_auth.return_value = {
+                "success": True,
+                "application_id": app_id,
+                "repo_url": "git@github.com:myorg/myprivaterepo.git",
+                "auth_type": "SSH",
+                "message": "Updated Git origin remote to: git@github.com:myorg/myprivaterepo.git",
+                "remote_output": "Origin updated"
+            }
+            switch_res = await ac.post(f"/api/git/app/{app_id}/switch-to-ssh", headers=headers)
+            assert switch_res.status_code == 200
+            assert switch_res.json()["repo_url"] == "git@github.com:myorg/myprivaterepo.git"
+
+        # 6. Test GET /api/git/webhook/{application_id}/config
+        wh_cfg_res = await ac.get(f"/api/git/webhook/{app_id}/config", headers=headers)
+        assert wh_cfg_res.status_code == 200
+        wh_data = wh_cfg_res.json()
+        assert f"/api/git/webhook/{app_id}" in wh_data["webhook_url"]
+        assert len(wh_data["secret"]) >= 16
+
+        # 7. Test POST /api/git/webhook/{application_id}
+        with patch("backend.app.api.git.execute_remote_git_action") as mock_pull:
+            mock_pull.return_value = {
+                "success": True,
+                "new_commit": "a1b2c3d4e5f6",
+                "new_version": "v1.2.3",
+                "message": "Fast-forward pull 3 commits",
+                "stdout": "Updating a000000..a1b2c3d\nFast-forward",
+                "stderr": "",
+                "duration_ms": 350
+            }
+            wh_post = await ac.post(f"/api/git/webhook/{app_id}", json={
+                "ref": "refs/heads/main",
+                "after": "a1b2c3d4e5f6",
+                "commits": [{"id": "a1b2c3d4e5f6", "message": "feat: private repo auto sync"}]
+            })
+            assert wh_post.status_code == 200
+            assert wh_post.json()["success"] is True
+            assert wh_post.json()["new_commit"] == "a1b2c3d4e5f6"
+
+
+@pytest.mark.asyncio
+async def test_saas_portal_domain_search_servers_and_marketplace():
+    """
+    Tests the SaaS Cloud & Domain Portal workflows:
+    - Domain availability search across TLDs
+    - Subscription plans catalog
+    - Marketplace application templates
+    - Customer self-service onboarding
+    - Cloud server instant provisioning
+    - Domain registration & automated DNS
+    - 1-Click marketplace application deployment
+    - Customer dashboard & billing invoices
+    """
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        # 1. Test Domain Availability Search
+        search_res = await ac.get("/api/saas/domains/search?query=mycloudstartup.com")
+        assert search_res.status_code == 200
+        search_data = search_res.json()
+        assert "exact_match" in search_data
+        assert "suggestions" in search_data
+        assert search_data["exact_match"]["domain_name"] == "mycloudstartup.com"
+        assert search_data["exact_match"]["tld"] == ".com"
+        assert search_data["exact_match"]["price_usd"] > 0
+        assert len(search_data["suggestions"]) > 0
+
+        # 2. Test Subscription Plans Catalog
+        plans_res = await ac.get("/api/saas/billing/plans")
+        assert plans_res.status_code == 200
+        plans = plans_res.json()
+        assert len(plans) >= 3
+        plan_slugs = [p["slug"] for p in plans]
+        assert "starter" in plan_slugs
+        assert "pro" in plan_slugs
+
+        # 3. Test Marketplace Templates Catalog
+        tpls_res = await ac.get("/api/saas/templates")
+        assert tpls_res.status_code == 200
+        tpls = tpls_res.json()
+        assert len(tpls) >= 3
+        tpl_slugs = [t["slug"] for t in tpls]
+        assert "wordpress" in tpl_slugs
+        assert "nodejs-nextjs" in tpl_slugs
+
+        # 4. Test Customer Self-Service Registration
+        test_uname = f"cust_{uuid.uuid4().hex[:6]}"
+        signup_res = await ac.post("/api/saas/auth/register-customer", json={
+            "email": f"{test_uname}@company.com",
+            "username": test_uname,
+            "password": "CustomerSecurePass2026!",
+            "full_name": "Test Customer",
+            "plan_slug": "starter"
+        })
+        assert signup_res.status_code == 200
+        signup_data = signup_res.json()
+        assert signup_data["success"] is True
+        assert "token" in signup_data
+        assert signup_data["role"] == "CUSTOMER"
+        cust_token = signup_data["token"]
+        cust_headers = {"Authorization": f"Bearer {cust_token}"}
+
+        # 5. Test Cloud Server Instant Provisioning
+        srv_order_res = await ac.post("/api/saas/servers/provision", json={
+            "instance_name": f"Cloud-VPS-{test_uname}",
+            "plan_name": "Cloud Standard",
+            "region": "Frankfurt (eu-central-1)",
+            "os_image": "Ubuntu 24.04 LTS (Docker Pre-Installed)",
+            "cpu_cores": 2,
+            "ram_gb": 4,
+            "disk_gb": 80,
+            "monthly_price_usd": 10.0,
+            "payment_method": "CARD"
+        }, headers=cust_headers)
+        assert srv_order_res.status_code == 200
+        srv_order = srv_order_res.json()
+        assert srv_order["status"] == "ACTIVE"
+        assert srv_order["ip_address"] is not None
+        assert "server_id" in srv_order
+        assigned_server_id = srv_order["server_id"]
+
+        # 6. Test Domain Registration Order & DNS
+        dom_order_res = await ac.post("/api/saas/domains/order", json={
+            "domain_name": f"{test_uname}-app.com",
+            "registration_years": 1,
+            "privacy_protection": True,
+            "auto_renew": True,
+            "server_id": assigned_server_id,
+            "payment_method": "CARD"
+        }, headers=cust_headers)
+        assert dom_order_res.status_code == 200
+        dom_order = dom_order_res.json()
+        assert dom_order["status"] == "ACTIVE"
+        assert dom_order["ssl_status"] == "ACTIVE"
+        assert len(dom_order["nameservers"]) > 0
+
+        # 7. Test 1-Click Application Marketplace Deployment
+        deploy_res = await ac.post("/api/saas/deploy-template", json={
+            "template_slug": "wordpress",
+            "app_name": f"WordPress-{test_uname}",
+            "domain": f"{test_uname}-app.com",
+            "server_id": assigned_server_id
+        }, headers=cust_headers)
+        assert deploy_res.status_code == 200
+        deploy_data = deploy_res.json()
+        assert deploy_data["success"] is True
+        assert deploy_data["status"] == "ONLINE"
+        assert f"https://{test_uname}-app.com" in deploy_data["deploy_url"]
+
+        # 8. Test Customer Dashboard Telemetry
+        dash_res = await ac.get("/api/saas/customer/dashboard", headers=cust_headers)
+        assert dash_res.status_code == 200
+        dash_data = dash_res.json()
+        assert dash_data["total_servers"] >= 1
+        assert dash_data["total_domains"] >= 1
+        assert dash_data["total_applications"] >= 1
+        assert dash_data["monthly_spend"] > 0
+        assert len(dash_data["recent_servers"]) >= 1
+
+        # 9. Test Customer Invoices
+        inv_res = await ac.get("/api/saas/billing/invoices", headers=cust_headers)
+        assert inv_res.status_code == 200
+        inv_list = inv_res.json()
+        assert len(inv_list) >= 2  # Signup invoice + Server invoice + Domain invoice
+        assert inv_list[0]["amount_usd"] >= 0
+
+
+
+
 

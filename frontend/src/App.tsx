@@ -1,12 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from './context/AuthContext';
 import { LoginView } from './views/LoginView';
+import { LandingPageView } from './views/saas/LandingPageView';
+import { ClientPortalView } from './views/saas/ClientPortalView';
 import { Sidebar } from './components/Sidebar';
 import { TopBar } from './components/TopBar';
 import { GlobalSearchModal } from './components/GlobalSearchModal';
 import { SetupWizardModal } from './components/SetupWizardModal';
 
-// Views
+// Command Center Views
 import { DashboardView } from './views/DashboardView';
 import { ApplicationsView } from './views/ApplicationsView';
 import { ApplicationDetailView } from './views/ApplicationDetailView';
@@ -29,8 +31,22 @@ import { SystemHealthView } from './views/SystemHealthView';
 import { SystemSettingsView } from './views/SystemSettingsView';
 import { EmailNotificationsView } from './views/EmailNotificationsView';
 
-export const MainAppShell: React.FC = () => {
-  const { user, loading } = useAuth();
+// ==========================================
+// Central Admin Command Center Shell
+// ==========================================
+interface AdminShellProps {
+  onGoToLanding: () => void;
+  onGoToPortal: () => void;
+  user: any;
+  logout: () => void;
+}
+
+const AdminCommandCenterShell: React.FC<AdminShellProps> = ({
+  onGoToLanding,
+  onGoToPortal,
+  user,
+  logout
+}) => {
   const [currentView, setCurrentView] = useState('overview');
   const [selectedAppId, setSelectedAppId] = useState<string | null>(null);
   const [selectedServerId, setSelectedServerId] = useState<string | null>(null);
@@ -51,21 +67,6 @@ export const MainAppShell: React.FC = () => {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
-
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-slate-950 flex items-center justify-center text-slate-500 font-mono text-xs">
-        <div className="flex items-center gap-2">
-          <div className="w-4 h-4 border-2 border-brand-500 border-t-transparent rounded-full animate-spin" />
-          <span>INITIALIZING COMMAND CENTER CORE...</span>
-        </div>
-      </div>
-    );
-  }
-
-  if (!user) {
-    return <LoginView />;
-  }
 
   const navigateTo = (view: string, id?: string) => {
     setMobileMenuOpen(false);
@@ -117,6 +118,8 @@ export const MainAppShell: React.FC = () => {
           onNavigate={(v) => navigateTo(v)}
           onToggleMobileMenu={() => setMobileMenuOpen(prev => !prev)}
           activeAlertsCount={1}
+          onGoToPortal={onGoToPortal}
+          onGoToLanding={onGoToLanding}
         />
 
         {/* Viewport Canvas */}
@@ -200,5 +203,138 @@ export const MainAppShell: React.FC = () => {
         onClose={() => setWizardModalOpen(false)}
       />
     </div>
+  );
+};
+
+// ==========================================
+// Root Application Shell (Multi-Mode SaaS)
+// ==========================================
+export const MainAppShell: React.FC = () => {
+  const { user, loading, logout } = useAuth();
+  const [viewMode, setViewMode] = useState<'landing' | 'portal' | 'admin' | 'auth'>('landing');
+  const [authInitialMode, setAuthInitialMode] = useState<'signin' | 'signup'>('signin');
+
+  // Intelligent URL / Auth State Synchronization
+  useEffect(() => {
+    const hash = window.location.hash.replace('#', '');
+    if (hash === 'admin' && user && user.role !== 'CUSTOMER') {
+      setViewMode('admin');
+    } else if (hash === 'portal' && user) {
+      setViewMode('portal');
+    } else if (hash === 'website') {
+      setViewMode('landing');
+    } else if (hash === 'signin') {
+      setAuthInitialMode('signin');
+      setViewMode('auth');
+    } else if (hash === 'signup') {
+      setAuthInitialMode('signup');
+      setViewMode('auth');
+    } else if (user) {
+      // Role-aware defaults
+      if (user.role === 'CUSTOMER') {
+        setViewMode('portal');
+      } else {
+        setViewMode('admin');
+      }
+    } else {
+      setViewMode('landing');
+    }
+  }, [user]);
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center text-slate-500 font-mono text-xs">
+        <div className="flex items-center gap-2">
+          <div className="w-4 h-4 border-2 border-brand-500 border-t-transparent rounded-full animate-spin" />
+          <span>INITIALIZING CLOUDNODE CORE...</span>
+        </div>
+      </div>
+    );
+  }
+
+  // 1. Auth View (Sign In or Sign Up)
+  if (viewMode === 'auth') {
+    return (
+      <LoginView
+        initialMode={authInitialMode}
+        onBackToLanding={() => setViewMode('landing')}
+      />
+    );
+  }
+
+  // 2. Client SaaS Portal
+  if (viewMode === 'portal') {
+    if (!user) {
+      return (
+        <LoginView
+          initialMode="signin"
+          onBackToLanding={() => setViewMode('landing')}
+        />
+      );
+    }
+    return (
+      <ClientPortalView
+        onGoToLanding={() => setViewMode('landing')}
+        onGoToAdmin={() => setViewMode('admin')}
+        onLogout={() => {
+          logout();
+          setViewMode('landing');
+        }}
+        isAdmin={user.role === 'SUPER_ADMIN' || user.role === 'INFRASTRUCTURE_ADMIN'}
+        currentUser={user}
+      />
+    );
+  }
+
+  // 3. Central Infrastructure Admin Command Center
+  if (viewMode === 'admin') {
+    if (!user) {
+      return (
+        <LoginView
+          initialMode="signin"
+          onBackToLanding={() => setViewMode('landing')}
+        />
+      );
+    }
+    return (
+      <AdminCommandCenterShell
+        onGoToLanding={() => setViewMode('landing')}
+        onGoToPortal={() => setViewMode('portal')}
+        user={user}
+        logout={() => {
+          logout();
+          setViewMode('landing');
+        }}
+      />
+    );
+  }
+
+  // 4. Public SaaS Website & Cloud/Domain Registration Portal (Default)
+  return (
+    <LandingPageView
+      onGoToPortal={() => {
+        if (user) {
+          setViewMode('portal');
+        } else {
+          setAuthInitialMode('signin');
+          setViewMode('auth');
+        }
+      }}
+      onGoToAdmin={() => {
+        if (user) {
+          setViewMode('admin');
+        } else {
+          setAuthInitialMode('signin');
+          setViewMode('auth');
+        }
+      }}
+      onLoginClick={() => {
+        setAuthInitialMode('signin');
+        setViewMode('auth');
+      }}
+      isAuthenticated={Boolean(user)}
+      isAdmin={user ? user.role === 'SUPER_ADMIN' || user.role === 'INFRASTRUCTURE_ADMIN' : false}
+      currentUser={user}
+    />
   );
 };

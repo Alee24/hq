@@ -32,7 +32,9 @@ import {
   Copy,
   Check,
   RotateCcw,
-  Folder
+  Folder,
+  Zap,
+  Webhook
 } from 'lucide-react';
 import { api } from '../api/client';
 
@@ -113,6 +115,139 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
   const [gitTerminalOutput, setGitTerminalOutput] = useState<any>(null);
   const [gitCardOutputs, setGitCardOutputs] = useState<Record<string, any>>({});
   const [gitAllRunning, setGitAllRunning] = useState(false);
+
+  // Private Repo & Deploy Key State
+  const [deployKeyData, setDeployKeyData] = useState<any | null>(null);
+  const [deployKeyLoading, setDeployKeyLoading] = useState(false);
+  const [deployKeyCopied, setDeployKeyCopied] = useState(false);
+  const [webhookConfig, setWebhookConfig] = useState<any | null>(null);
+  const [webhookCopied, setWebhookCopied] = useState(false);
+  const [switchingToSsh, setSwitchingToSsh] = useState(false);
+  const [cliCopied, setCliCopied] = useState(false);
+
+  const loadDeployKey = async (serverId?: string) => {
+    if (!serverId) return;
+    setDeployKeyLoading(true);
+    try {
+      const res = await api.getServerDeployKey(serverId);
+      setDeployKeyData(res);
+    } catch (e) {
+      console.error('Failed to load server deploy key:', e);
+    } finally {
+      setDeployKeyLoading(false);
+    }
+  };
+
+  const loadWebhookConfig = async (targetAppId: string) => {
+    try {
+      const res = await api.getAppWebhookConfig(targetAppId);
+      setWebhookConfig(res);
+    } catch (e) {
+      console.error('Failed to load webhook config:', e);
+    }
+  };
+
+  const copyDeployKey = () => {
+    if (!deployKeyData?.public_key) return;
+    navigator.clipboard.writeText(deployKeyData.public_key);
+    setDeployKeyCopied(true);
+    setTimeout(() => setDeployKeyCopied(false), 2500);
+  };
+
+  const handleRegenerateDeployKey = async () => {
+    if (!app?.server_id) return;
+    setDeployKeyLoading(true);
+    try {
+      const res = await api.generateServerDeployKey(app.server_id);
+      setDeployKeyData(res);
+      setAuditExecutionData({
+        command: 'ssh-keygen -t ed25519 -N "" (Regenerate Deploy Key)',
+        stdout: `Generated new Ed25519 key on ${res.server_name}:\nFingerprint: ${res.fingerprint}\nPublic Key: ${res.public_key}`,
+        stderr: '',
+        exit_code: 0,
+        duration_ms: 800,
+        server_id: app.server_id,
+        server_name: res.server_name,
+        server_ip: res.server_ip,
+        context_type: 'GIT_DEPLOY_KEY_GENERATE',
+        title: `Deploy Key Regenerated: ${res.server_name}`
+      });
+      setAuditModalOpen(true);
+    } catch (e: any) {
+      alert(`Failed to regenerate deploy key: ${e.message}`);
+    } finally {
+      setDeployKeyLoading(false);
+    }
+  };
+
+  const handleTestGithubHandshake = async () => {
+    if (!app?.server_id) return;
+    setDeployKeyLoading(true);
+    try {
+      const res = await api.getServerDeployKey(app.server_id);
+      setDeployKeyData(res);
+      setAuditExecutionData({
+        command: 'ssh -T -o StrictHostKeyChecking=accept-new git@github.com',
+        stdout: res.test_output || res.message,
+        stderr: res.github_status === 'AUTHENTICATED' ? '' : 'Permission denied (publickey). Add this key to your GitHub repository under Settings > Deploy Keys.',
+        exit_code: res.github_authenticated ? 0 : 1,
+        duration_ms: 600,
+        server_id: app.server_id,
+        server_name: res.server_name,
+        server_ip: res.server_ip,
+        context_type: 'GIT_GITHUB_TEST',
+        title: `GitHub SSH Test: ${res.server_name} (${res.github_status})`
+      });
+      setAuditModalOpen(true);
+    } catch (e: any) {
+      alert(`GitHub handshake test failed: ${e.message}`);
+    } finally {
+      setDeployKeyLoading(false);
+    }
+  };
+
+  const handleSwitchToSsh = async () => {
+    if (!app) return;
+    setSwitchingToSsh(true);
+    try {
+      const res = await api.switchAppToSsh(app.id);
+      setAuditExecutionData({
+        command: `git remote set-url origin ${res.repo_url}`,
+        stdout: res.remote_output || res.message,
+        stderr: res.success ? '' : 'Failed to update remote origin',
+        exit_code: res.success ? 0 : 1,
+        duration_ms: 500,
+        server_id: app.server_id,
+        server_name: app.server_name,
+        server_ip: app.server_ip,
+        context_type: 'GIT_REMOTE_SWITCH',
+        title: `Switched to SSH Remote: ${res.repo_url}`
+      });
+      setAuditModalOpen(true);
+      await runAllGitCommands(app.id);
+      const freshApp = await api.getApplication(app.id);
+      setApp(freshApp);
+    } catch (e: any) {
+      alert(`Failed to switch remote to SSH: ${e.message}`);
+    } finally {
+      setSwitchingToSsh(false);
+    }
+  };
+
+  const copyWebhookUrl = () => {
+    if (!webhookConfig?.webhook_url) return;
+    navigator.clipboard.writeText(webhookConfig.webhook_url);
+    setWebhookCopied(true);
+    setTimeout(() => setWebhookCopied(false), 2500);
+  };
+
+  const copyCliFallback = () => {
+    if (!deployKeyData?.setup_commands && !gitStatus) return;
+    const cmd = deployKeyData?.setup_commands || `git -C ${gitStatus?.repo_dir || app?.root_path || `/var/www/${app?.name.toLowerCase()}`} pull origin ${gitStatus?.branch || app?.git_branch || 'main'}`;
+    navigator.clipboard.writeText(cmd);
+    setCliCopied(true);
+    setTimeout(() => setCliCopied(false), 2500);
+  };
 
   const runAllGitCommands = async (targetId?: string) => {
     const idToUse = targetId || app?.id || appId;
@@ -293,6 +428,11 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
 
       loadDockerInfo(appId);
 
+      if (a.server_id) {
+        loadDeployKey(a.server_id);
+      }
+      loadWebhookConfig(a.id);
+
       if (a.license_id) {
         const lic = await api.listLicenses().then(list => list.find(l => l.id === a.license_id));
         setLicenseInfo(lic);
@@ -346,8 +486,12 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
   useEffect(() => {
     if (activeTab === 'git' && appId) {
       runAllGitCommands(appId);
+      if (app?.server_id) {
+        loadDeployKey(app.server_id);
+      }
+      loadWebhookConfig(appId);
     }
-  }, [activeTab, appId]);
+  }, [activeTab, appId, app?.server_id]);
 
   const handleAction = async (action: string) => {
     if (!app) return;
@@ -1621,6 +1765,180 @@ export const ApplicationDetailView: React.FC<ApplicationDetailViewProps> = ({
                         <ExternalLink size={11} />
                       </a>
                     )}
+                  </div>
+                </div>
+
+                {/* AUTOMATED PRIVATE GIT REPOSITORY & SSH DEPLOY KEY CARD */}
+                <div className="p-4 bg-gradient-to-br from-slate-900 via-slate-900/90 to-slate-950 border border-slate-800 rounded-xl shadow-lg space-y-3.5">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800/80 pb-3">
+                    <div className="flex items-center gap-2.5">
+                      <div className="p-2 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-400">
+                        <Key size={16} />
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <h4 className="text-xs font-bold text-white uppercase tracking-wider">
+                            Private Git Repository & Server SSH Deploy Key
+                          </h4>
+                          {deployKeyData?.github_authenticated ? (
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-950 text-emerald-300 border border-emerald-800 flex items-center gap-1">
+                              <ShieldCheck size={11} /> VERIFIED WITH GITHUB
+                            </span>
+                          ) : (
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-950 text-amber-300 border border-amber-800 flex items-center gap-1">
+                              <AlertTriangle size={11} /> AWAITING REPO REGISTRATION
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-[11px] text-slate-400">
+                          Automated SSH key authentication for private repositories without making your code public.
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        onClick={handleTestGithubHandshake}
+                        disabled={deployKeyLoading}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg text-xs font-medium transition-colors disabled:opacity-50"
+                        title="Run 'ssh -T git@github.com' on the remote VPS to verify authentication"
+                      >
+                        <RefreshCw size={11} className={deployKeyLoading ? 'animate-spin' : ''} />
+                        <span>{deployKeyLoading ? 'Testing...' : 'Test GitHub Auth'}</span>
+                      </button>
+
+                      {gitStatus.repo_url && gitStatus.repo_url.startsWith('http') && (
+                        <button
+                          onClick={handleSwitchToSsh}
+                          disabled={switchingToSsh}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-brand-600/90 hover:bg-brand-500 text-white rounded-lg text-xs font-semibold shadow-sm transition-colors disabled:opacity-50"
+                          title="Convert https://github.com/owner/repo.git to git@github.com:owner/repo.git on VPS"
+                        >
+                          <Zap size={11} className={switchingToSsh ? 'animate-spin' : ''} />
+                          <span>{switchingToSsh ? 'Switching...' : 'Switch Remote to SSH'}</span>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Public Key Copy-Paste Bar */}
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="font-semibold text-slate-300 flex items-center gap-1.5">
+                        <span>Server Public Deploy Key (Ed25519)</span>
+                        <span className="text-slate-500 font-mono text-[10px]">
+                          ({app.server_name || 'VPS'} · /root/.ssh/id_ed25519.pub)
+                        </span>
+                      </span>
+                      <div className="flex items-center gap-2">
+                        {deployKeyData?.fingerprint && (
+                          <span className="text-[10px] font-mono text-slate-500 hidden sm:inline">
+                            FP: {deployKeyData.fingerprint}
+                          </span>
+                        )}
+                        <button
+                          onClick={handleRegenerateDeployKey}
+                          disabled={deployKeyLoading}
+                          className="text-[11px] text-slate-400 hover:text-slate-200 underline disabled:opacity-50"
+                          title="Regenerate this server's Ed25519 deploy key"
+                        >
+                          Regenerate
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="relative flex items-center">
+                      <div className="w-full bg-slate-950 border border-slate-800 rounded-lg py-2 pl-3 pr-32 font-mono text-xs text-amber-200/90 truncate select-all">
+                        {deployKeyLoading && !deployKeyData ? (
+                          <span className="text-slate-500 italic">Inspecting remote VPS deploy key...</span>
+                        ) : deployKeyData?.public_key ? (
+                          deployKeyData.public_key
+                        ) : (
+                          <span className="text-slate-500">No deploy key discovered. Click Test to generate one.</span>
+                        )}
+                      </div>
+                      <button
+                        onClick={copyDeployKey}
+                        disabled={!deployKeyData?.public_key}
+                        className="absolute right-1.5 px-3 py-1 rounded bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 text-xs font-semibold flex items-center gap-1.5 transition-colors disabled:opacity-40"
+                      >
+                        {deployKeyCopied ? <Check size={12} className="text-emerald-400" /> : <Copy size={12} />}
+                        <span>{deployKeyCopied ? 'Copied Key!' : 'Copy Deploy Key'}</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Instructions Accordion / Step-by-Step Info */}
+                  <div className="p-2.5 rounded-lg bg-slate-950/40 border border-slate-800 text-[11px] text-slate-400 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
+                    <div className="space-y-0.5">
+                      <span className="font-semibold text-slate-300">How to authorize this server in GitHub/GitLab:</span>
+                      <ol className="list-decimal list-inside space-y-0.5 text-slate-400 pl-1">
+                        <li>Copy the Deploy Key above</li>
+                        <li>In GitHub: <strong>Repository &gt; Settings &gt; Deploy Keys &gt; Add deploy key</strong></li>
+                        <li>Paste the key, check <strong>Allow write access</strong> if pushing, and click <strong>Test GitHub Auth</strong> above</li>
+                      </ol>
+                    </div>
+                    {deployKeyData?.github_deploy_key_url && (
+                      <a
+                        href={deployKeyData.github_deploy_key_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 text-brand-400 hover:text-brand-300 font-semibold shrink-0"
+                      >
+                        <span>Open Repo Settings</span>
+                        <ExternalLink size={11} />
+                      </a>
+                    )}
+                  </div>
+
+                  {/* Copy-Paste Options Row: Webhook & CLI Sequence */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1">
+                    {/* Webhook Push-to-Deploy */}
+                    <div className="p-3 rounded-lg bg-slate-950/70 border border-slate-800/80 space-y-2">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="font-semibold text-slate-300 flex items-center gap-1">
+                          <Webhook size={13} className="text-brand-400" />
+                          <span>Push-to-Deploy Webhook</span>
+                        </span>
+                        <button
+                          onClick={copyWebhookUrl}
+                          disabled={!webhookConfig?.webhook_url}
+                          className="text-[11px] text-brand-400 hover:text-brand-300 font-medium flex items-center gap-1 disabled:opacity-50"
+                        >
+                          {webhookCopied ? <Check size={11} className="text-emerald-400" /> : <Copy size={11} />}
+                          <span>{webhookCopied ? 'Copied URL!' : 'Copy URL'}</span>
+                        </button>
+                      </div>
+                      <div className="font-mono text-[11px] text-slate-400 truncate bg-slate-900 px-2 py-1 rounded border border-slate-800">
+                        {webhookConfig?.webhook_url || `/api/git/webhook/${app.id}`}
+                      </div>
+                      <p className="text-[10px] text-slate-500">
+                        Paste into GitHub repository <strong>Settings &gt; Webhooks</strong> for automated push updates.
+                      </p>
+                    </div>
+
+                    {/* Manual CLI Fallback Sequence */}
+                    <div className="p-3 rounded-lg bg-slate-950/70 border border-slate-800/80 space-y-2">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="font-semibold text-slate-300 flex items-center gap-1">
+                          <Terminal size={13} className="text-emerald-400" />
+                          <span>Server CLI Update Sequence</span>
+                        </span>
+                        <button
+                          onClick={copyCliFallback}
+                          className="text-[11px] text-emerald-400 hover:text-emerald-300 font-medium flex items-center gap-1"
+                        >
+                          {cliCopied ? <Check size={11} className="text-emerald-300" /> : <Copy size={11} />}
+                          <span>{cliCopied ? 'Copied Command!' : 'Copy Command'}</span>
+                        </button>
+                      </div>
+                      <div className="font-mono text-[11px] text-slate-400 truncate bg-slate-900 px-2 py-1 rounded border border-slate-800">
+                        git -C {gitStatus.repo_dir || app.root_path || `/var/www/${app.name.toLowerCase()}`} pull origin {gitStatus.branch || 'main'}
+                      </div>
+                      <p className="text-[10px] text-slate-500">
+                        Copy-paste ready command sequence configured with automated SSH known_hosts.
+                      </p>
+                    </div>
                   </div>
                 </div>
 
