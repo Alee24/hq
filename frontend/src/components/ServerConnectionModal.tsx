@@ -37,6 +37,7 @@ export const ServerConnectionModal: React.FC<ServerConnectionModalProps> = ({
   const [authType, setAuthType] = useState<'KEY' | 'PASSWORD'>(server.ssh_auth_type || 'KEY');
   const [sshKey, setSshKey] = useState('');
   const [sshPassword, setSshPassword] = useState('');
+  const [showSshPassword, setShowSshPassword] = useState(false);
   const [useSudo, setUseSudo] = useState<boolean>(server.use_sudo ?? (server.ssh_user ? server.ssh_user !== 'root' : false));
   const [sudoPassword, setSudoPassword] = useState('');
   const [showSudoPassword, setShowSudoPassword] = useState(false);
@@ -325,39 +326,59 @@ export const ServerConnectionModal: React.FC<ServerConnectionModalProps> = ({
               </div>
             ) : (
               <div>
-                <label className="block text-slate-300 font-semibold mb-1">SSH Password</label>
-                <input
-                  type="password"
-                  value={sshPassword}
-                  onChange={(e) => setSshPassword(e.target.value)}
-                  placeholder="••••••••••••"
-                  className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-slate-100"
-                />
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-slate-300 font-semibold">SSH Password</label>
+                  {server.has_ssh_password && !sshPassword && (
+                    <span className="text-[10px] text-emerald-400 font-medium">Saved in database (leave blank to keep)</span>
+                  )}
+                </div>
+                <div className="relative">
+                  <input
+                    type={showSshPassword ? 'text' : 'password'}
+                    value={sshPassword}
+                    onChange={(e) => setSshPassword(e.target.value)}
+                    placeholder={server.has_ssh_password ? '•••••••••••• (saved)' : 'Enter root/SSH password'}
+                    className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-slate-100 pr-10 font-mono text-xs"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowSshPassword(!showSshPassword)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 transition-colors"
+                  >
+                    {showSshPassword ? <EyeOff size={14} /> : <Eye size={14} />}
+                  </button>
+                </div>
+                <p className="text-[10px] text-slate-500 mt-1">
+                  Click the eye icon to verify typed characters. Never committed to version control.
+                </p>
               </div>
             )}
 
             {/* Test Connection Result Box */}
-            {testResult && (
-              <div
-                className={`p-3 rounded-lg border text-xs flex items-start gap-2.5 ${
-                  testResult.success
-                    ? 'bg-emerald-950/30 border-emerald-800/80 text-emerald-300'
-                    : 'bg-rose-950/30 border-rose-800/80 text-rose-300'
-                }`}
-              >
-                {testResult.success ? (
-                  <CheckCircle2 size={16} className="text-emerald-400 mt-0.5 shrink-0" />
-                ) : (
-                  <AlertTriangle size={16} className="text-rose-400 mt-0.5 shrink-0" />
-                )}
-                <div>
-                  <div className="font-semibold">{testResult.message}</div>
-                  {testResult.latency_ms && (
-                    <div className="text-[11px] opacity-80 mt-0.5">Roundtrip Latency: {testResult.latency_ms} ms</div>
+            {testResult && (() => {
+              const isTrulySuccess = Boolean(testResult.success && testResult.status !== 'AUTH_FAILED' && !testResult.message?.includes('AUTH_FAILED'));
+              return (
+                <div
+                  className={`p-3 rounded-lg border text-xs flex items-start gap-2.5 ${
+                    isTrulySuccess
+                      ? 'bg-emerald-950/40 border-emerald-800 text-emerald-300'
+                      : 'bg-rose-950/40 border-rose-800 text-rose-300'
+                  }`}
+                >
+                  {isTrulySuccess ? (
+                    <CheckCircle2 size={16} className="text-emerald-400 mt-0.5 shrink-0" />
+                  ) : (
+                    <AlertTriangle size={16} className="text-rose-400 mt-0.5 shrink-0" />
                   )}
+                  <div>
+                    <div className="font-semibold">{testResult.message}</div>
+                    {testResult.latency_ms !== undefined && (
+                      <div className="text-[11px] opacity-80 mt-0.5">Roundtrip Latency: {testResult.latency_ms} ms</div>
+                    )}
+                  </div>
                 </div>
-              </div>
-            )}
+              );
+            })()}
 
             {/* Actions */}
             <div className="flex items-center justify-between pt-3 border-t border-slate-800">
